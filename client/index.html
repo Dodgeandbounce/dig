@@ -54,56 +54,19 @@
           <label>Crew size <span class="muted" id="max-label">4</span>
             <input name="maxPlayers" type="range" min="1" max="17" value="4">
           </label>
+          <label>You start as
+            <select name="playerClass"><option value="pilot">Zap the Pilot</option><option value="engineer">Angie the Engineer</option></select>
+          </label>
           <label class="check"><input name="allowPlayWithoutHost" type="checkbox">
             Crew can keep drilling while I'm away</label>
           <button>Launch &amp; board</button>
         </form>
-        <p class="muted small">You'll be the host. Only the host can restart a run, shelve the ship, or destroy it. (Online ships are still the simple co-op prototype; the full game is solo for now.)</p>
+        <p class="muted small">You'll be the host. Friends who board take over a crew member (bots play the rest). Only the host can restart a run, shelve the ship, or destroy it.</p>
       </div>
     </div>
   </section>
 
-  <!-- Ship -->
-  <section id="screen-ship" class="screen hidden">
-    <div class="ship">
-      <div class="view">
-        <canvas id="canvas"></canvas>
-        <div id="banner" class="banner hidden"></div>
-      </div>
-      <aside class="hud">
-        <div class="card">
-          <div class="row between">
-            <h2 id="ship-name"></h2>
-            <button id="btn-leave" class="ghost">Leave</button>
-          </div>
-          <div class="stat"><span>Run</span><b id="s-run"></b></div>
-          <div class="stat"><span>Depth</span><b id="s-depth"></b></div>
-          <div class="stat"><span>Layer</span><b id="s-layer"></b></div>
-          <div class="meter"><div id="hull-fill"></div><span id="s-hull"></span></div>
-          <button id="btn-repair" class="big">Repair hull (Space)</button>
-        </div>
-
-        <div id="host-panel" class="card host hidden">
-          <h3>Host controls</h3>
-          <button id="btn-restart">End run &amp; restart</button>
-          <button id="btn-shelve">Leave as is (save for later)</button>
-          <button id="btn-destroy" class="danger">Exit &amp; destroy ship</button>
-        </div>
-
-        <div class="card">
-          <h3>Crew <span class="muted" id="crew-count"></span></h3>
-          <ul id="crew" class="crew"></ul>
-        </div>
-
-        <div class="card log-card">
-          <ul id="log" class="log"></ul>
-          <form id="chat-form"><input id="chat-input" maxlength="200" placeholder="Say something…"></form>
-        </div>
-      </aside>
-    </div>
-  </section>
-
-  <!-- Solo game -->
+  <!-- The game (solo or online) -->
   <section id="screen-game" class="screen-game hidden"></section>
 
   <div id="toast" class="toast hidden"></div>

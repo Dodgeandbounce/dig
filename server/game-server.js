@@ -12,10 +12,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC_DIRS = { '/shared/': join(ROOT, 'shared'), '/': join(ROOT, 'client') };
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
-const TICK_MS = 100;
-const BROADCAST_MS = 200;
+const TICK_MS = 33;          // simulation (fixed 1/30 s steps inside World.tick)
+const FRAME_MS = 100;        // game snapshots to players aboard
+const IDLE_FRAME_MS = 1000;  // ...while the ship is paused (waiting for the host)
+const META_MS = 500;         // ship info (crew list, host, run) when it changes
 const LOBBY_MS = 1000;
-const SAVE_MS = 2000;
+const SAVE_MS = 2000;        // ship info
+const GAME_SAVE_MS = 10000;  // the running game (bigger)
+const BACKLOG_LIMIT = 512 * 1024; // skip frames for a connection that can't keep up
 
 const hashToken = (t) => createHash('sha256').update(t).digest('hex');
 
@@ -31,7 +35,10 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
   const worldOpts = { speed, rng };
   const players = store.loadPlayers();           // id -> { name, tokenHash, createdAt }
   const worlds = new Map();                      // id -> World
-  for (const data of store.loadWorlds()) worlds.set(data.id, new World(data, worldOpts));
+  for (const data of store.loadWorlds()) {
+    try { worlds.set(data.id, new World(data, { ...worldOpts, gameData: store.loadGame(data.id) })); }
+    catch (err) { console.error(`[server] skipping ship ${data.id}:`, err); }
+  }
   const conns = new Set();                       // live connections
   let playersDirty = false;
   let lastLobbyJson = '';
@@ -54,17 +61,32 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
   }
 
   function broadcastWorld(world) {
-    const snap = world.snapshot();
-    for (const c of connsIn(world.id)) c.socket.send({ t: 'world', world: snap, you: c.playerId });
+    const json = JSON.stringify({ t: 'world', world: world.snapshot() });
+    world.lastMeta = metaKey(world);
+    for (const c of connsIn(world.id)) c.socket.send(json);
+  }
+  // The meta snapshot minus the parts that change every tick, to decide when to resend it.
+  const metaKey = (w) => JSON.stringify([w.summary(), w.log.length, w.log.at(-1)?.at, w.seats, w.history.length]);
+
+  function broadcastFrame(world) {
+    const targets = connsIn(world.id);
+    if (!targets.length) return;
+    const frame = world.frame();
+    for (const c of targets) if (c.synced && c.socket.buffered < BACKLOG_LIMIT) c.socket.send(frame);
   }
 
   function save(world) { store.saveWorld(world.toJSON()); world.dirty = false; }
+  function saveGame(world) {
+    try { store.saveGame(world.id, world.saveGame()); }
+    catch (err) { console.error(`[server] could not save the game for ${world.id}:`, err.message); }
+  }
 
   /** Send everyone aboard back to the lobby. */
   function evacuate(world, reason) {
     for (const c of connsIn(world.id)) {
       world.disembark(c.playerId);
       c.worldId = null;
+      c.synced = false;
       c.socket.send({ t: 'left', reason });
       sendLobby(c);
     }
@@ -73,9 +95,11 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
   function leaveWorld(conn, reason) {
     const world = worlds.get(conn.worldId);
     conn.worldId = null;
+    conn.synced = false;
     if (!world) return;
     world.disembark(conn.playerId);
     save(world);
+    saveGame(world);
     broadcastWorld(world);
     if (reason) conn.socket.send({ t: 'left', reason });
     broadcastLobby(true);
@@ -113,6 +137,7 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
       const world = World.create({
         name: msg.name, hostId: conn.playerId, hostName: conn.name,
         maxPlayers: msg.maxPlayers, allowPlayWithoutHost: msg.allowPlayWithoutHost,
+        playerClass: msg.playerClass,
       }, worldOpts);
       worlds.set(world.id, world);
       handlers.join(conn, { worldId: world.id });
@@ -121,7 +146,7 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     join(conn, msg) {
       const world = worlds.get(msg.worldId);
       if (!world) return conn.socket.send({ t: 'error', message: 'That ship no longer exists' });
-      if (conn.worldId === world.id) return broadcastWorld(world);
+      if (conn.worldId === world.id) { broadcastWorld(world); sync(conn, world); return; }
       // Same player in another tab? The newest connection wins.
       for (const other of connsIn(world.id)) {
         if (other.playerId === conn.playerId) { leaveWorld(other, 'You joined from another window'); sendLobby(other); }
@@ -132,6 +157,7 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
       world.board(conn.playerId, conn.name);
       save(world);
       broadcastWorld(world);
+      sync(conn, world);
       broadcastLobby(true);
     },
 
@@ -141,11 +167,15 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
       sendLobby(conn);
     },
 
-    repair(conn) {
+    // Controls for your crew member, ~20×/s.
+    in(conn, msg) { worlds.get(conn.worldId)?.input(conn.playerId, msg.i); },
+
+    // A UI action: route pick, shop, station panel, story button...
+    cmd(conn, msg) {
       const world = worlds.get(conn.worldId);
       if (!world) return;
-      const r = world.repair(conn.playerId);
-      if (r.error && r.error !== 'Cooldown') conn.socket.send({ t: 'error', message: r.error });
+      const r = world.command(conn.playerId, msg.c);
+      if (r.error && r.error !== 'Run is over') conn.socket.send({ t: 'error', message: r.error });
     },
 
     chat(conn, msg) { worlds.get(conn.worldId)?.chat(conn.playerId, msg.text); },
@@ -155,7 +185,9 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
       const world = requireHost(conn); if (!world) return;
       world.restartRun();
       save(world);
+      saveGame(world);
       broadcastWorld(world);
+      for (const c of connsIn(world.id)) sync(c, world);
       broadcastLobby(true);
     },
 
@@ -165,6 +197,7 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
       world.event('system', `${conn.name} shelved the ship. It will wait right here.`);
       evacuate(world, 'The host shelved the ship. It is saved in the lobby.');
       save(world);
+      saveGame(world);
       broadcastLobby(true);
     },
 
@@ -178,8 +211,14 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     },
   };
 
+  /** Send a full game frame to one connection; after this it gets the shared diff frames. */
+  function sync(conn, world) {
+    conn.socket.send(world.joinFrame());
+    conn.synced = true;
+  }
+
   function onConnect(socket) {
-    const conn = { socket, playerId: null, name: null, worldId: null };
+    const conn = { socket, playerId: null, name: null, worldId: null, synced: false };
     conns.add(conn);
     socket.on('message', (msg) => {
       const handler = handlers[msg?.t];
@@ -194,18 +233,35 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
 
   // ---------- loops ----------
   let last = Date.now();
+  let idleT = 0;
+  const guard = (name, fn) => () => { try { fn(); } catch (err) { console.error(`[${name}]`, err); } };
   const timers = [
-    setInterval(() => {
+    setInterval(guard('tick', () => {
       const now = Date.now(); const dt = now - last; last = now;
-      for (const w of worlds.values()) w.tick(dt);
-    }, TICK_MS),
-    setInterval(() => { for (const w of worlds.values()) if (w.online.size) broadcastWorld(w); }, BROADCAST_MS),
-    setInterval(() => broadcastLobby(), LOBBY_MS),
-    setInterval(() => saveAll(), SAVE_MS),
+      for (const w of worlds.values()) {
+        try { w.tick(dt); }
+        catch (err) { console.error(`[tick ${w.id}]`, err); }
+      }
+    }), TICK_MS),
+    setInterval(guard('frames', () => {
+      idleT += FRAME_MS;
+      const idle = idleT >= IDLE_FRAME_MS;
+      if (idle) idleT = 0;
+      for (const w of worlds.values()) if (w.online.size && (w.canTick || idle)) broadcastFrame(w);
+    }), FRAME_MS),
+    setInterval(guard('meta', () => {
+      for (const w of worlds.values()) if (w.online.size && metaKey(w) !== w.lastMeta) broadcastWorld(w);
+    }), META_MS),
+    setInterval(guard('lobby', () => broadcastLobby()), LOBBY_MS),
+    setInterval(guard('save', () => saveAll()), SAVE_MS),
+    setInterval(guard('save-games', () => { for (const w of worlds.values()) if (w.gameDirty) saveGame(w); }), GAME_SAVE_MS),
   ];
 
-  function saveAll() {
-    for (const w of worlds.values()) if (w.dirty) save(w);
+  function saveAll(games = false) {
+    for (const w of worlds.values()) {
+      if (w.dirty) save(w);
+      if (games && w.gameDirty) saveGame(w);
+    }
     if (playersDirty) { store.savePlayers(players); playersDirty = false; }
   }
 
@@ -238,8 +294,8 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     listen(port, host) { return new Promise((r) => server.listen(port, host, () => r(server.address().port))); },
     async close() {
       timers.forEach(clearInterval);
-      for (const w of worlds.values()) w.online.clear();
-      saveAll();
+      for (const w of worlds.values()) for (const p of [...w.online]) w.disembark(p);
+      saveAll(true);
       for (const c of conns) c.socket.close(1001, 'server shutting down');
       await new Promise((r) => server.close(r));
     },

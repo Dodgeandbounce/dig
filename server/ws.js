@@ -19,6 +19,9 @@ export class Socket extends EventEmitter {
     socket.on('error', () => this.#closed());
   }
 
+  /** Bytes queued but not yet sent (a slow client's backlog). */
+  get buffered() { return this.socket.writableLength; }
+
   send(obj) {
     if (!this.open) return;
     const payload = Buffer.from(typeof obj === 'string' ? obj : JSON.stringify(obj));

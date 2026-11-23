@@ -1,20 +1,18 @@
 import { Net, loadIdentity, saveIdentity } from './net.js';
-import { createRenderer } from './render.js';
-import { LAYERS, EARTH_CENTER_KM } from './shared/constants.js';
-import { launchSolo } from './game/app.js';
+import { launchSolo, launchOnline } from './game/app.js';
 
 const $ = (id) => document.getElementById(id);
 const net = new Net();
-const renderer = createRenderer($('canvas'));
 let identity = loadIdentity();
 let currentWorldId = sessionStorage.getItem('doigo.world'); // survives reloads / reconnects
 let me = null;
 let playingSolo = false;
+let online = null; // { worldId, ctl } while aboard an online ship
 
 // ---------- screens ----------
 function show(name) {
   if (playingSolo && name !== 'game') return; // lobby updates don't yank you out of a solo run
-  for (const s of ['name', 'lobby', 'ship', 'game']) $(`screen-${s}`).classList.toggle('hidden', s !== name);
+  for (const s of ['name', 'lobby', 'game']) $(`screen-${s}`).classList.toggle('hidden', s !== name);
   document.body.classList.toggle('playing', name === 'game');
 }
 function toast(text) {
@@ -29,6 +27,7 @@ function setWorld(id) {
 // ---------- solo ----------
 function startSolo(quick) {
   if (currentWorldId) { net.send({ t: 'leave' }); setWorld(null); }
+  stopOnline();
   playingSolo = true;
   show('game');
   launchSolo($('screen-game'), {
@@ -48,12 +47,37 @@ $('btn-solo2').onclick = () => startSolo();
 const quick = new URLSearchParams(location.search).get('solo');
 if (quick !== null) startSolo(quick || 'pilot');
 
+// ---------- online ship ----------
+function startOnline(worldId) {
+  stopOnline();
+  show('game');
+  const ctl = launchOnline($('screen-game'), {
+    net, playerId: me,
+    actions: {
+      leave: () => { net.send({ t: 'leave' }); setWorld(null); stopOnline(); show('lobby'); },
+      restart: () => { if (confirm('End this run and start over from the surface? Everyone aboard starts again.')) net.send({ t: 'restart' }); },
+      shelve: () => net.send({ t: 'shelve' }),
+      destroy: () => { if (confirm('Destroy this ship forever? Everyone aboard is sent back to the lobby and the save is deleted.')) net.send({ t: 'destroy' }); },
+    },
+  });
+  online = { worldId, ctl };
+}
+function stopOnline() {
+  if (!online) return;
+  online.ctl.stop();
+  online = null;
+  $('screen-game').innerHTML = '';
+}
+
 // ---------- connection ----------
 net.on('open', () => {
   $('conn').textContent = 'online'; $('conn').classList.add('ok');
   if (identity.name) net.send({ t: 'hello', ...identity });
 });
-net.on('close', () => { $('conn').textContent = 'offline (solo still works)'; $('conn').classList.remove('ok'); });
+net.on('close', () => {
+  $('conn').textContent = 'offline (solo still works)'; $('conn').classList.remove('ok');
+  if (online) toast('Connection lost. Reconnecting…');
+});
 net.on('welcome', (m) => {
   identity = { playerId: m.playerId, token: m.token, name: m.name };
   saveIdentity(identity);
@@ -64,9 +88,9 @@ net.on('welcome', (m) => {
 });
 net.on('error', (m) => {
   toast(m.message);
-  if (m.message.includes('no longer exists') || m.message.includes('full')) { setWorld(null); show('lobby'); }
+  if (m.message.includes('no longer exists') || m.message.includes('full')) { setWorld(null); stopOnline(); show('lobby'); }
 });
-net.on('left', (m) => { setWorld(null); show('lobby'); if (m.reason) toast(m.reason); });
+net.on('left', (m) => { setWorld(null); stopOnline(); show('lobby'); if (m.reason) toast(m.reason); });
 
 // ---------- name ----------
 $('name-form').addEventListener('submit', (e) => {
@@ -77,6 +101,7 @@ $('name-form').addEventListener('submit', (e) => {
 if (identity.name) $('name-input').value = identity.name; else show('name');
 
 // ---------- lobby ----------
+const PHASE = { briefing: 'briefing', descent: 'drilling', route: 'at a fork', encounter: 'fighting', aftermath: 'after a fight', port: 'at port', discovery: 'exploring', gameover: 'lost', ending: 'at the core' };
 net.on('lobby', ({ worlds }) => {
   if (currentWorldId) return;
   show('lobby');
@@ -99,7 +124,7 @@ net.on('lobby', ({ worlds }) => {
     li.querySelector('.name').insertAdjacentHTML('beforeend', pill + (mine ? '<span class="pill">your ship</span>' : ''));
     li.querySelector('.meta').textContent =
       `Host ${w.hostName}${w.hostOnline ? ' (aboard)' : ''} · ${w.online}/${w.maxPlayers} aboard · ` +
-      `Run #${w.run.number} · ${w.run.depthKm.toLocaleString()} km · hull ${w.run.hull}% · ${ago(w.lastPlayedAt)}`;
+      `Run #${w.run.number} · level ${w.run.level || 1}, ${w.run.depthKm.toLocaleString()} km${PHASE[w.run.phase] ? `, ${PHASE[w.run.phase]}` : ''} · hull ${w.run.hull}% · ${ago(w.lastPlayedAt)}`;
     const btn = li.querySelector('button');
     btn.disabled = w.online >= w.maxPlayers;
     btn.onclick = () => { setWorld(w.id); net.send({ t: 'join', worldId: w.id }); };
@@ -111,76 +136,21 @@ const form = $('create-form');
 form.maxPlayers.addEventListener('input', () => { $('max-label').textContent = form.maxPlayers.value; });
 form.addEventListener('submit', (e) => {
   e.preventDefault();
-  net.send({ t: 'create', name: form.name.value, maxPlayers: Number(form.maxPlayers.value), allowPlayWithoutHost: form.allowPlayWithoutHost.checked });
+  net.send({
+    t: 'create', name: form.name.value, maxPlayers: Number(form.maxPlayers.value),
+    allowPlayWithoutHost: form.allowPlayWithoutHost.checked, playerClass: form.playerClass.value,
+  });
   form.reset(); $('max-label').textContent = '4';
 });
 
-// ---------- ship ----------
+// ---------- aboard ----------
 net.on('world', ({ world: w }) => {
   if (playingSolo) return;
   setWorld(w.id);
-  show('ship');
-  renderer.set(w);
-  const host = w.hostId === me;
-  $('ship-name').textContent = w.name;
-  $('s-run').textContent = `#${w.run.number}`;
-  $('s-depth').textContent = `${Math.round(w.run.depthKm).toLocaleString()} / ${EARTH_CENTER_KM.toLocaleString()} km`;
-  $('s-layer').textContent = LAYERS.find((l) => l.id === w.run.layer)?.name ?? '';
-  const hull = Math.round(w.run.hull);
-  $('s-hull').textContent = `Hull ${hull}%`;
-  $('hull-fill').style.width = `${hull}%`;
-  $('hull-fill').style.background = hull > 50 ? 'var(--good)' : hull > 25 ? 'var(--accent)' : 'var(--danger)';
-  $('btn-repair').disabled = w.status !== 'running';
-  $('host-panel').classList.toggle('hidden', !host);
-  $('btn-restart').textContent = w.run.status === 'active' ? 'End run early & restart' : 'Start a new run';
-
-  const banner = $('banner');
-  const msg = w.run.status === 'won' ? `🏆 You reached the center of the earth! ${host ? 'Start a new run whenever you like.' : 'Waiting for the host.'}`
-    : w.run.status === 'lost' ? `💀 The ship was crushed at ${Math.round(w.run.depthKm).toLocaleString()} km. ${host ? 'Restart or scuttle it.' : 'Waiting for the host to decide.'}`
-    : w.pausedReason ? `⏸ ${w.pausedReason} — the drill is idle.` : '';
-  banner.textContent = msg; banner.classList.toggle('hidden', !msg);
-
-  $('crew-count').textContent = `${w.online}/${w.maxPlayers} aboard`;
-  $('crew').innerHTML = '';
-  for (const m of [...w.members].sort((a, b) => b.online - a.online)) {
-    const li = document.createElement('li');
-    li.className = m.online ? '' : 'off';
-    li.innerHTML = '<span><span class="dot"></span><span class="n"></span></span><span class="muted small"></span>';
-    li.querySelector('.n').textContent = m.name + (m.host ? ' ★' : '') + (m.id === me ? ' (you)' : '');
-    li.querySelectorAll('span')[3].textContent = `${m.repairs} repairs`;
-    $('crew').append(li);
-  }
-
-  const log = $('log');
-  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
-  log.innerHTML = '';
-  for (const e of w.log) {
-    const li = document.createElement('li');
-    li.className = e.kind;
-    li.textContent = e.who ? `${e.who}: ${e.text}` : e.text;
-    log.append(li);
-  }
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  if (!online || online.worldId !== w.id) startOnline(w.id);
+  online.ctl.meta(w);
 });
-
-const repair = () => net.send({ t: 'repair' });
-$('btn-repair').onclick = repair;
-addEventListener('keydown', (e) => {
-  if (playingSolo) return;
-  if (e.code === 'Space' && currentWorldId && document.activeElement?.tagName !== 'INPUT') { e.preventDefault(); repair(); }
-});
-$('btn-leave').onclick = () => { net.send({ t: 'leave' }); setWorld(null); };
-$('btn-restart').onclick = () => { if (confirm('End this run and start over? Depth resets to 0.')) net.send({ t: 'restart' }); };
-$('btn-shelve').onclick = () => net.send({ t: 'shelve' });
-$('btn-destroy').onclick = () => {
-  if (confirm('Destroy this ship forever? Everyone aboard is sent back to the lobby and the save is deleted.')) net.send({ t: 'destroy' });
-};
-$('chat-form').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const input = $('chat-input');
-  if (input.value.trim()) net.send({ t: 'chat', text: input.value });
-  input.value = '';
-});
+net.on('g', (m) => { if (online && !playingSolo) online.ctl.frame(m); });
 
 function ago(ts) {
   const s = Math.round((Date.now() - ts) / 1000);

@@ -8,8 +8,10 @@ import { createGameServer } from '../server/game-server.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const open = new Set(); // sockets to close even if a test fails
 async function client(port, hello) {
   const ws = new WebSocket(`ws://localhost:${port}/ws`);
+  open.add(ws);
   const inbox = [];
   let cursor = 0; // messages before this index have been consumed
   let waiter = null;
@@ -37,9 +39,10 @@ async function client(port, hello) {
   return c;
 }
 
-test('lobby, drop-in/out, host controls and persistence', async () => {
+test('lobby, drop-in/out, host controls and persistence', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'doigo-'));
   let game = createGameServer({ dataDir, speed: 20, rng: () => 0.99 });
+  t.after(async () => { for (const ws of open) ws.close(); open.clear(); await game.close().catch(() => {}); });
   let port = await game.listen(0);
 
   // Host commissions a ship.
@@ -55,6 +58,11 @@ test('lobby, drop-in/out, host controls and persistence', async () => {
   assert.equal(lobby.worlds[0].name, 'Molehill');
   guest.send({ t: 'join', worldId });
   await guest.waitFor((m) => m.t === 'world' && m.world.online === 2);
+  // Boarding sends the full game (state + map); the guest takes over a crew member of their own.
+  const first = await guest.waitFor((m) => m.t === 'g' && m.grid);
+  assert.ok(first.s.crew.length >= 2 && first.s.roster.length > 0);
+  const guestCrew = first.seats[guest.me.playerId];
+  assert.ok(guestCrew != null && guestCrew !== first.seats[host.me.playerId]);
 
   // Ship is full at 2.
   const third = await client(port, { name: 'Cy' });
@@ -67,25 +75,37 @@ test('lobby, drop-in/out, host controls and persistence', async () => {
   guest.send({ t: 'restart' });
   assert.match((await guest.waitFor((m) => m.t === 'error')).message, /Only the host/);
 
-  // Drilling happens.
+  // The game runs on the server and streams to everyone aboard.
   await sleep(400);
-  const moving = await host.waitFor((m) => m.t === 'world' && m.world.run.depthKm > 0);
-  assert.equal(moving.world.status, 'running');
+  const later = await host.waitFor((m) => m.t === 'g' && m.s.time > 0.3);
+  assert.equal(later.s.roster, undefined);                                    // static parts aren't resent
+  assert.equal(game.worlds.get(worldId).status, 'running');
+  assert.ok(game.worlds.get(worldId).run.elapsedMs > 0);
 
-  // Host drops out (closes tab) -> ship pauses for the guest.
+  // Controls and UI commands reach the game.
+  guest.send({ t: 'in', i: { mx: 1, my: 0, ax: 0, ay: 0, pressed: {} } });
+  guest.send({ t: 'cmd', c: { t: 'pause', on: true } });
+  assert.match((await guest.waitFor((m) => m.t === 'error')).message, /Unknown command/);
+  guest.send({ t: 'chat', text: 'hi crew' });
+  await guest.waitFor((m) => m.t === 'g' && m.fx.some((e) => e.t === 'log' && e.kind === 'chat' && e.text.includes('hi crew')));
+
+  // Host drops out (closes tab) -> ship pauses for the guest, and a bot takes over the host's crew member.
   host.close();
-  const paused = await guest.waitFor((m) => m.t === 'world' && m.world.pausedReason === 'Waiting for the host');
-  const frozenAt = paused.world.run.depthKm;
+  await guest.waitFor((m) => m.t === 'world' && m.world.pausedReason === 'Waiting for the host');
+  const w = game.worlds.get(worldId);
+  const frozenAt = w.game.time;
+  assert.equal(w.crewOf(host.me.playerId).human, false);
   await sleep(500);
-  assert.equal(game.worlds.get(worldId).run.depthKm, frozenAt);
+  assert.equal(w.game.time, frozenAt);
   guest.close();
   await sleep(100);
 
-  // Server restarts — the ship is still there, at the same depth.
+  // Server restarts — the ship is still there, mid-run, at the same moment.
   await game.close();
   game = createGameServer({ dataDir, speed: 20, rng: () => 0.99 });
   port = await game.listen(0);
-  assert.equal(game.worlds.get(worldId).run.depthKm, frozenAt);
+  assert.ok(existsSync(join(dataDir, 'worlds', `${worldId}.game`)));
+  assert.equal(game.worlds.get(worldId).game.time, frozenAt);
 
   // Host comes back with the same identity and is still the host.
   const host2 = await client(port, { name: 'Ada', playerId: host.me.playerId, token: host.me.token });
@@ -122,6 +142,7 @@ test('lobby, drop-in/out, host controls and persistence', async () => {
   await host2.waitFor((m) => m.t === 'left');
   assert.ok(!game.worlds.has(worldId));
   assert.ok(!existsSync(join(dataDir, 'worlds', `${worldId}.json`)));
+  assert.ok(!existsSync(join(dataDir, 'worlds', `${worldId}.game`)));
 
   host2.close(); guest2.close();
   await game.close();

@@ -33,5 +33,21 @@ export class Store {
       .filter(Boolean);
   }
   saveWorld(data) { this.#write(join(this.worldDir, `${data.id}.json`), data); }
-  deleteWorld(id) { rmSync(join(this.worldDir, `${id}.json`), { force: true }); }
+  deleteWorld(id) {
+    rmSync(join(this.worldDir, `${id}.json`), { force: true });
+    rmSync(join(this.worldDir, `${id}.game`), { force: true });
+  }
+
+  // The running game itself (binary, node:v8 serialization). Missing or unreadable = start a fresh run.
+  saveGame(id, buf) {
+    const file = join(this.worldDir, `${id}.game`);
+    writeFileSync(file + '.tmp', buf);
+    renameSync(file + '.tmp', file);
+  }
+  loadGame(id) {
+    const file = join(this.worldDir, `${id}.game`);
+    if (!existsSync(file)) return null;
+    try { return readFileSync(file); }
+    catch (err) { console.error(`[store] could not read ${file}:`, err.message); return null; }
+  }
 }

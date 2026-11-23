@@ -18,6 +18,8 @@ export class Net extends EventTarget {
     this.ws = new WebSocket(url);
     this.ws.onopen = () => {
       this.retry = 500;
+      // Drop game actions queued while offline; hello/join etc. are re-sent on 'open' anyway.
+      this.queue = this.queue.filter((m) => m.t !== 'cmd' && m.t !== 'chat');
       this.dispatchEvent(new Event('open'));
       for (const m of this.queue.splice(0)) this.send(m);
     };
@@ -35,6 +37,11 @@ export class Net extends EventTarget {
   send(msg) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
     else this.queue.push(msg);
+  }
+
+  /** For messages that are useless if late (controls): send now or drop, never queue. */
+  sendVolatile(msg) {
+    if (this.ws?.readyState === WebSocket.OPEN && this.ws.bufferedAmount < 64 * 1024) this.ws.send(JSON.stringify(msg));
   }
 
   on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }

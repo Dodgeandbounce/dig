@@ -363,7 +363,8 @@ export function createRenderer(canvas) {
   function updateParticles(c, dt) {
     for (const q of parts) {
       q.life -= dt;
-      if (q.ring) { const k = 1 - q.life / q.max; c.strokeStyle = `rgba(${q.color},${Math.max(0, q.life / q.max)})`; c.lineWidth = 3; c.beginPath(); c.arc(q.x, q.y, q.r + (q.R - q.r) * k, 0, 7); c.stroke(); if (q.R > 40) { c.fillStyle = `rgba(${q.color},${0.25 * q.life / q.max})`; c.fill(); } continue; }
+      if (q.life <= 0) continue;
+      if (q.ring) { const k = 1 - q.life / q.max; c.strokeStyle = `rgba(${q.color},${Math.max(0, q.life / q.max)})`; c.lineWidth = 3; c.beginPath(); c.arc(q.x, q.y, Math.max(0, q.r + (q.R - q.r) * k), 0, 7); c.stroke(); if (q.R > 40) { c.fillStyle = `rgba(${q.color},${0.25 * q.life / q.max})`; c.fill(); } continue; }
       if (q.arc) { c.strokeStyle = q.color; c.globalAlpha = Math.max(0, q.life / q.max); c.lineWidth = 3; c.beginPath(); c.arc(q.x, q.y, q.r, q.a - 0.9, q.a + 0.9); c.stroke(); c.globalAlpha = 1; continue; }
       if (q.fling) { const k = 1 - q.life / q.max; c.fillStyle = q.color; c.beginPath(); c.arc(q.x + (q.x2 - q.x) * k, q.y + (q.y2 - q.y) * k - Math.sin(k * Math.PI) * 40, 7, 0, 7); c.fill(); continue; }
       q.x += q.vx * dt; q.y += q.vy * dt;

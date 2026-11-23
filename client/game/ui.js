@@ -32,6 +32,8 @@ export function createUI(root, api) {
     <div class="g-banner hidden"></div>
     <div class="g-modal hidden"><div class="g-card"></div></div>
     <div class="g-toast hidden"></div>
+    <div class="g-hold hidden"></div>
+    <form class="g-chat hidden"><input maxlength="200" placeholder="Say something to the crew… (Enter)"></form>
   `;
   const $ = (s) => root.querySelector(s);
   const canvas = $('.g-canvas');
@@ -159,6 +161,7 @@ export function createUI(root, api) {
       if (modalKind === 'port' && g.phase !== 'port') closeModal();
       if (modalKind === 'aftermath' && g.phase !== 'aftermath') closeModal();
       if (modalKind === 'stranded' && !(g.phase === 'descent' && g.descent.stranded)) closeModal();
+      if (modalKind === 'end' && g.phase !== 'gameover' && g.phase !== 'ending') closeModal(); // host started a new run
     }
     render(false);
   }
@@ -224,7 +227,7 @@ export function createUI(root, api) {
     const el = $('.g-crew');
     el.innerHTML = `<h4>Crew ${g.crew.length}/17</h4>` + g.crew.map((c) => `
       <div class="cm ${c.alive ? '' : 'down'} ${c === me ? 'me' : ''}" style="--c:${CLASSES[c.cls].color}">
-        <span class="dot"></span><span class="n">${esc(c.name)}</span><span class="cl">${CLASSES[c.cls].name}</span>
+        <span class="dot"></span><span class="n">${esc(c.name)}${api.online ? (c.human ? ` <small class="pl">${esc(c.player || 'player')}</small>` : ' <small class="bot">bot</small>') : ''}</span><span class="cl">${CLASSES[c.cls].name}</span>
         <span class="mini"><i style="width:${c.cls === 'urchid' ? 100 : pct(c.hp, c.maxHp)}"></i></span>
       </div>`).join('') + (g.joe.state === 'saved' ? '<div class="cm" style="--c:#f0a030"><span class="dot"></span><span class="n">Joe</span><span class="cl">Brother · NPC</span></div>' : '');
   }
@@ -370,6 +373,23 @@ export function createUI(root, api) {
   }
 
   function pauseHtml(g) {
+    if (api.online) {
+      const host = api.isHost();
+      const w = world;
+      const aboard = w ? w.members.filter((m) => m.online).map((m) => `${esc(m.name)}${m.host ? ' ★' : ''}`).join(', ') : '';
+      return `<h2>${esc(g.ship.name)}</h2>
+        <p class="muted">Online ship. The game keeps running while this menu is open.${aboard ? ` Aboard: ${aboard}.` : ''}</p>
+        <p class="muted">Press <kbd>Enter</kbd> to chat.</p>
+        <div class="col">
+        <button data-act='{"close":1}'>Back to the game</button>
+        <button class="ghost" data-act='{"ui":"help"}'>Controls</button>
+        <button class="ghost" data-act='{"ui":"mute"}'>Sound on/off</button>
+        <button class="ghost" data-act='{"ui":"leave"}'>Leave the ship (a bot takes over)</button>
+        ${host ? `<h3>Host</h3>
+        <button class="ghost" data-act='{"ui":"restart"}'>End run & restart</button>
+        <button class="ghost" data-act='{"ui":"shelve"}'>Save & send everyone to the lobby</button>
+        <button class="danger" data-act='{"ui":"destroy"}'>Destroy this ship</button>` : ''}</div>`;
+    }
     return `<h2>Paused</h2><div class="col">
       <button data-act='{"close":1}'>Resume</button>
       <button class="ghost" data-act='{"ui":"help"}'>Controls</button>
@@ -397,7 +417,9 @@ export function createUI(root, api) {
       <div class="score">${won && g.joe.state === 'saved' ? '<span class="arms" title="Saved your brother">💪🤝💪</span> ' : ''}${esc(g.ship.name)}: <b>${score.toLocaleString()}</b></div>
       <p class="muted">Depth ${g.depthKm.toLocaleString()} km · ${g.stats.kills} kills · ${g.stats.gems} gems · ${g.stats.repairs} repairs · ${g.stats.meals} meals · ${g.stats.insults} insults</p>
       <h3>DIG high scores</h3><ol class="hs">${scores.map((s) => `<li class="${s.mine ? 'mine' : ''}">${s.arms ? '💪🤝💪 ' : ''}${esc(s.ship)} — ${s.score.toLocaleString()} <small>${esc(s.result)}</small></li>`).join('')}</ol>
-      <div class="row"><button data-act='{"ui":"again"}'>Dig again</button><button class="ghost" data-act='{"ui":"quit"}'>Back to the lobby</button></div></div>`;
+      ${api.online
+        ? `<div class="row">${api.isHost() ? `<button data-act='{"ui":"restart"}'>Dig again (new run)</button>` : '<span class="muted">Waiting for the host to start a new run.</span>'}<button class="ghost" data-act='{"ui":"leave"}'>Back to the lobby</button></div></div>`
+        : `<div class="row"><button data-act='{"ui":"again"}'>Dig again</button><button class="ghost" data-act='{"ui":"quit"}'>Back to the lobby</button></div></div>`}`;
   }
 
   // ---------------- station panels
@@ -482,11 +504,36 @@ export function createUI(root, api) {
       case 'recruit': toast(`🦊 ${e.name} the ${CLASSES[e.cls].name} joined the crew!`); break;
       case 'watch': if (me && e.crew === me.id) toast(`⌚ New mark: ${e.target}. ${e.text}`); break;
       case 'unlock': toast('📡 Signal locked!'); break;
-      case 'switch': toast('You switched class.'); break;
+      case 'switch': if (!api.online || (me && (e.to === me.id || e.from === me.id))) toast('You switched class.'); break;
     }
   }
 
   function panelTarget(t) { if (modalData) modalData.target = t; render(true); }
 
-  return { canvas, update, onFx, openModal, closeModal, isOpen, kind: () => modalKind, toast, render, panelTarget, data: () => modalData };
+  // ---- online: ship info from the server, and chat
+  let world = null;
+  function setWorld(w) {
+    const was = world;
+    world = w;
+    const banner = $('.g-hold');
+    const msg = w.pausedReason && w.run.status === 'active' ? `⏸ ${w.pausedReason}` : '';
+    banner.textContent = msg; banner.classList.toggle('hidden', !msg);
+    if (was && modalKind === 'pause') render(true);
+  }
+  const chat = $('.g-chat');
+  function openChat() {
+    chat.classList.remove('hidden');
+    chat.querySelector('input').focus();
+  }
+  chat.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = chat.querySelector('input');
+    if (input.value.trim()) api.chat?.(input.value);
+    input.value = ''; input.blur(); chat.classList.add('hidden');
+  });
+  chat.querySelector('input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.target.value = ''; e.target.blur(); chat.classList.add('hidden'); e.stopPropagation(); }
+  });
+
+  return { canvas, update, onFx, openModal, closeModal, isOpen, kind: () => modalKind, toast, render, panelTarget, data: () => modalData, setWorld, openChat };
 }

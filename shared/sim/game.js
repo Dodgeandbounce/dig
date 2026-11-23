@@ -1226,7 +1226,7 @@ const COMMANDS = {
     const cost = Math.ceil(need * g.port.fuelPrice);
     if (need <= 0) return;
     const n = c.wallet >= cost ? need : Math.floor(c.wallet / g.port.fuelPrice);
-    c.wallet -= Math.ceil(n * g.port.fuelPrice); g.ship.fuel += n;
+    c.wallet -= Math.ceil(n * g.port.fuelPrice); g.ship.fuel = Math.min(g.ship.fuelMax, g.ship.fuel + n);
   },
   repairHull(g, c) {
     if (g.phase !== 'port') return;
@@ -1350,6 +1350,7 @@ const COMMANDS = {
   spin(g, c) { if (c.cls === 'slots' && c.cd.f <= 0) { if (spinSlots(g, c) !== false) c.cd.f = 1.2; } },
   buyIntel(g, c) { if (c.cls === 'agent' && g.phase === 'port' && c.wallet >= 40) { c.wallet -= 40; c.missionRank = (c.missionRank || 0) + 1; g.log('loot', `${c.name} swapped "knowledge" with a contact at the bar. More targets next fight.`); g.markedBonus = (g.markedBonus || 0) + 1; } },
   pause(g, c, cmd) { g.paused = !!cmd.on; },
+  release(g, c, cmd) { const i = c.monsters.findIndex((m) => m.type === cmd.type && !m.out); if (i >= 0) c.monsters.splice(i, 1); },
 };
 export { COMMANDS };
 
