@@ -1,0 +1,15 @@
+{
+  "name": "do-i-go",
+  "version": "0.1.0",
+  "description": "1-17 player co-op defense game: race the drill-ship to the center of the earth.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "DIG_SPEED=40 node --watch server/index.js",
+    "test": "node --test test/*.test.js"
+  }
+}

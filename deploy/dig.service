@@ -1,0 +1,24 @@
+# systemd unit: copy to /etc/systemd/system/dig.service, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now dig
+[Unit]
+Description=Do I Go? game server
+After=network.target
+
+[Service]
+Type=simple
+User=dig
+WorkingDirectory=/opt/dig
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=BASE_PATH=/dig
+Environment=DATA_DIR=/var/lib/dig
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=2
+# SIGTERM makes the server save every ship before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Do I Go?</title>
+  <link rel="icon" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>Do I Go<span>?</span></h1>
+    <div id="conn" class="conn">connecting…</div>
+    <div id="who" class="who"></div>
+  </header>
+
+  <!-- Name -->
+  <section id="screen-name" class="screen">
+    <div class="card narrow">
+      <h2>Who's digging?</h2>
+      <p class="muted">There's treasure at the center of the earth. 6,371 km down.</p>
+      <form id="name-form">
+        <input id="name-input" maxlength="24" placeholder="Your name" required autofocus>
+        <button>Enter the lobby</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Lobby -->
+  <section id="screen-lobby" class="screen hidden">
+    <div class="lobby">
+      <div class="card">
+        <div class="row between">
+          <h2>Ships in the lobby</h2>
+          <span class="muted" id="lobby-count"></span>
+        </div>
+        <ul id="world-list" class="world-list"></ul>
+        <p id="world-empty" class="muted hidden">No ships yet. Commission the first one →</p>
+      </div>
+      <div class="card side">
+        <h2>Commission a ship</h2>
+        <form id="create-form" class="stack">
+          <label>Ship name <input name="name" maxlength="40" placeholder="The Long Way Down" required></label>
+          <label>Crew size <span class="muted" id="max-label">4</span>
+            <input name="maxPlayers" type="range" min="1" max="17" value="4">
+          </label>
+          <label class="check"><input name="allowPlayWithoutHost" type="checkbox">
+            Crew can keep drilling while I'm away</label>
+          <button>Launch &amp; board</button>
+        </form>
+        <p class="muted small">You'll be the host. Only the host can restart a run, shelve the ship, or destroy it.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Ship -->
+  <section id="screen-ship" class="screen hidden">
+    <div class="ship">
+      <div class="view">
+        <canvas id="canvas"></canvas>
+        <div id="banner" class="banner hidden"></div>
+      </div>
+      <aside class="hud">
+        <div class="card">
+          <div class="row between">
+            <h2 id="ship-name"></h2>
+            <button id="btn-leave" class="ghost">Leave</button>
+          </div>
+          <div class="stat"><span>Run</span><b id="s-run"></b></div>
+          <div class="stat"><span>Depth</span><b id="s-depth"></b></div>
+          <div class="stat"><span>Layer</span><b id="s-layer"></b></div>
+          <div class="meter"><div id="hull-fill"></div><span id="s-hull"></span></div>
+          <button id="btn-repair" class="big">Repair hull (Space)</button>
+        </div>
+
+        <div id="host-panel" class="card host hidden">
+          <h3>Host controls</h3>
+          <button id="btn-restart">End run &amp; restart</button>
+          <button id="btn-shelve">Leave as is (save for later)</button>
+          <button id="btn-destroy" class="danger">Exit &amp; destroy ship</button>
+        </div>
+
+        <div class="card">
+          <h3>Crew <span class="muted" id="crew-count"></span></h3>
+          <ul id="crew" class="crew"></ul>
+        </div>
+
+        <div class="card log-card">
+          <ul id="log" class="log"></ul>
+          <form id="chat-form"><input id="chat-input" maxlength="200" placeholder="Say something…"></form>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
