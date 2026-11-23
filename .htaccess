@@ -1,0 +1,4 @@
+# The app root lives inside public_html, so block direct web access to the
+# source and save files (commanderstitch.com/dig-app/...). The game is served
+# at /dig through Passenger, which reads these files from disk, not over HTTP.
+Require all denied
