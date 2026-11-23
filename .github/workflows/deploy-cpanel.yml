@@ -1,0 +1,59 @@
+name: Deploy to cPanel (FTP)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cpanel
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+    steps:
+      - name: Skip if FTP secrets are not set yet
+        if: env.FTP_SERVER == ''
+        run: echo "::warning::FTP_SERVER secret is not set. Skipping deploy."
+
+      - uses: actions/checkout@v4
+        if: env.FTP_SERVER != ''
+
+      # Passenger restarts the app whenever tmp/restart.txt changes.
+      - name: Stamp restart file
+        if: env.FTP_SERVER != ''
+        run: mkdir -p tmp && date -u +%FT%TZ > tmp/restart.txt
+
+      - name: Upload over FTPS
+        if: env.FTP_SERVER != ''
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          server-dir: ${{ secrets.FTP_SERVER_DIR }}
+          protocol: ftps
+          exclude: |
+            **/.git*
+            **/.git*/**
+            .github/**
+            test/**
+            deploy/**
+            data/**
+            Dockerfile
+            .dockerignore
+            docker-compose.yml
+            *.md

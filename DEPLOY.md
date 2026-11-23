@@ -15,6 +15,44 @@ The server accepts requests with or without the `/dig` prefix, so it works wheth
 
 ---
 
+## Option C: cPanel with "Setup Node.js App", deployed by GitHub Actions over FTP
+
+Every push to `main` runs the tests and then uploads the app over FTPS (`.github/workflows/deploy-cpanel.yml`). It also touches `tmp/restart.txt`, which makes Passenger restart the app. The game has no npm dependencies, so you never need to run "NPM Install" in cPanel.
+
+### 1. Create the app in cPanel (one time)
+cPanel → **Software → Setup Node.js App → Create Application**:
+- **Node.js version:** 22 (or the newest offered, at least 20)
+- **Application mode:** Production
+- **Application root:** `dig-app`. This is the folder the FTP deploy uploads into. Keep it outside `public_html`.
+- **Application URL:** `commanderstitch.com` / `dig`
+- **Application startup file:** `app.cjs`
+- **Environment variables:** `BASE_PATH` = `/dig` and `DATA_DIR` = `/home/<cpanel-user>/dig-data`. Keep saves outside the app folder so a deploy can never touch them.
+
+Click **Create**. cPanel adds the `/dig` routing for you.
+
+### 2. Make an FTP account (one time)
+cPanel → **Files → FTP Accounts**. Create one (e.g. `deploy@commanderstitch.com`) whose directory is the app root (`/home/<cpanel-user>/dig-app`). Then the upload folder is just `./`.
+
+### 3. Add the GitHub secrets
+GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Example | Notes |
+|---|---|---|
+| `FTP_SERVER` | `ftp.commanderstitch.com` | host name only, no `ftp://` |
+| `FTP_USERNAME` | `deploy@commanderstitch.com` | the full cPanel FTP username, including `@domain` |
+| `FTP_PASSWORD` | ••••••• | |
+| `FTP_SERVER_DIR` | `./` | the folder to upload into, relative to the FTP account's home. Must end with `/`. Use `./` if the FTP account is rooted at the app folder, or `dig-app/` if it uses your main cPanel login. |
+
+Re-run the workflow (Actions → Deploy to cPanel → Run workflow) or push to `main`. Until `FTP_SERVER` is set, the deploy step is skipped with a warning instead of failing.
+
+### Gotchas
+- **FTPS:** the workflow uses encrypted FTPS (`protocol: ftps`). If your host only allows plain FTP, change that line to `ftp`. If it uses implicit FTPS on port 990, use `ftps-legacy` and add `port: 990`.
+- **WebSockets:** the game needs them. Most CloudLinux/Passenger hosts pass them through, but some shared hosts behind LiteSpeed or a strict proxy don't. If the header stays on "reconnecting…" after deploy, ask your host whether WebSockets work for Node.js apps. If they don't, use Option B with a subdomain.
+- **Idle shutdown:** Passenger may stop the app when nobody is connected. That's safe: ships save on shutdown, and the world never advances while it's empty anyway.
+- **Logs:** cPanel → Setup Node.js App → your app shows the log file path (often `stderr.log` in the app root).
+
+---
+
 ## Option A: commanderstitch.com runs on your own server/VPS (nginx or Apache)
 
 ### With Docker
