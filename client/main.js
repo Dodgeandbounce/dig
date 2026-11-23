@@ -1,6 +1,7 @@
 import { Net, loadIdentity, saveIdentity } from './net.js';
 import { createRenderer } from './render.js';
 import { LAYERS, EARTH_CENTER_KM } from './shared/constants.js';
+import { launchSolo } from './game/app.js';
 
 const $ = (id) => document.getElementById(id);
 const net = new Net();
@@ -8,10 +9,13 @@ const renderer = createRenderer($('canvas'));
 let identity = loadIdentity();
 let currentWorldId = sessionStorage.getItem('doigo.world'); // survives reloads / reconnects
 let me = null;
+let playingSolo = false;
 
 // ---------- screens ----------
 function show(name) {
-  for (const s of ['name', 'lobby', 'ship']) $(`screen-${s}`).classList.toggle('hidden', s !== name);
+  if (playingSolo && name !== 'game') return; // lobby updates don't yank you out of a solo run
+  for (const s of ['name', 'lobby', 'ship', 'game']) $(`screen-${s}`).classList.toggle('hidden', s !== name);
+  document.body.classList.toggle('playing', name === 'game');
 }
 function toast(text) {
   const el = $('toast'); el.textContent = text; el.classList.remove('hidden');
@@ -22,12 +26,34 @@ function setWorld(id) {
   if (id) sessionStorage.setItem('doigo.world', id); else sessionStorage.removeItem('doigo.world');
 }
 
+// ---------- solo ----------
+function startSolo(quick) {
+  if (currentWorldId) { net.send({ t: 'leave' }); setWorld(null); }
+  playingSolo = true;
+  show('game');
+  launchSolo($('screen-game'), {
+    quick: typeof quick === 'string' ? quick : null,
+    name: identity.name || $('name-input').value.trim(),
+    onExit: () => {
+      playingSolo = false;
+      $('screen-game').innerHTML = '';
+      show(me ? 'lobby' : 'name');
+      if (me) net.send({ t: 'hello', ...identity });
+    },
+  });
+}
+$('btn-solo').onclick = () => startSolo();
+$('btn-solo2').onclick = () => startSolo();
+// ?solo=<class> jumps straight into a run (handy for testing and for sharing a link)
+const quick = new URLSearchParams(location.search).get('solo');
+if (quick !== null) startSolo(quick || 'pilot');
+
 // ---------- connection ----------
 net.on('open', () => {
   $('conn').textContent = 'online'; $('conn').classList.add('ok');
   if (identity.name) net.send({ t: 'hello', ...identity });
 });
-net.on('close', () => { $('conn').textContent = 'reconnecting…'; $('conn').classList.remove('ok'); });
+net.on('close', () => { $('conn').textContent = 'offline (solo still works)'; $('conn').classList.remove('ok'); });
 net.on('welcome', (m) => {
   identity = { playerId: m.playerId, token: m.token, name: m.name };
   saveIdentity(identity);
@@ -91,6 +117,7 @@ form.addEventListener('submit', (e) => {
 
 // ---------- ship ----------
 net.on('world', ({ world: w }) => {
+  if (playingSolo) return;
   setWorld(w.id);
   show('ship');
   renderer.set(w);
@@ -139,6 +166,7 @@ net.on('world', ({ world: w }) => {
 const repair = () => net.send({ t: 'repair' });
 $('btn-repair').onclick = repair;
 addEventListener('keydown', (e) => {
+  if (playingSolo) return;
   if (e.code === 'Space' && currentWorldId && document.activeElement?.tagName !== 'INPUT') { e.preventDefault(); repair(); }
 });
 $('btn-leave').onclick = () => { net.send({ t: 'leave' }); setWorld(null); };

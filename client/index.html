@@ -6,6 +6,7 @@
   <title>Do I Go?</title>
   <link rel="icon" href="favicon.svg">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="game/game.css">
 </head>
 <body>
   <header class="bar">
@@ -23,6 +24,11 @@
         <input id="name-input" maxlength="24" placeholder="Your name" required autofocus>
         <button>Enter the lobby</button>
       </form>
+      <div class="solo-cta">
+        <p class="muted small">or</p>
+        <button id="btn-solo" class="big solo">▶ Play solo</button>
+        <p class="muted small">Your crew is played by bots. No server needed.</p>
+      </div>
     </div>
   </section>
 
@@ -38,6 +44,10 @@
         <p id="world-empty" class="muted hidden">No ships yet. Commission the first one →</p>
       </div>
       <div class="card side">
+        <h2>Play solo</h2>
+        <p class="muted small">The full game: 17 classes, a ship that keeps growing, enemy dig-ships, Joe's notes. Bots crew the rest of the ship.</p>
+        <button id="btn-solo2" class="big solo">▶ Play solo</button>
+        <hr>
         <h2>Commission a ship</h2>
         <form id="create-form" class="stack">
           <label>Ship name <input name="name" maxlength="40" placeholder="The Long Way Down" required></label>
@@ -48,7 +58,7 @@
             Crew can keep drilling while I'm away</label>
           <button>Launch &amp; board</button>
         </form>
-        <p class="muted small">You'll be the host. Only the host can restart a run, shelve the ship, or destroy it.</p>
+        <p class="muted small">You'll be the host. Only the host can restart a run, shelve the ship, or destroy it. (Online ships are still the simple co-op prototype; the full game is solo for now.)</p>
       </div>
     </div>
   </section>
@@ -92,6 +102,9 @@
       </aside>
     </div>
   </section>
+
+  <!-- Solo game -->
+  <section id="screen-game" class="screen-game hidden"></section>
 
   <div id="toast" class="toast hidden"></div>
   <script type="module" src="main.js"></script>

@@ -80,6 +80,14 @@ button.big { width: 100%; padding: .8rem; margin-top: .8rem; font-size: 1rem; }
   border: 1px solid var(--accent); padding: .6rem 1rem; border-radius: 8px; z-index: 10;
 }
 
+/* solo entry points */
+.solo-cta { margin-top: 1.2rem; }
+.solo-cta p { margin: .4rem 0; }
+button.solo { background: linear-gradient(180deg, #ffb655, #e0861e); font-size: 1.1rem; letter-spacing: .02em; }
+.side hr { border: 0; border-top: 1px solid var(--line); margin: 1.2rem 0; }
+body.playing .bar { display: none; }
+.screen-game { position: fixed; inset: 0; z-index: 5; }
+
 @media (max-width: 860px) {
   .lobby, .ship { grid-template-columns: 1fr; height: auto; }
   .view { height: 55vh; }

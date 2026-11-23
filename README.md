@@ -1,8 +1,11 @@
 # Do I Go?
 
-A 1–17 player co-op defense game about racing a drill-ship to the center of the earth (6,371 km down). Rumor says there's treasure there.
+A 1–17 player co-op defense game about racing a drill-ship to the center of the earth (6,371 km down). Zap is coming of age. His brother Joe went first and left notes. Do I go?
 
-This is the **base project**: a lobby of persistent ships ("rooms"), drop-in/drop-out multiplayer, host controls, and a placeholder gameplay loop (drill down, hazards damage the hull, crew repairs it). The game itself is meant to be built on top of this.
+There are two ways to play right now:
+
+- **▶ Play solo** — the full game. You play one crew member; bots play everyone else. 17 classes, a ship that keeps growing room by room, enemy dig-ships that dock and board you, creatures, ports, Joe's notes, the transponder, the brother path, and the thing at the core. It runs entirely in the browser (no server needed). See [GAME.md](GAME.md) for how it all works.
+- **Online ships (lobby)** — the original multiplayer base: persistent ships, drop-in/drop-out, host controls, and a simple placeholder loop. The full game will move onto this next (the simulation in `shared/sim/` is written to run on the server too).
 
 ## Run it
 
@@ -11,16 +14,18 @@ Needs Node 22+. There are no dependencies, so you don't need `npm install`.
 ```bash
 npm start            # http://localhost:3000
 npm run dev          # drill 40x faster and auto-restart on file changes
-npm test             # unit + end-to-end tests
+npm test             # unit + end-to-end tests (incl. a headless playthrough of the game)
 ```
 
-Open the URL in several browser windows (or incognito windows) to play as several players. Other people on your network can join at `http://<your-ip>:3000`.
+Click **▶ Play solo**, or open `http://localhost:3000/?solo=engineer` (any class id) to jump straight in.
+
+Open the URL in several browser windows (or incognito windows) to play online ships as several players. Other people on your network can join at `http://<your-ip>:3000`.
 
 Environment: `PORT` (3000), `HOST`, `BASE_PATH` (e.g. `/dig`), `DIG_SPEED` (1, which only fast-forwards travel), `DATA_DIR` (`./data`).
 
-**Deploying** (commanderstitch.com/dig): see [DEPLOY.md](DEPLOY.md). It covers the Dockerfile, `docker-compose.yml`, a systemd unit and the nginx/Apache configs in `deploy/`.
+**Deploying** (commanderstitch.com/dig): see [DEPLOY.md](DEPLOY.md). Every push to `main` runs the tests and uploads to cPanel over FTP.
 
-## How the persistent world works
+## How the persistent world works (online ships)
 
 | Concept | Behavior |
 |---|---|
@@ -42,28 +47,43 @@ Environment: `PORT` (3000), `HOST`, `BASE_PATH` (e.g. `/dig`), `DIG_SPEED` (1, w
 server/
   index.js         entry point (env config, graceful save on shutdown)
   game-server.js   HTTP static files, WebSocket protocol, lobby, tick/broadcast/save loops
-  world.js         World model: crew, run state, simulation tick, host actions, snapshots
+  world.js         World model for online ships (placeholder loop)
   store.js         JSON-file persistence (atomic writes)
   ws.js            minimal zero-dependency WebSocket server
 shared/
   constants.js     layers, limits, statuses (imported by server AND browser)
+  sim/             THE GAME — pure ES modules, no DOM, no Node APIs (runs in the browser and on the server)
+    data.js        every number and every word: classes, rooms, weapons, abilities, upgrades, recipes, research, story text
+    game.js        the Game: levels, descent, routes, dockings, ship-vs-ship duel, ports, shop, recruiting, story, endings
+    grid.js        tile world, rooms, doors, line of sight, Dijkstra flow fields
+    combat.js      movement/collision, damage, projectiles, explosions, destructible tiles & systems, pickups, bubbles
+    classes.js     each class's kit: primary fire, abilities, passives, E-interactions, repairs
+    ai.js          bot crew (each plays its class's job), boarders, defenders, creatures, captured monsters, gadgets
+    pilot.js       the descent: steering through the tunnel, obstacles, gem veins, fuel, auto-feeders
+    roster.js      the per-run random enemy roster and per-level enemy mix
+    rng.js, util.js
 client/
   index.html, style.css
-  main.js          screens: name → lobby → ship; host panel
+  main.js          screens: name → lobby → ship (online) or → solo game
   net.js           WebSocket client, auto-reconnect, saved identity
-  render.js        canvas cross-section + depth minimap (placeholder art)
+  render.js        online-ship canvas (placeholder art)
+  game/            the solo game client
+    app.js         splash, class select, game loop, input, sound hookup, high scores
+    render.js      canvas renderer: ships, doors, breaches, fog of war, effects, pilot's tunnel view
+    sprites.js     procedural art: a fox for every class, random enemy bodies, stations
+    ui.js          HUD, ability bar, crew list, duel bars, route picker, stories, port shop, station panels
+    audio.js       synthesized sound effects and music (no audio files)
+    game.css
 test/              node:test unit + end-to-end tests
 ```
 
-## Wire protocol (JSON over `/ws`)
+## Wire protocol (JSON over `/ws`) — online ships
 
 Client → server: `hello {name, playerId?, token?}`, `create {name, maxPlayers, allowPlayWithoutHost}`, `join {worldId}`, `leave`, `repair`, `chat {text}`, and host-only `restart`, `shelve`, `destroy`.
 
 Server → client: `welcome {playerId, token, name}`, `lobby {worlds[]}`, `world {world}` (full snapshot, 5×/s), `left {reason}`, `error {message}`.
 
 ## Where to build next
-- **Gameplay**: replace `World.tick` hazards with real enemies, turrets and stations. Snapshots are full-state for now, so switch to deltas once state gets large.
-- **Story**: `LAYERS` in `shared/constants.js` are the chapters. Hook beats onto layer transitions (`event('story', …)`).
-- **Upgrades between runs**: add a `meta` block to the world save next to `history`.
-- **Private ships / invite codes**: add a `code` to the world and check it in the `join` handler.
-- **Hosting**: put it behind any reverse proxy that supports WebSockets. For many servers, swap `Store` for a database.
+- **Multiplayer for the full game**: run `shared/sim/Game` per world on the server, take `setInput`/`command` from each connection (one crew member per player; extra players start as engineers, bots fill the rest), and broadcast snapshots ~15×/s (send the tile grid only when `grid.version` changes). The client renderer already draws straight from a Game-shaped object.
+- **Saves for solo runs** (continue later): serialize `Game` at ports.
+- **Art**: everything is procedural canvas drawing in `client/game/sprites.js`; swap in sprites any time.
