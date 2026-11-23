@@ -23,6 +23,24 @@ export function weaponOf(c) {
 }
 
 // ---------------------------------------------------------------------------
+/** Walking speed (px/s) right now. Also used by online play to predict your own movement in the browser. */
+export function crewSpeed(g, c, inp) {
+  let sp = CLASSES[c.cls].speed * (1 + stat(c, 'speed')) * (g.cleanBuff ? 1.1 : 1);
+  if (c.cls === 'guard') sp *= 1 + 0.08 * c.upgrades[2];
+  if (c.cls === 'dog') sp *= 1 + 0.1 * c.upgrades[2];
+  if (c.cloaked) sp *= 0.55 + 0.08 * c.upgrades[0];
+  if (c.chainsawOn) sp *= 0.6;
+  if (c.slowT > 0) sp *= 0.5;
+  if (c.cls === 'farmer' && c.carrying) sp *= 1 - 0.06 * c.carrying;
+  if (inp.shift && !c.cloaked) sp *= 1.25;
+  return sp;
+}
+
+/** Can this crew member walk freely right now (not dashing, stunned, riding a bubble, down or at the helm)? */
+export function walksFreely(g, c) {
+  return c.alive && !(c.stunT > 0) && !(c.dashT > 0) && !c.riding && !(c.atHelm && g.phase === 'descent');
+}
+
 export function crewTick(g, c, inp, dt) {
   const def = CLASSES[c.cls];
   for (const k in c.cd) if (c.cd[k] > 0) c.cd[k] -= dt * (1 + stat(c, 'cd'));
@@ -38,14 +56,8 @@ export function crewTick(g, c, inp, dt) {
   if (c.stunT > 0) { c.stunT -= dt; return; }
 
   // ---- movement
-  let sp = def.speed * (1 + stat(c, 'speed')) * (g.cleanBuff ? 1.1 : 1);
-  if (c.cls === 'guard') sp *= 1 + 0.08 * c.upgrades[2];
-  if (c.cls === 'dog') sp *= 1 + 0.1 * c.upgrades[2];
-  if (c.cloaked) sp *= 0.55 + 0.08 * c.upgrades[0];
-  if (c.chainsawOn) sp *= 0.6;
-  if (c.slowT > 0) { c.slowT -= dt; sp *= 0.5; }
-  if (c.cls === 'farmer' && c.carrying) sp *= 1 - 0.06 * c.carrying;
-  if (inp.shift && !c.cloaked) sp *= 1.25;
+  const sp = crewSpeed(g, c, inp);
+  if (c.slowT > 0) c.slowT -= dt;
 
   if (c.dashT > 0) { // lunges, pounces, rolls
     c.dashT -= dt;

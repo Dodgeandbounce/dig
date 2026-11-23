@@ -5,6 +5,9 @@ import { Game } from '../shared/sim/game.js';
 import { CLASSES, CLASS_ORDER, STARTER_CLASSES, SPLASH } from '../shared/sim/data.js';
 import { decodeState, decodeGrid, applyGridDiff, unpackState } from '../shared/sim/netcode.js';
 import { speedFactor } from '../shared/sim/pilot.js';
+import { crewSpeed, walksFreely } from '../shared/sim/classes.js';
+import { moveActor } from '../shared/sim/combat.js';
+import { norm } from '../shared/sim/util.js';
 import { createRenderer } from './render.js';
 import { createUI } from './ui.js';
 import { initAudio, sfx, setIntensity, toggleMute } from './audio.js';
@@ -131,7 +134,26 @@ function onlineSession(net, playerId) {
   let fxq = [];
   let recvAt = 0, gap = 100;          // ms between the last two frames (for smoothing)
   let shown = new Map();              // entity id -> position currently on screen
-  let sendT = 0, pendingPress = {}, lastSent = '';
+  let sendT = 0, pendingPress = {};
+  // Prediction: your own crew member moves the moment you press a key. Each input message has a
+  // sequence number; the server says which one it last got (ack) and how long it has applied it
+  // (ackT). On every snapshot we start from the server's position and replay what it hasn't seen.
+  let seq = 0;
+  let hist = [];                      // { seq, t, mx, my, shift } per frame, oldest first
+  let pred = null;                    // predicted position, or null when not predicting
+  let predId = null;
+  const err = { x: 0, y: 0 };         // leftover correction, faded out so fixes don't jump
+  const walk = (gg, c, p, h, t) => {
+    const n = norm(h.mx || 0, h.my || 0);
+    if (!n.l || t <= 0) return;
+    const sp = crewSpeed(gg, c, h);
+    const a = { x: p.x, y: p.y, r: c.r, ghostDoors: c.ghostDoors };
+    moveActor(gg, a, n.x * sp * t, n.y * sp * t);
+    p.x = a.x; p.y = a.y;
+  };
+  const canPredict = (gg, c) => c && walksFreely(gg, c) && !gg.storyOpen && gg.phase !== 'gameover' && gg.phase !== 'ending';
+  const stopPredicting = () => { pred = null; predId = null; hist = []; err.x = err.y = 0; };
+  const sendInput = (out) => { out.seq = ++seq; net.sendVolatile({ t: 'in', i: out }); };
   const S = {
     online: true,
     world: null,
@@ -143,8 +165,7 @@ function onlineSession(net, playerId) {
     release() {
       const me = S.me();
       const out = { mx: 0, my: 0, ax: me ? me.x + 1 : 0, ay: me ? me.y : 0, fire: false, rmb: false, e: false, shift: false, pressed: {} };
-      net.sendVolatile({ t: 'in', i: out });
-      lastSent = JSON.stringify(out);
+      sendInput(out);
       pendingPress = {};
     },
     receive(msg) {
@@ -175,6 +196,26 @@ function onlineSession(net, playerId) {
       }
       // Speech bubbles for monsters (Joe) are client-side only.
       if (g) for (const m of next.mobs) { const old = g.mobs.find((x) => x.id === m.id); if (old?.sayT > 0) { m.say = old.say; m.sayT = old.sayT; } }
+      // Your own crew member: server position + the inputs it hasn't applied yet.
+      const mine = next.crew.find((c) => c.id === seats[playerId]);
+      if (pred && mine && mine.id === predId && canPredict(next, mine)) {
+        const sx = mine._tx, sy = mine._ty;           // the server's position (before smoothing)
+        hist = hist.filter((h) => h.seq > (mine.ack || 0));
+        const p = { x: sx, y: sy };
+        let skip = mine.ackT || 0;                     // already applied by the server
+        for (const h of hist) {
+          let t = h.t;
+          if (skip > 0) { const s = Math.min(skip, t); skip -= s; t -= s; }
+          walk(next, mine, p, h, t);
+        }
+        const shownX = pred.x + err.x, shownY = pred.y + err.y;
+        if (Math.hypot(shownX - p.x, shownY - p.y) > 128) { err.x = err.y = 0; }  // teleported (vent, respawn): jump
+        else { err.x = shownX - p.x; err.y = shownY - p.y; }
+        pred = p;
+        mine.x = pred.x + err.x; mine.y = pred.y + err.y;
+        mine._tx = null;                               // not smoothed like the others
+        mine._sx = sx; mine._sy = sy;                  // (for debugging: where the server has us)
+      } else if (pred) stopPredicting();
       g = next;
       fxq.push(...(msg.fx || []));
     },
@@ -195,15 +236,28 @@ function onlineSession(net, playerId) {
         for (const o of d.obstacles) { o.z = o._z - el * 0.55 * spd; o.x = o._x + (o.vx || 0) * el; o.y = o._y + (o.vy || 0) * el; }
         d.steer.x = d._sf.x + (d._st.x - d._sf.x) * k; d.steer.y = d._sf.y + (d._st.y - d._sf.y) * k;
       }
-      // controls: ~20×/s, and right away when an ability key was pressed
+      // your own crew member moves right away
+      const me = S.me();
+      if (canPredict(g, me)) {
+        if (!pred || predId !== me.id) { pred = { x: me.x, y: me.y }; predId = me.id; hist = []; err.x = err.y = 0; }
+        const h = { seq: seq + 1, t: dt, mx: inp.mx, my: inp.my, shift: inp.shift };  // goes out with the next message
+        hist.push(h);
+        if (hist.length > 240) hist.shift();
+        walk(g, me, pred, h, dt);
+        const fade = Math.exp(-dt * 10);
+        err.x *= fade; err.y *= fade;
+        me.x = pred.x + err.x; me.y = pred.y + err.y;
+        me.facing = Math.atan2(inp.ay - me.y, inp.ax - me.x);
+        me.moving = !!(inp.mx || inp.my);
+        me._tx = null;
+        shown.set(me.id, { x: me.x, y: me.y });
+      } else if (pred) stopPredicting();
+      // controls: ~20×/s (always, so the server's ack keeps up), and right away when an ability key was pressed
       Object.assign(pendingPress, inp.pressed);
       sendT -= dt * 1000;
-      const hasPress = Object.keys(pendingPress).length > 0;
-      if (sendT <= 0 || hasPress) {
-        const out = { ...inp, pressed: pendingPress };
-        const json = JSON.stringify(out);
-        if (json !== lastSent || sendT <= -1000) { net.sendVolatile({ t: 'in', i: out }); lastSent = json; sendT = INPUT_MS; }
-        else sendT = INPUT_MS;
+      if (sendT <= 0 || Object.keys(pendingPress).length > 0) {
+        sendInput({ ...inp, pressed: pendingPress });
+        sendT = INPUT_MS;
         pendingPress = {};
       }
     },

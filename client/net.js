@@ -7,8 +7,16 @@ export function loadIdentity() {
 }
 export function saveIdentity(id) { localStorage.setItem(KEY, JSON.stringify(id)); }
 
+// Testing aid: ?lag=150 adds 150 ms of round trip (half each way) to see how online play feels far away.
+const LAG = Math.max(0, Math.min(2000, Number(new URLSearchParams(location.search).get('lag')) || 0));
+
 export class Net extends EventTarget {
   constructor() { super(); this.ws = null; this.retry = 500; this.queue = []; }
+
+  #raw(json) {
+    if (LAG) { const ws = this.ws; setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(json); }, LAG / 2); }
+    else this.ws.send(json);
+  }
 
   connect() {
     // Relative to the page, so it works at "/" and under a prefix like "/dig/".
@@ -24,8 +32,8 @@ export class Net extends EventTarget {
       for (const m of this.queue.splice(0)) this.send(m);
     };
     this.ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      this.dispatchEvent(new CustomEvent(msg.t, { detail: msg }));
+      const deliver = () => { const msg = JSON.parse(e.data); this.dispatchEvent(new CustomEvent(msg.t, { detail: msg })); };
+      if (LAG) setTimeout(deliver, LAG / 2); else deliver();
     };
     this.ws.onclose = () => {
       this.dispatchEvent(new Event('close'));
@@ -35,13 +43,13 @@ export class Net extends EventTarget {
   }
 
   send(msg) {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    if (this.ws?.readyState === WebSocket.OPEN) this.#raw(JSON.stringify(msg));
     else this.queue.push(msg);
   }
 
   /** For messages that are useless if late (controls): send now or drop, never queue. */
   sendVolatile(msg) {
-    if (this.ws?.readyState === WebSocket.OPEN && this.ws.bufferedAmount < 64 * 1024) this.ws.send(JSON.stringify(msg));
+    if (this.ws?.readyState === WebSocket.OPEN && this.ws.bufferedAmount < 64 * 1024) this.#raw(JSON.stringify(msg));
   }
 
   on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }

@@ -1,11 +1,11 @@
-# Do I Go?
+﻿# Do I Go?
 
-A 1–17 player co-op defense game about racing a drill-ship to the center of the earth (6,371 km down). Zap is coming of age. His brother Joe went first and left notes. Do I go?
+A 1â€“17 player co-op defense game about racing a drill-ship to the center of the earth (6,371 km down). Zap is coming of age. His brother Joe went first and left notes. Do I go?
 
 There are two ways to play right now:
 
-- **▶ Play solo** — the full game. You play one crew member; bots play everyone else. 17 classes, a ship that keeps growing room by room, enemy dig-ships that dock and board you, creatures, ports, Joe's notes, the transponder, the brother path, and the thing at the core. It runs entirely in the browser (no server needed). See [GAME.md](GAME.md) for how it all works.
-- **Online ships (lobby)** — the same full game, together. The server runs it; every player who boards takes over one crew member (bots play the rest, and take back over when you leave). Ships are saved mid-run and survive server restarts.
+- **â–¶ Play solo** â€” the full game. You play one crew member; bots play everyone else. 17 classes, a ship that keeps growing room by room, enemy dig-ships that dock and board you, creatures, ports, Joe's notes, the transponder, the brother path, and the thing at the core. It runs entirely in the browser (no server needed). See [GAME.md](GAME.md) for how it all works.
+- **Online ships (lobby)** â€” the same full game, together. The server runs it; every player who boards takes over one crew member (bots play the rest, and take back over when you leave). Ships are saved mid-run and survive server restarts.
 
 ## Run it
 
@@ -17,7 +17,7 @@ npm run dev          # drill 40x faster and auto-restart on file changes
 npm test             # unit + end-to-end tests (incl. a headless playthrough of the game)
 ```
 
-Click **▶ Play solo**, or open `http://localhost:3000/?solo=engineer` (any class id) to jump straight in.
+Click **â–¶ Play solo**, or open `http://localhost:3000/?solo=engineer` (any class id) to jump straight in.
 
 Open the URL in several browser windows (or incognito windows) to play online ships as several players. Other people on your network can join at `http://<your-ip>:3000`.
 
@@ -31,11 +31,11 @@ Environment: `PORT` (3000), `HOST`, `BASE_PATH` (e.g. `/dig`), `DIG_SPEED` (1, w
 |---|---|
 | **Ship / world** | One saved game. Ship info is `data/worlds/<id>.json` (saved every 2 s while it changes, on every join/leave, and on shutdown); the running game itself is `data/worlds/<id>.game` (saved every 10 s, on every leave and on shutdown). Writes are atomic. A hard kill can lose up to 10 s of play. |
 | **Host** | Whoever commissioned the ship, starting as Zap the Pilot or Angie the Engineer. Host status is tied to a player identity (id + secret token in the browser's localStorage), so the host is still the host after closing the browser or restarting the server. |
-| **Drop in** | Anyone can board any ship from the lobby until it reaches its crew size (1–17). You take over a crew member: the one you had last time if it's free, otherwise any bot, otherwise a new engineer signs on. Reloading the page or a dropped connection puts you straight back on your ship, in the same crew member. |
+| **Drop in** | Anyone can board any ship from the lobby until it reaches its crew size (1â€“17). You take over a crew member: the one you had last time if it's free, otherwise any bot, otherwise a new engineer signs on. Reloading the page or a dropped connection puts you straight back on your ship, in the same crew member. |
 | **Drop out** | Closing the tab or *Leave the ship* (Esc menu) hands your crew member back to a bot. Your seat is kept for when you come back. |
 | **Ticking** | The world only advances while the host is aboard. If the host ticked *"Crew can keep drilling while I'm away"*, any crew member aboard keeps it going. With nobody aboard it is frozen, with no offline progress. Menus don't pause an online game. |
 | **Shared choices** | Anyone aboard can pick the route, press story buttons, shop, and undock. Each player spends their own crew member's money. Switching class at a port switches which crew member you control. |
-| **Win / lose** | Reach the core and beat what's there → **won**. Hull hits 0 → **lost**. Either way the ship stays in the lobby until the host restarts or destroys it. |
+| **Win / lose** | Reach the core and beat what's there â†’ **won**. Hull hits 0 â†’ **lost**. Either way the ship stays in the lobby until the host restarts or destroys it. |
 | **Chat** | Press Enter in game. |
 
 ### Host controls (Esc menu)
@@ -58,7 +58,7 @@ server/
   ws.js            minimal zero-dependency WebSocket server
 shared/
   constants.js     layers, limits, statuses (imported by server AND browser)
-  sim/             THE GAME — pure ES modules, no DOM, no Node APIs (runs in the browser and on the server)
+  sim/             THE GAME â€” pure ES modules, no DOM, no Node APIs (runs in the browser and on the server)
     data.js        every number and every word: classes, rooms, weapons, abilities, upgrades, recipes, research, story text
     game.js        the Game: levels, descent, routes, dockings, ship-vs-ship duel, ports, shop, recruiting, story, endings
     grid.js        tile world, rooms, doors, line of sight, Dijkstra flow fields
@@ -71,7 +71,7 @@ shared/
     rng.js, util.js
 client/
   index.html, style.css
-  main.js          screens: name → lobby → game (online ship or solo)
+  main.js          screens: name â†’ lobby â†’ game (online ship or solo)
   net.js           WebSocket client, auto-reconnect, saved identity
   game/            the game client (solo and online)
     app.js         splash, class select, solo/online sessions, game loop, input, smoothing, sound, high scores
@@ -83,14 +83,13 @@ client/
 test/              node:test unit + end-to-end tests
 ```
 
-## Wire protocol (JSON over `/ws`) — online ships
+## Wire protocol (JSON over `/ws`) â€” online ships
 
-Client → server: `hello {name, playerId?, token?}`, `create {name, maxPlayers, allowPlayWithoutHost, playerClass}`, `join {worldId}`, `leave`, `in {i: {mx, my, ax, ay, fire, rmb, e, shift, pressed}}` (controls), `cmd {c}` (any Game command except `pause`), `chat {text}`, and host-only `restart`, `shelve`, `destroy`.
+Client â†’ server: `hello {name, playerId?, token?}`, `create {name, maxPlayers, allowPlayWithoutHost, playerClass}`, `join {worldId}`, `leave`, `in {i: {mx, my, ax, ay, fire, rmb, e, shift, pressed}}` (controls), `cmd {c}` (any Game command except `pause`), `chat {text}`, and host-only `restart`, `shelve`, `destroy`.
 
-Server → client: `welcome {playerId, token, name}`, `lobby {worlds[]}`, `world {world}` (ship info, when it changes), `g {s, keep?, grid?, d?, dr?, dd?, v?, seats, fx, join?}` (game frames, 10×/s), `left {reason}`, `error {message}`.
+Server â†’ client: `welcome {playerId, token, name}`, `lobby {worlds[]}`, `world {world}` (ship info, when it changes), `g {s, keep?, grid?, d?, dr?, dd?, v?, seats, fx, join?}` (game frames, 10Ã—/s), `left {reason}`, `error {message}`.
 
 ## Where to build next
-- **Snappier controls online**: predict your own movement in the browser instead of waiting for the server's snapshot.
 - **Smaller frames**: send only the entity fields that changed (positions, HP) instead of whole entities.
 - **Pick your class when you board** (right now you get a free crew member and can switch at ports).
 - **Saves for solo runs** (continue later): `server/persist.js` already does this for online ships.

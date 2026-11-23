@@ -61,6 +61,14 @@ test('inputs move your crew member; commands are checked', () => {
   const x0 = c.x;
   for (let i = 0; i < 20; i++) { w.input('h', { mx: 1, my: 0, ax: c.x + 100, ay: c.y, pressed: { nope: true, q: true } }); w.tick(50); }
   assert.notEqual(Math.round(c.x), Math.round(x0));
+  // prediction bookkeeping: which input the server has, and for how long it has applied it
+  w.input('h', { mx: 0, my: 0, ax: 0, ay: 0, seq: 41 });
+  assert.equal(c.ack, 41);
+  assert.equal(c.ackT, 0);
+  w.tick(100);
+  assert.ok(c.ackT > 0.06 && c.ackT < 0.14, `ackT ${c.ackT}`);
+  w.input('h', { mx: 0, my: 0, ax: 0, ay: 0, seq: 'x' });
+  assert.equal(c.ack, 41);
   assert.equal(w.command('h', { t: 'pause', on: true }).error, 'Unknown command');
   assert.equal(w.command('h', { t: 'constructor' }).error, 'Unknown command');
   assert.equal(w.command('nobody', { t: 'storyOk' }).error, 'Bad command');

@@ -170,8 +170,11 @@ export class World {
     const g = this.game;
     this.acc = Math.min(this.acc + dtMs / 1000, STEP * 8);
     while (this.acc >= STEP) {
+      const t0 = g.time;
       g.update(STEP);
       this.acc -= STEP;
+      // how long each player's latest input has been applied (for prediction in their browser)
+      if (g.time > t0) for (const c of g.crew) if (c.human) c.ackT = (c.ackT || 0) + STEP;
       for (const e of g.drainFx()) this.#onFx(e);
     }
     this.run.elapsedMs += dtMs;
@@ -222,6 +225,8 @@ export class World {
     const num = (v, lim) => (Number.isFinite(v) ? Math.max(-lim, Math.min(lim, v)) : 0);
     const pressed = {};
     if (raw.pressed && typeof raw.pressed === 'object') for (const k of PRESS_KEYS) if (raw.pressed[k]) pressed[k] = true;
+    // The last input this crew member got; the player's browser replays anything newer on top of our position.
+    if (Number.isSafeInteger(raw.seq)) { c.ack = raw.seq; c.ackT = 0; }
     this.game.setInput(c.id, {
       mx: Math.sign(num(raw.mx, 1)), my: Math.sign(num(raw.my, 1)),
       ax: num(raw.ax, 1e5), ay: num(raw.ay, 1e5),
