@@ -1,0 +1,21 @@
+name: Inspect FTP layout (diagnostic)
+on: workflow_dispatch
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      S: ${{ secrets.FTP_SERVER }}
+      U: ${{ secrets.FTP_USERNAME }}
+      P: ${{ secrets.FTP_PASSWORD }}
+      D: ${{ secrets.FTP_SERVER_DIR }}
+    steps:
+      - name: List FTP home, the deploy dir, and likely app folders
+        run: |
+          ls_ftp() { echo "=== $1"; curl -s --ssl-reqd --max-time 20 --list-only --user "$U:$P" "ftp://$S/$1" || echo "(not found)"; }
+          echo "FTP_SERVER_DIR is: '$D'"
+          ls_ftp ""
+          ls_ftp "$D"
+          ls_ftp "dig-app/"
+          ls_ftp "../"
+          ls_ftp "../dig-app/"
+          ls_ftp "public_html/"
