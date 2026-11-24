@@ -1,7 +1,7 @@
 import { Net, loadIdentity, saveIdentity } from './net.js';
 import { launchSolo, launchOnline } from './game/app.js';
 import { sfx, initAudio } from './game/audio.js';
-import { CLASSES } from '../shared/sim/data.js';
+import { CLASSES } from './shared/sim/data.js';   // (main.js sits at the site root, next to /shared)
 
 // menus sound like digging: hover a button for a scoop of dirt, click it for a shovel clank
 let hovered = null;
