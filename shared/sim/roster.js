@@ -20,13 +20,16 @@ export function makeRoster(rng) {
     ['shotgun', 'rifle', 'flamer', 'bomb', 'drill', 'club'],
     ['rifle', 'flamer', 'bomb', 'shotgun', 'club', 'drill'],
   ];
+  // Steep scaling: shallow ones are pushovers, core ones are brutal. There are lots of them, so each
+  // one is a bit squishier than it would be alone. Every type rolls its own stats.
+  const TIER_HP = [0.55, 1.0, 1.75, 2.8, 4.2];
+  const TIER_DMG = [0.55, 0.9, 1.35, 1.9, 2.6];
   for (let tier = 0; tier < 5; tier++) {
     const weapons = rng.shuffle([...weaponsByTier[tier]]);
     for (let k = 0; k < 4; k++) {
       const race = rng.pick(RACES);
       const build = rng.pick(BUILDS);
       const weapon = ENEMY_WEAPONS.find((w) => w.id === weapons[k % weapons.length]);
-      const scale = 1 + tier * 0.55;
       roster.push({
         idx: roster.length,
         name: name(),
@@ -34,9 +37,9 @@ export function makeRoster(rng) {
         race: race.id, body: race.body, color: jitterColor(race.color, rng), eye: race.eye,
         build: build.id,
         size: build.size * rng.range(0.9, 1.12), // random heights
-        hp: Math.round((26 + rng.int(0, 14)) * build.hp * scale),
-        speed: Math.round(95 * build.speed * rng.range(0.9, 1.15)),
-        dmgMul: build.dmg * (1 + tier * 0.35) * rng.range(0.9, 1.1),
+        hp: Math.round((22 + rng.int(0, 14)) * build.hp * TIER_HP[tier] * rng.range(0.8, 1.25)),
+        speed: Math.round(95 * build.speed * rng.range(0.88, 1.18) * (1 + tier * 0.04)),
+        dmgMul: build.dmg * TIER_DMG[tier] * rng.range(0.8, 1.25),
         weapon: weapon.id,
         role: weapon.role,
         armor: tier >= 3 ? rng.range(0, 0.25) : 0,
@@ -71,7 +74,7 @@ function jitterColor(hex, rng) {
 
 /** Tier for a level (1..12) and path. */
 export function tierFor(level, path) {
-  return Math.min(4, Math.floor((level - 1) / 2.6 + (path === 'brother' ? 0.5 : 0)));
+  return Math.min(4, Math.floor((level - 1) / 6.2 + (path === 'brother' ? 0.5 : 0)));
 }
 
 /** Pick the 3 enemy types (with percentages) that will show up this level. */

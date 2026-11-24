@@ -6,7 +6,7 @@ import { drawCrew, drawMob, drawStation, shade, roundRect } from './sprites.js';
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
-  const cam = { x: 0, y: 0, zoom: 1.55, shake: 0, overview: false };
+  const cam = { x: 0, y: 0, zoom: 1.25, shake: 0, overview: false };
   const parts = [];   // particles
   const texts = [];   // floating numbers / words
   const ripples = []; // dog sense
@@ -15,8 +15,9 @@ export function createRenderer(canvas) {
   let t = 0;
   let W = 0, H = 0, dpr = 1;
   const seen = new Map(); // room index -> last time visible (fades fog)
-  const dirt = makeDirtPattern(ctx);
-  let scroll = 0;
+  const dirts = [0, 1, 2, 3, 4].map((tier) => makeDirtPattern(ctx, tier));
+  const scroll = { x: 0, y: 0 };
+  let heading = Math.PI / 4;   // the dirt streams past diagonally: we're digging down and to the right
 
   function resize() {
     dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -64,6 +65,9 @@ export function createRenderer(canvas) {
       case 'respawn': parts.push({ ring: true, x: e.x, y: e.y, r: 30, R: 4, life: 0.5, max: 0.5, color: '124,196,106' }); break;
       case 'phase': parts.push({ ring: true, x: e.x, y: e.y, r: 4, R: 30, life: 0.3, max: 0.3, color: '160,160,255' }); break;
       case 'down': texts.push(txt(e.x, e.y - 20, 'DOWN', '#ff6050', 1.5, 14)); break;
+      case 'spray': for (let k = 0; k < 4; k++) { const f = R(); parts.push(p(e.x + (e.x2 - e.x) * f, e.y + (e.y2 - e.y) * f, (R() - .5) * 60, (R() - .5) * 60, 0.45, R() < .5 ? '#e8f4ff' : '#b0d8f0', 4 + R() * 4)); } break;
+      case 'fire': cam.shake = Math.min(10, cam.shake + 3); break;
+      case 'docked': cam.shake = Math.min(18, cam.shake + 10); flash = 0.35; flashColor = '255,120,60'; texts.push(txt(e.x, e.y - 30, 'DOCKED!', '#ff6a3a', 1.8, 16)); break;
     }
   }
   const p = (x, y, vx, vy, life, color, size, debris) => ({ x, y, vx, vy, life, max: life, color, size, debris });
@@ -80,9 +84,10 @@ export function createRenderer(canvas) {
     const target = view.focus || me;
     let zoom = cam.zoom;
     if (cam.overview) {
-      const ours = g.rooms.filter((r) => r.owner === 'us' || g.enemyShip);
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (const r of g.rooms) { x0 = Math.min(x0, r.x0); y0 = Math.min(y0, r.y0); x1 = Math.max(x1, r.x0 + SLOT_W); y1 = Math.max(y1, r.y0 + SLOT_H); }
+      if (g.box) { x0 = g.box.x0; y0 = g.box.y0; x1 = g.box.x1; y1 = g.box.y1; }
+      for (const r of g.rooms) { if (r.gone) continue; x0 = Math.min(x0, r.x0); y0 = Math.min(y0, r.y0); x1 = Math.max(x1, r.x0 + SLOT_W); y1 = Math.max(y1, r.y0 + SLOT_H); }
+      for (const es of g.enemyShips || []) if (!es.gone && es.rect) { const R = es.rect; x0 = Math.min(x0, R.x0); y0 = Math.min(y0, R.y0); x1 = Math.max(x1, R.x0 + R.w); y1 = Math.max(y1, R.y0 + R.h); }
       zoom = Math.min(W / dpr / ((x1 - x0 + 2) * TILE), H / dpr / ((y1 - y0 + 2) * TILE));
       cam.x += (((x0 + x1) / 2) * TILE - cam.x) * Math.min(1, dt * 6);
       cam.y += (((y0 + y1) / 2) * TILE - cam.y) * Math.min(1, dt * 6);
@@ -101,20 +106,34 @@ export function createRenderer(canvas) {
     const vx0 = cam.x - W / 2 / z - TILE, vy0 = cam.y - H / 2 / z - TILE;
     const vx1 = cam.x + W / 2 / z + TILE, vy1 = cam.y + H / 2 / z + TILE;
 
-    // dirt
+    // dirt: streams past diagonally (we're heading down and to the right), banking when the tunnel turns
     const moving = g.phase === 'descent' && !g.descent?.stranded;
-    scroll += dt * (moving ? 260 * (g.descent?.boost ? 1.8 : 1) : 0);
+    const want = Math.PI / 4 + (g.descent?.bank || 0) + (g.descent?.steer?.x || 0) * 0.25;
+    heading += (want - heading) * Math.min(1, dt * 1.5);
+    const spd = moving ? 300 * (g.descent?.boost ? 1.8 : 1) : 0;
+    const dirX = Math.cos(heading), dirY = Math.sin(heading);
+    scroll.x += dirX * spd * dt; scroll.y += dirY * spd * dt;
+    const dirt = dirts[Math.min(4, g.tier || 0)];
     ctxs.save();
     ctxs.fillStyle = dirt.pattern;
-    ctxs.translate(-scroll, 0);
-    ctxs.fillRect(vx0 + scroll, vy0, vx1 - vx0, vy1 - vy0);
+    ctxs.translate(-scroll.x, -scroll.y);
+    ctxs.fillRect(vx0 + scroll.x, vy0 + scroll.y, vx1 - vx0, vy1 - vy0);
     ctxs.restore();
     const layerTint = ['rgba(0,0,0,0)', 'rgba(120,40,10,.12)', 'rgba(160,30,10,.2)', 'rgba(220,90,10,.22)', 'rgba(255,200,60,.2)'][Math.min(4, g.tier)];
     ctxs.fillStyle = layerTint; ctxs.fillRect(vx0, vy0, vx1 - vx0, vy1 - vy0);
-    if (moving) { // speed streaks
-      ctxs.strokeStyle = 'rgba(255,220,180,.06)'; ctxs.lineWidth = 2;
-      for (let k = 0; k < 30; k++) { const yy = vy0 + ((k * 137.5) % (vy1 - vy0)); const xx = vx1 - ((t * 900 + k * 211) % (vx1 - vx0 + 400)); ctxs.beginPath(); ctxs.moveTo(xx, yy); ctxs.lineTo(xx + 80, yy); ctxs.stroke(); }
+    if (moving) { // speed streaks along the direction of travel (the world rushes up and back past us)
+      ctxs.strokeStyle = `rgba(255,220,180,${g.descent?.boost ? 0.1 : 0.06})`; ctxs.lineWidth = 2;
+      const w = vx1 - vx0 + 600, h = vy1 - vy0 + 600, L = 70 + spd * 0.15;
+      for (let k = 0; k < 40; k++) {
+        const along = ((t * spd * 3 + k * 397) % (w + h));
+        const across = (k * 137.5) % (w + h);
+        // spread the streaks over the view, moving against the heading
+        const px = vx0 - 300 + ((across * -dirY + (w + h) - along * dirX) % w + w) % w;
+        const py = vy0 - 300 + ((across * dirX + (w + h) - along * dirY) % h + h) % h;
+        ctxs.beginPath(); ctxs.moveTo(px, py); ctxs.lineTo(px + dirX * L, py + dirY * L); ctxs.stroke();
+      }
     }
+    drawApproaching(ctxs, g);
 
     // visibility
     const vis = visibleRooms(g, me);
@@ -132,7 +151,14 @@ export function createRenderer(canvas) {
       const ri = G.room[i];
       switch (tt) {
         case T.FLOOR: {
-          const room = g.rooms[ri];
+          const room = ri >= 0 ? g.rooms[ri] : null;
+          if (!room) { // the walkway around the ship: steel grating
+            ctxs.fillStyle = '#2c2a27'; ctxs.fillRect(px, py, TILE, TILE);
+            ctxs.fillStyle = '#3a3733';
+            for (let k = 2; k < TILE; k += 6) ctxs.fillRect(px + k, py + 2, 3, TILE - 4);
+            ctxs.fillStyle = 'rgba(0,0,0,.35)'; ctxs.fillRect(px, py + TILE - 2, TILE, 2);
+            break;
+          }
           const base = room ? (ROOMS[room.type]?.color || (room.owner === 'them' ? '#3a2a2a' : '#333')) : '#333';
           ctxs.fillStyle = (x + y) & 1 ? base : shade(base, 8);
           ctxs.fillRect(px, py, TILE, TILE);
@@ -151,17 +177,40 @@ export function createRenderer(canvas) {
           ctxs.fillStyle = '#6a625a'; for (let k = 0; k < 5; k++) ctxs.fillRect(px + ((k * 13 + x * 7) % 26), py + ((k * 17 + y * 5) % 26), 5, 4);
           const prog = g.rebuild?.get(i); if (prog) { ctxs.fillStyle = '#7cc46a'; ctxs.fillRect(px + 2, py + TILE - 5, (TILE - 4) * Math.min(1, prog / 60), 3); } break; }
         case T.ICE: ctxs.fillStyle = '#bfefff'; ctxs.fillRect(px + 1, py + 1, TILE - 2, TILE - 2); ctxs.fillStyle = 'rgba(255,255,255,.7)'; ctxs.fillRect(px + 4, py + 4, 8, 4); break;
+        case T.DEBRIS: { // wreckage: twisted plating and beams, blocks the way until cleared
+          const room = g.rooms[ri]; ctxs.fillStyle = room ? shade(ROOMS[room.type]?.color || '#333', -14) : '#2a2622'; ctxs.fillRect(px, py, TILE, TILE);
+          ctxs.fillStyle = '#5a5248'; ctxs.save(); ctxs.translate(px + 16, py + 16);
+          for (let k = 0; k < 4; k++) { ctxs.rotate(0.9 + ((x * 7 + y * 3 + k) % 5) * 0.4); ctxs.fillRect(-13, -3, 26, 6); }
+          ctxs.restore();
+          ctxs.fillStyle = '#7a7064'; for (let k = 0; k < 4; k++) ctxs.fillRect(px + ((k * 11 + x * 5) % 24) + 2, py + ((k * 13 + y * 7) % 24) + 2, 6, 5);
+          ctxs.strokeStyle = 'rgba(255,190,60,.7)'; ctxs.lineWidth = 1.5; ctxs.setLineDash([3, 3]); ctxs.strokeRect(px + 1.5, py + 1.5, TILE - 3, TILE - 3); ctxs.setLineDash([]);
+          const prog = g.rebuild?.get(i); if (prog) { ctxs.fillStyle = '#7cc46a'; ctxs.fillRect(px + 2, py + TILE - 5, (TILE - 4) * Math.min(1, prog / 42), 3); }
+          break; }
       }
+    }
+    // fires
+    for (const o of g.objs) {
+      if (o.kind !== 'fire' || o.x < vx0 || o.x > vx1 || o.y < vy0 || o.y > vy1) continue;
+      const f = Math.max(0.15, o.f);
+      ctxs.fillStyle = `rgba(255,90,20,${0.25 * f})`; ctxs.fillRect(o.x - 16, o.y - 16, 32, 32);
+      for (let k = 0; k < 4; k++) {
+        const ph = (t * (2.2 + k * 0.4) + o.id * 0.37 + k * 0.25) % 1;
+        const fx = o.x - 10 + k * 7 + Math.sin(t * 9 + k + o.id) * 2, fy = o.y + 10 - ph * 22 * f;
+        const r = (1 - ph) * 7 * f + 2;
+        ctxs.fillStyle = ph < 0.4 ? '#ffe070' : ph < 0.75 ? '#ff8a20' : 'rgba(120,60,40,.6)';
+        ctxs.beginPath(); ctxs.arc(fx, fy, r, 0, 7); ctxs.fill();
+      }
+      if (Math.random() < 0.08 * f) parts.push(p(o.x + (Math.random() - .5) * 20, o.y - 8, (Math.random() - .5) * 20, -40 - Math.random() * 40, 0.9, 'rgba(60,50,45,.8)', 4));
     }
 
     // rooms: labels, stations
     ctxs.textAlign = 'left'; ctxs.textBaseline = 'top';
     g.rooms.forEach((room, ri) => {
       const x = room.x0 * TILE, y = room.y0 * TILE;
-      if (x > vx1 || y > vy1 || x + SLOT_W * TILE < vx0 || y + SLOT_H * TILE < vy0) return;
+      if (room.gone || x > vx1 || y > vy1 || x + SLOT_W * TILE < vx0 || y + SLOT_H * TILE < vy0) return;
       ctxs.font = 'bold 9px system-ui';
       ctxs.fillStyle = room.owner === 'them' ? 'rgba(255,160,150,.7)' : 'rgba(255,240,220,.55)';
-      ctxs.fillText(room.name.toUpperCase(), x + TILE + 3, y + TILE + 3);
+      ctxs.fillText(room.name.toUpperCase(), x + TILE * 4 + 3, y + TILE + 3);
       if (room.sys || room.type === 'core' || room.type === 'pod') {
         const active = me && Math.hypot(me.x - room.station.x, me.y - room.station.y) < 46;
         drawStation(ctxs, room, t, active);
@@ -219,7 +268,7 @@ export function createRenderer(canvas) {
     // fog
     g.rooms.forEach((room, ri) => {
       const x = room.x0 * TILE + TILE, y = room.y0 * TILE + TILE;
-      if (x > vx1 || y > vy1 || x + SLOT_W * TILE < vx0 || y + SLOT_H * TILE < vy0) return;
+      if (room.gone || x > vx1 || y > vy1 || x + SLOT_W * TILE < vx0 || y + SLOT_H * TILE < vy0) return;
       if (vis.has(ri)) return;
       const last = seen.get(ri);
       const a = room.owner === 'them' ? 0.82 : 0.6;
@@ -290,11 +339,19 @@ export function createRenderer(canvas) {
     c.fillStyle = '#3a3632'; c.fillRect(px, py, TILE, TILE);
     if (!d) return;
     const open = d.open;
-    const col = d.sealed ? '#b03a2a' : d.reinforced > 0 ? '#5a6ad0' : d.hold === 'closed' ? '#a08030' : '#7a8088';
+    const col = d.sealed ? '#b03a2a' : d.reinforced > 0 ? '#5a6ad0' : d.hold === 'closed' ? '#a08030' : d.hold === 'open' && !d.blast ? '#5a8a5a' : d.blast ? '#6a6458' : '#7a8088';
     c.fillStyle = col;
-    const gap = open * (TILE / 2 - 2);
-    if (d.orient === 'v') { c.fillRect(px + 8, py, 16, TILE / 2 - gap); c.fillRect(px + 8, py + TILE / 2 + gap, 16, TILE / 2 - gap); }
-    else { c.fillRect(px, py + 8, TILE / 2 - gap, 16); c.fillRect(px + TILE / 2 + gap, py + 8, TILE / 2 - gap, 16); }
+    if (d.blast) {
+      // heavy blast door: slides into the wall, hazard stripes on the leading edge
+      const len = (1 - open) * TILE;
+      if (d.orient === 'v') { c.fillRect(px + 6, py, 20, len); if (len > 3) { c.fillStyle = '#e0b020'; for (let k = 0; k < 3; k++) c.fillRect(px + 6 + k * 7, py + Math.max(0, len - 5), 4, 5); } }
+      else { c.fillRect(px, py + 6, len, 20); if (len > 3) { c.fillStyle = '#e0b020'; for (let k = 0; k < 3; k++) c.fillRect(px + Math.max(0, len - 5), py + 6 + k * 7, 5, 4); } }
+      c.strokeStyle = '#2a2622'; c.lineWidth = 2; c.strokeRect(px + 1, py + 1, TILE - 2, TILE - 2);
+    } else {
+      const gap = open * (TILE / 2 - 2);
+      if (d.orient === 'v') { c.fillRect(px + 8, py, 16, TILE / 2 - gap); c.fillRect(px + 8, py + TILE / 2 + gap, 16, TILE / 2 - gap); }
+      else { c.fillRect(px, py + 8, TILE / 2 - gap, 16); c.fillRect(px + TILE / 2 + gap, py + 8, TILE / 2 - gap, 16); }
+    }
     if (d.sealed) { c.fillStyle = '#ffd040'; c.font = 'bold 10px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('⛔', px + TILE / 2, py + TILE / 2); }
     if (d.hp < d.maxHp) { dmgCracks(c, px, py, d.hp / d.maxHp); bar(c, px + 2, py - 5, TILE - 4, 3, d.hp / d.maxHp, '#e0533a'); }
   }
@@ -310,7 +367,7 @@ export function createRenderer(canvas) {
 
   function drawObj(c, o, g) {
     switch (o.kind) {
-      case 'mess': { c.fillStyle = o.sub === 'gore' ? 'rgba(110,20,20,.55)' : 'rgba(110,80,45,.75)'; for (let k = 0; k < o.amt; k++) { c.beginPath(); c.arc(o.x + Math.sin(k * 2.3 + o.id) * 9, o.y + Math.cos(k * 1.7 + o.id) * 7, 6 + (k % 3), 0, 7); c.fill(); } break; }
+      case 'mess': { c.fillStyle = o.sub === 'gore' ? 'rgba(110,20,20,.55)' : o.sub === 'ash' ? 'rgba(40,36,34,.7)' : 'rgba(110,80,45,.75)'; for (let k = 0; k < o.amt; k++) { c.beginPath(); c.arc(o.x + Math.sin(k * 2.3 + o.id) * 9, o.y + Math.cos(k * 1.7 + o.id) * 7, 6 + (k % 3), 0, 7); c.fill(); } break; }
       case 'vent': c.fillStyle = o.broken ? '#3a2020' : '#2a3a32'; c.fillRect(o.x - 9, o.y - 7, 18, 14); c.strokeStyle = '#5a7a6a'; c.lineWidth = 1; for (let k = -2; k <= 2; k++) { c.beginPath(); c.moveTo(o.x + k * 3.5, o.y - 6); c.lineTo(o.x + k * 3.5, o.y + 6); c.stroke(); } break;
       case 'turret': c.fillStyle = '#5a5040'; c.beginPath(); c.arc(o.x, o.y, 10, 0, 7); c.fill(); c.strokeStyle = '#f0a030'; c.lineWidth = 4; c.beginPath(); c.moveTo(o.x, o.y); c.lineTo(o.x + Math.cos(o.a) * 15, o.y + Math.sin(o.a) * 15); c.stroke(); c.fillStyle = '#f0a030'; c.beginPath(); c.arc(o.x, o.y, 4, 0, 7); c.fill(); break;
       case 'trap': c.strokeStyle = o.armT > 0 ? '#666' : '#60d0ff'; c.lineWidth = 2; c.beginPath(); for (let k = 0; k < 6; k++) { const a = k / 6 * 7; c.lineTo(o.x + Math.cos(a) * 9, o.y + Math.sin(a) * 9); } c.closePath(); c.stroke(); if (o.armT <= 0 && Math.sin(t * 10 + o.id) > .6) { c.fillStyle = '#80e0ff'; c.fillRect(o.x - 1, o.y - 1, 3, 3); } break;
@@ -343,6 +400,7 @@ export function createRenderer(canvas) {
         c.strokeStyle = q.team === 'crew' ? (q.kind === 'knife' ? '#ddd' : '#fff2a0') : '#ff7050'; c.lineWidth = q.kind === 'ppk' ? 2.5 : 2;
         c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(q.x - q.vx * 0.02, q.y - q.vy * 0.02); c.stroke(); break;
       case 'coin': c.fillStyle = '#f4c542'; c.beginPath(); c.arc(q.x, q.y, 3.5, 0, 7); c.fill(); break;
+      case 'scrap': c.save(); c.translate(q.x, q.y); c.rotate(t * 20 + q.id); c.fillStyle = '#b0a890'; c.fillRect(-4, -3, 8, 6); c.fillStyle = '#e0c060'; c.fillRect(-2, -1, 4, 2); c.restore(); break;
       case 'rocket': c.fillStyle = '#ddd'; c.beginPath(); c.arc(q.x, q.y, 4, 0, 7); c.fill(); parts.push(p(q.x, q.y, (Math.random() - .5) * 30, (Math.random() - .5) * 30, 0.3, '#aaa', 3)); break;
       case 'fireball': c.fillStyle = '#ff8020'; c.beginPath(); c.arc(q.x, q.y, 7, 0, 7); c.fill(); c.fillStyle = '#ffe060'; c.beginPath(); c.arc(q.x, q.y, 3.5, 0, 7); c.fill(); break;
       case 'grenade': c.fillStyle = '#4a5a2a'; c.beginPath(); c.arc(q.x, q.y, 4.5, 0, 7); c.fill(); break;
@@ -377,13 +435,43 @@ export function createRenderer(canvas) {
     if (parts.length > 1500) parts.splice(0, parts.length - 1500);
   }
 
+  // ships coming in to dock: you see them dig toward you before they latch on
+  function drawApproaching(c, g) {
+    for (const es of g.enemyShips || []) {
+      if (es.docked || es.gone || !es.rect) continue;
+      const k = 1 - Math.max(0, es.approachT) / Math.max(0.1, es.approachMax);
+      const R = es.rect, dir = es.side === 'top' ? -1 : 1;
+      const off = (1 - k) * (1 - k) * 900 * dir;
+      const x0 = R.x0 * TILE, y0 = R.y0 * TILE + off, w = R.w * TILE, h = R.h * TILE;
+      c.save();
+      c.globalAlpha = 0.35 + 0.55 * k;
+      // the drill nose pointing at us, chewing dirt
+      const nx = x0 + w / 2, ny = es.side === 'top' ? y0 + h : y0;
+      c.fillStyle = '#5a4a3a';
+      c.beginPath(); c.moveTo(nx - 60, ny); c.lineTo(nx, ny - dir * 90); c.lineTo(nx + 60, ny); c.fill();
+      c.strokeStyle = '#8a7a60'; c.lineWidth = 3;
+      for (let s = 0; s < 4; s++) { const ph = (t * 3 + s / 4) % 1; c.beginPath(); c.moveTo(nx - 60 * (1 - ph), ny - dir * 90 * ph); c.lineTo(nx + 60 * (1 - ph), ny - dir * 90 * ph); c.stroke(); }
+      // hull and rooms
+      c.fillStyle = '#3a2a26'; c.fillRect(x0, y0, w, h);
+      c.strokeStyle = '#6a4a40'; c.lineWidth = 4; c.strokeRect(x0 + 2, y0 + 2, w - 4, h - 4);
+      c.fillStyle = 'rgba(160,40,30,.35)';
+      for (let rr = 0; rr < es.rows; rr++) for (let cc = 0; cc < es.cols; cc++) c.fillRect(x0 + (cc * SLOT_W + 1) * TILE, y0 + (rr * SLOT_H + 1) * TILE, (SLOT_W - 1) * TILE, (SLOT_H - 1) * TILE);
+      // dirt spraying off it
+      if (Math.random() < 0.5) parts.push(p(nx + (Math.random() - .5) * 100, ny, (Math.random() - .5) * 200, -dir * 120 * Math.random(), 0.6, '#4a3626', 4, true));
+      c.globalAlpha = 1;
+      c.fillStyle = '#ff6a3a'; c.font = 'bold 16px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(`☠ ${es.name} — docking in ${Math.max(0, Math.ceil(es.approachT))}s`, x0 + w / 2, y0 + h / 2);
+      c.restore();
+    }
+  }
+
   function drawTracers(c, g, dt) {
-    const es = g.enemyShip;
     const ourW = g.rooms.find((r) => r.owner === 'us' && r.type === 'weapons');
     for (const tr of tracers) {
       tr.life -= dt;
-      if (!es || es.gone) continue;
-      const theirW = g.rooms.find((r) => r.owner === 'them' && r.type === 'weapons') || g.rooms[es.rooms?.[0]];
+      const es = tr.who === 'them' ? (g.enemyShips || []).find((s) => s.id === tr.from) : (tr.room != null && g.rooms[tr.room] ? (g.enemyShips || []).find((s) => s.id === g.rooms[tr.room].esId) : g.enemyShip);
+      if (!es || es.gone || !es.docked) continue;
+      const theirW = es.rooms.map((i) => g.rooms[i]).find((r) => r && r.type === 'weapons') || g.rooms[es.rooms?.[0]];
       if (!ourW || !theirW) continue;
       const k = 1 - tr.life / tr.max;
       let a = tr.who === 'us' ? ourW.station : theirW.station;
@@ -411,14 +499,27 @@ export function createRenderer(canvas) {
     const gr = c.createRadialGradient(cx - sx * 40 * dpr, cy - sy * 40 * dpr, 2, cx, cy, Math.max(W, H) * 0.7);
     gr.addColorStop(0, '#fff8e0'); gr.addColorStop(0.02, '#ffe0a0'); gr.addColorStop(0.08, tierCol[1]); gr.addColorStop(1, tierCol[0]);
     c.fillStyle = gr; c.fillRect(0, 0, W, H);
-    // rushing rings
+    // the tunnel bends: everything banks with it
+    c.save();
+    c.translate(cx, cy); c.rotate((d.bank || 0) * 0.35); c.translate(-cx, -cy);
+    // rushing rings (rougher, rockier walls deeper down)
     const spd = d.stranded ? 0 : (d.boost ? 2.2 : 1.2);
     d.ringT = ((d.ringT || 0) + dt * spd) % 1;
+    const tier = Math.min(4, g.tier);
     for (let k = 0; k < 12; k++) {
       const z = ((k / 12) - d.ringT + 1) % 1 + 0.02;
       const rr = Math.min(W, H) * 0.08 / z;
+      const ox = cx - sx * 300 * dpr * (1 - z) + (d.bank || 0) * 260 * dpr * (1 - z) * (1 - z), oy = cy - sy * 220 * dpr * (1 - z);
       c.strokeStyle = `rgba(30,15,5,${Math.min(0.5, (1 - z) * 0.6)})`; c.lineWidth = 3 * dpr / Math.max(0.3, z);
-      c.beginPath(); c.ellipse(cx - sx * 300 * dpr * (1 - z), cy - sy * 220 * dpr * (1 - z), rr * 1.3, rr, 0, 0, 7); c.stroke();
+      if (tier === 0) { c.beginPath(); c.ellipse(ox, oy, rr * 1.3, rr, 0, 0, 7); c.stroke(); }
+      else {
+        // jagged rock ring
+        const n = 14 + tier * 4, seed = k * 7.3 + Math.floor(d.ringT + k);
+        c.beginPath();
+        for (let s = 0; s <= n; s++) { const a = s / n * Math.PI * 2; const j = 1 + Math.sin(seed * 3.1 + s * 2.7) * 0.05 * tier + Math.sin(seed + s * 5.3) * 0.03 * tier; c.lineTo(ox + Math.cos(a) * rr * 1.3 * j, oy + Math.sin(a) * rr * j); }
+        c.stroke();
+        if (tier >= 3 && k % 3 === 0) { c.strokeStyle = `rgba(255,110,30,${0.25 * (1 - z)})`; c.lineWidth = 1.5 * dpr / Math.max(0.3, z); c.stroke(); }
+      }
     }
     // the light at the center never goes away
     c.fillStyle = `rgba(255,250,220,${0.8 + 0.2 * Math.sin(t * 3)})`; c.beginPath(); c.arc(cx - sx * 300 * dpr, cy - sy * 220 * dpr, 3 * dpr + g.level * 0.6 * dpr, 0, 7); c.fill();
@@ -444,6 +545,7 @@ export function createRenderer(canvas) {
       }
       c.globalAlpha = 1;
     }
+    c.restore();
     // reticle
     c.strokeStyle = 'rgba(120,230,255,.8)'; c.lineWidth = 2 * dpr;
     c.beginPath(); c.arc(cx, cy, 26 * dpr, 0, 7); c.moveTo(cx - 40 * dpr, cy); c.lineTo(cx - 14 * dpr, cy); c.moveTo(cx + 14 * dpr, cy); c.lineTo(cx + 40 * dpr, cy); c.moveTo(cx, cy - 40 * dpr); c.lineTo(cx, cy - 14 * dpr); c.moveTo(cx, cy + 14 * dpr); c.lineTo(cx, cy + 40 * dpr); c.stroke();
@@ -475,21 +577,73 @@ function speech(c, x, y, text, life) {
   c.save();
   c.globalAlpha = Math.min(1, life * 2);
   c.font = '10px system-ui';
-  const s = text.length > 60 ? text.slice(0, 58) + '…' : text;
-  const w = c.measureText(s).width + 12;
-  c.fillStyle = 'rgba(255,250,240,.95)'; roundRect(c, x - w / 2, y - 18, w, 16, 6); c.fill();
+  // wrap long lines (the good insults are long)
+  const words = String(text).split(' '), lines = [];
+  let cur = '';
+  for (const w of words) { const n = cur ? cur + ' ' + w : w; if (c.measureText(n).width > 210 && cur) { lines.push(cur); cur = w; } else cur = n; }
+  if (cur) lines.push(cur);
+  if (lines.length > 4) { lines.length = 4; lines[3] += '…'; }
+  const w = Math.max(...lines.map((l) => c.measureText(l).width)) + 12, h = lines.length * 12 + 4;
+  c.fillStyle = 'rgba(255,250,240,.95)'; roundRect(c, x - w / 2, y - h - 2, w, h, 6); c.fill();
   c.beginPath(); c.moveTo(x - 4, y - 2); c.lineTo(x, y + 4); c.lineTo(x + 4, y - 2); c.fill();
-  c.fillStyle = '#2a1a10'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(s, x, y - 10);
+  c.fillStyle = '#2a1a10'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  lines.forEach((l, k) => c.fillText(l, x, y - h + 6 + k * 12));
   c.restore();
 }
 function hexToRgb(hex) { const n = parseInt((hex || '#ffffff').slice(1), 16); return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`; }
 
-function makeDirtPattern(ctx) {
-  const cv = document.createElement('canvas'); cv.width = cv.height = 160;
+/**
+ * The dirt outside, one look per depth tier. Shallow: soft brown soil with pebbles. Deeper: darker
+ * rock, bigger boulders, cracks and strata. The core: black basalt with glowing magma veins.
+ */
+function makeDirtPattern(ctx, tier = 0) {
+  const S = 256;
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
   const c = cv.getContext('2d');
-  c.fillStyle = '#3b2a1c'; c.fillRect(0, 0, 160, 160);
-  for (let k = 0; k < 500; k++) { c.fillStyle = `rgba(${Math.random() < .5 ? '20,12,6' : '90,66,44'},${Math.random() * 0.5})`; const s = 1 + Math.random() * 4; c.fillRect(Math.random() * 160, Math.random() * 160, s, s); }
-  for (let k = 0; k < 14; k++) { c.fillStyle = `rgba(110,90,70,${0.3 + Math.random() * 0.3})`; c.beginPath(); c.arc(Math.random() * 160, Math.random() * 160, 2 + Math.random() * 5, 0, 7); c.fill(); }
-  for (let k = 0; k < 4; k++) { c.fillStyle = 'rgba(94,200,232,.5)'; c.fillRect(Math.random() * 160, Math.random() * 160, 2, 2); }
+  const base = ['#3b2a1c', '#35241a', '#2e1f18', '#281a16', '#1e1412'][tier];
+  const speck = [['20,12,6', '90,66,44'], ['18,10,6', '96,62,40'], ['14,8,6', '104,70,50'], ['10,6,6', '110,64,46'], ['8,4,4', '120,50,30']][tier];
+  c.fillStyle = base; c.fillRect(0, 0, S, S);
+  // wrap-around helper so the pattern tiles seamlessly
+  const wrap = (fn) => { for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) { c.save(); c.translate(ox, oy); fn(); c.restore(); } };
+  // strata: diagonal bands (deeper = more pronounced)
+  for (let k = 0; k < 3 + tier * 2; k++) {
+    const y = Math.random() * S, th = 6 + Math.random() * (8 + tier * 4);
+    c.fillStyle = `rgba(${Math.random() < .5 ? '0,0,0' : '120,90,60'},${0.05 + tier * 0.025})`;
+    wrap(() => { c.beginPath(); c.moveTo(0, y); c.lineTo(S, y + S * 0.35); c.lineTo(S, y + S * 0.35 + th); c.lineTo(0, y + th); c.fill(); });
+  }
+  for (let k = 0; k < 900; k++) { c.fillStyle = `rgba(${Math.random() < .5 ? speck[0] : speck[1]},${Math.random() * 0.5})`; const s = 1 + Math.random() * 4; c.fillRect(Math.random() * S, Math.random() * S, s, s); }
+  // rocks: more and bigger, more jagged, the deeper we go
+  for (let k = 0; k < 20 + tier * 8; k++) {
+    const x = Math.random() * S, y = Math.random() * S, r = 2 + Math.random() * (5 + tier * 4);
+    const n = 5 + Math.floor(Math.random() * 4), rough = 0.2 + tier * 0.1;
+    const pts = Array.from({ length: n }, (_, i) => { const a = i / n * Math.PI * 2; const v = r * (1 - rough + Math.random() * rough * 2); return [Math.cos(a) * v, Math.sin(a) * v]; });
+    const shade = 80 + Math.random() * 50 - tier * 10;
+    wrap(() => {
+      c.fillStyle = `rgba(${shade + 30},${shade + 10},${shade - 10},${0.3 + Math.random() * 0.35})`;
+      c.beginPath(); pts.forEach(([px, py], i) => (i ? c.lineTo(x + px, y + py) : c.moveTo(x + px, y + py))); c.closePath(); c.fill();
+      c.fillStyle = 'rgba(0,0,0,.25)'; c.beginPath(); c.arc(x + r * 0.25, y + r * 0.3, r * 0.5, 0, 7); c.fill();
+    });
+  }
+  // cracks (from the middle layers down)
+  c.lineCap = 'round';
+  for (let k = 0; k < tier * 6; k++) {
+    let x = Math.random() * S, y = Math.random() * S;
+    c.strokeStyle = `rgba(0,0,0,${0.3 + Math.random() * 0.3})`; c.lineWidth = 1 + Math.random() * 1.5;
+    const seg = [[x, y]];
+    for (let s = 0; s < 6; s++) { x += (Math.random() - 0.3) * 22; y += (Math.random() - 0.3) * 22; seg.push([x, y]); }
+    wrap(() => { c.beginPath(); seg.forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.stroke(); });
+  }
+  // magma veins near the core
+  if (tier >= 3) for (let k = 0; k < (tier - 2) * 4; k++) {
+    let x = Math.random() * S, y = Math.random() * S;
+    const seg = [[x, y]];
+    for (let s = 0; s < 8; s++) { x += (Math.random() - 0.4) * 26; y += (Math.random() - 0.4) * 26; seg.push([x, y]); }
+    wrap(() => {
+      c.strokeStyle = 'rgba(255,90,20,.28)'; c.lineWidth = 6; c.beginPath(); seg.forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.stroke();
+      c.strokeStyle = 'rgba(255,200,80,.55)'; c.lineWidth = 1.6; c.beginPath(); seg.forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.stroke();
+    });
+  }
+  // gem glints
+  for (let k = 0; k < 6; k++) { c.fillStyle = tier >= 3 ? 'rgba(255,120,200,.5)' : 'rgba(94,200,232,.5)'; c.fillRect(Math.random() * S, Math.random() * S, 2, 2); }
   return { pattern: ctx.createPattern(cv, 'repeat') };
 }

@@ -13,8 +13,9 @@ export class Socket extends EventEmitter {
     this.socket = socket;
     this.open = true;
     this.buffer = Buffer.alloc(0);
+    this.lastSeen = Date.now();
     socket.setNoDelay(true);
-    socket.on('data', (chunk) => this.#onData(chunk));
+    socket.on('data', (chunk) => { this.lastSeen = Date.now(); this.#onData(chunk); });
     socket.on('close', () => this.#closed());
     socket.on('error', () => this.#closed());
   }

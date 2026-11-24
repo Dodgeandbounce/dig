@@ -1,7 +1,7 @@
 // AI: bot crew (each plays its class's job), boarders, defenders, creatures, allied monsters,
 // plus the gadgets lying around (turrets, traps, mines, TNT, gas clouds, ice).
 import { T, TILE, CLASSES, ENEMY_WEAPONS, RECIPES, RESEARCH, WEAPONS } from './data.js';
-import { idx, inMap } from './grid.js';
+import { idx, inMap, roomCenter } from './grid.js';
 import {
   moveActor, damage, explode, spawnProj, fireBullet, melee, hitTile, damageSystem, roomAt, tileOf,
   hostiles, nearestHostile, stat, tileOwner,
@@ -18,13 +18,13 @@ const PASS = new Set([T.FLOOR, T.TUNNEL, T.RUBBLE]);
 export function rebuildFields(g) {
   const tilesOf = (list) => list.map((a) => idx(Math.floor(a.x / TILE), Math.floor(a.y / TILE)));
   const doorCost = (i) => { const d = g.doors[g.grid.doorAt[i]]; return !d || d.broken || d.open > 0.75 ? 1 : 7; };
-  const enemyCost = (t, i) => (PASS.has(t) ? 1 : t === T.DOOR ? doorCost(i) : t === T.ICE ? 6 : Infinity);
-  const carveCost = (t, i) => (PASS.has(t) ? 1 : t === T.DOOR ? doorCost(i) : t === T.ICE ? 6 : t === T.WALL ? 12 : Infinity);
+  const enemyCost = (t, i) => (PASS.has(t) ? 1 : t === T.DOOR ? doorCost(i) : t === T.ICE || t === T.DEBRIS ? 6 : Infinity);
+  const carveCost = (t, i) => (PASS.has(t) ? 1 : t === T.DOOR ? doorCost(i) : t === T.ICE || t === T.DEBRIS ? 6 : t === T.WALL ? 12 : Infinity);
 
   const crewTargets = [...g.crew.filter((c) => c.alive && !c.phased && c.cls !== 'urchid'), ...g.mobs.filter((m) => m.alive && m.team === 'crew')];
   const sysTiles = g.rooms.filter((r) => r.owner === 'us' && r.sys && r.sys.hp > 0).map((r) => idx(Math.floor(r.station.x / TILE), Math.floor(r.station.y / TILE) + 1));
   const vault = g.rooms.find((r) => r.owner === 'us' && r.type === 'vault');
-  const exits = g.enemyShip ? g.rooms.filter((r) => r.owner === 'them').map((r) => idx(r.x0 + 4, r.y0 + 3)) : [];
+  const exits = g.rooms.filter((r) => r.owner === 'them' && !r.gone).map((r) => { const p = roomCenter(r); return idx(Math.floor(p.x / TILE), Math.floor(p.y / TILE)); });
 
   g.fields.toCrew = g.grid.flow(tilesOf(crewTargets), enemyCost);
   g.fields.carve = g.grid.flow(tilesOf(crewTargets), carveCost);
@@ -39,7 +39,7 @@ export function rebuildFields(g) {
     const cost = crewCost(g, clear);
     g.fields[`enemies${+clear}`] = g.grid.flow(tilesOf(ours), cost);
     g.fields[`anyEnemy${+clear}`] = g.grid.flow(tilesOf(enemies), cost);
-    const theirSys = g.rooms.filter((r) => r.owner === 'them' && r.sys && r.sys.hp > 0).map((r) => idx(Math.floor(r.station.x / TILE), Math.floor(r.station.y / TILE) + 1));
+    const theirSys = g.rooms.filter((r) => r.owner === 'them' && !r.gone && r.sys && r.sys.hp > 0).map((r) => idx(Math.floor(r.station.x / TILE), Math.floor(r.station.y / TILE) + 1));
     g.fields[`theirSys${+clear}`] = theirSys.length ? g.grid.flow(theirSys, cost) : null;
     const rep = [];
     for (const r of g.rooms) if (r.owner === 'us' && r.sys && r.sys.hp < r.sys.max * 0.97) rep.push(idx(Math.floor(r.station.x / TILE), Math.floor(r.station.y / TILE) + 1));
@@ -58,6 +58,7 @@ export function crewCost(g, clear) {
   return (t, i) => {
     if (PASS.has(t)) return 1;
     if (t === T.DOOR) { const d = g.doors[g.grid.doorAt[i]]; if (!d) return Infinity; if (d.sealed && !clear) return Infinity; return 1.5; }
+    if (t === T.DEBRIS) return 8;   // slow: they stop and clear it
     return Infinity;
   };
 }
@@ -140,6 +141,27 @@ export function botInput(g, c, dt) {
       break;
     }
     case 'pickup': point = goal.p; field = fieldTo(g, idx(Math.floor(goal.p.x / TILE), Math.floor(goal.p.y / TILE)), clear); break;
+    case 'fire': {
+      const o = goal.o;
+      if (!g.objs.includes(o)) { b.t = 0; break; }
+      inp.ax = o.x; inp.ay = o.y;
+      if (dist(c, o) < 40) { point = null; inp.e = true; }
+      else { point = o; field = fieldTo(g, o.i, clear); }
+      break;
+    }
+    case 'crate': {
+      const o = goal.o;
+      if (!g.objs.includes(o)) { b.t = 0; break; }
+      if (dist(c, o) < 34) { point = null; inp.pressed.e = true; b.t = 0; }
+      else { point = o; field = fieldTo(g, idx(Math.floor(o.x / TILE), Math.floor(o.y / TILE)), true); }
+      break;
+    }
+    case 'rescue': {
+      const joe = g.joe.mob;
+      if (!joe?.alive || joe.following) { b.t = 0; break; }
+      point = joe; field = fieldTo(g, idx(Math.floor(joe.x / TILE), Math.floor(joe.y / TILE)), true);
+      break;
+    }
     case 'mess': point = goal.o; field = fieldTo(g, idx(Math.floor(goal.o.x / TILE), Math.floor(goal.o.y / TILE)), clear);
       if (dist(c, goal.o) < 30) { point = null; if (c.cls === 'farmer') { inp.pressed.e = !b.scooped; b.scooped = !b.scooped; } else inp.e = true; }
       break;
@@ -156,8 +178,13 @@ export function botInput(g, c, dt) {
     if (point && dist(c, point) < 6) { v.x = 0; v.y = 0; }
     inp.mx = v.x; inp.my = v.y;
     if (!inp.fire && (v.x || v.y)) { inp.ax = c.x + v.x * 60; inp.ay = c.y + v.y * 60; }
-    // open sealed doors on the way (clearance)
-    if (clear) { for (const d of g.doors) if (d.sealed && Math.abs((d.x + .5) * TILE - c.x) < 36 && Math.abs((d.y + .5) * TILE - c.y) < 36) { d.sealed = false; g.grid.version++; } }
+    // open sealed doors on the way (clearance) — unless a player sealed them on purpose
+    if (clear && !g.crew.some((x) => x.human)) { for (const d of g.doors) if (d.sealed && Math.abs((d.x + .5) * TILE - c.x) < 36 && Math.abs((d.y + .5) * TILE - c.y) < 36) { d.sealed = false; g.grid.version++; } }
+    // wreckage in the way: hack through it
+    {
+      const wx = Math.floor((c.x + v.x * 22) / TILE), wy = Math.floor((c.y + v.y * 22) / TILE);
+      if (g.grid.get(wx, wy) === T.DEBRIS && !inp.fire) { inp.ax = (wx + .5) * TILE; inp.ay = (wy + .5) * TILE; inp.e = true; }
+    }
     // their doors don't open for us: smash them
     const ntx = Math.floor((c.x + v.x * 22) / TILE), nty = Math.floor((c.y + v.y * 22) / TILE);
     if (g.grid.get(ntx, nty) === T.DOOR) {
@@ -191,6 +218,26 @@ function chooseGoal(g, c, home, enc, clear) {
   const enemiesAboard = g.mobs.filter((m) => m.alive && m.team === 'enemy' && onOurShip(g, m));
   const near = nearestHostile(g, c, 'crew', 6 * TILE, true);
   const sys = (type) => g.rooms.find((r) => r.owner === 'us' && r.type === type);
+
+  // Joe's pod: somebody has to go and get him (the nearest few who aren't flying the ship)
+  const joe = g.joe.mob;
+  if (joe?.alive && !joe.following && cls !== 'pilot') {
+    const rescuers = g.crew.filter((x) => x.alive && x.cls !== 'pilot' && x.cls !== 'urchid').sort((a, b) => dist2(a, joe) - dist2(b, joe)).slice(0, 3);
+    if (rescuers.includes(c)) return near && dist(c, near) < 90 ? { kind: 'fight', target: near } : { kind: 'rescue' };
+  }
+  // fires: MrClean drops everything; anyone else nearby grabs an extinguisher
+  const fire = nearestObj(g, c, (o) => o.kind === 'fire', g.objs, cls === 'mrclean' ? 60 * TILE : 9 * TILE);
+  if (fire && (!near || dist(c, near) > 140) && (cls === 'mrclean' || (!enemiesAboard.length && cls !== 'pilot') || dist(c, fire) < 4 * TILE)) return { kind: 'fire', o: fire };
+  // after a win: strip their ship
+  if (g.phase === 'aftermath' && cls !== 'pilot') {
+    const crate = nearestObj(g, c, (o) => o.kind === 'crate', g.objs, 80 * TILE);
+    if (crate && (BOARDERS.has(cls) || BRAWLERS.has(cls))) return { kind: 'crate', o: crate };
+  }
+  // a makeshift gun lying around? anyone with a melee weapon (or nothing better) takes it
+  if (!c.makeshift && cls !== 'urchid' && (!near || dist(c, near) > 160)) {
+    const gun = nearestObj(g, c, (o) => o.kind === 'gun' && o.z === 0, g.pickups, 14 * TILE);
+    if (gun && (WEAPONS[CLASSES[cls].weapon]?.kind === 'melee' || g.rng.chance(0.3))) return { kind: 'pickup', p: gun };
+  }
 
   // Pilot lives at the helm
   if (cls === 'pilot') {
@@ -243,7 +290,7 @@ function chooseGoal(g, c, home, enc, clear) {
   if (cls === 'trainer' && home && c.monsters.some((m) => m.reviveT > 0)) return { kind: 'station', room: home };
   // grab pickups
   if (!enc && g.pickups.length) {
-    const p = nearestObj(g, c, (o) => o.z === 0 && o.kind !== 'gun', g.pickups, 9 * TILE);
+    const p = nearestObj(g, c, (o) => o.z === 0 && (o.kind !== 'gun' || (!c.makeshift && cls !== 'urchid')), g.pickups, 9 * TILE);
     if (p) return { kind: 'pickup', p };
   }
   if (cls === 'missiletech') { const bay = sys('weapons'); if (bay) return { kind: 'station', room: bay }; }
@@ -308,7 +355,8 @@ function stationWork(g, c, room, inp) {
 }
 
 export function pickMissileTarget(g) {
-  const theirs = g.rooms.filter((r) => r.owner === 'them' && r.sys && r.sys.hp > 0);
+  const fighting = new Set((g.enemyShips || []).filter((s) => s.docked && !s.done).map((s) => s.id));
+  const theirs = g.rooms.filter((r) => r.owner === 'them' && !r.gone && r.sys && r.sys.hp > 0 && fighting.has(r.esId));
   const order = ['weapons', 'shield', 'bridge', 'engine', 'quarters', 'core'];
   theirs.sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
   return theirs[0] ? g.rooms.indexOf(theirs[0]) : null;
@@ -329,8 +377,9 @@ export function mobTick(g, m, dt) {
   const spd = m.speed * (m.angryT > 0 ? 2 : 1) * (m.slowT > 0 ? 0.5 : 1);
   if (m.slowT > 0) m.slowT -= dt;
 
-  if (m.team === 'crew') return allyTick(g, m, dt, spd);
+  // (Joe first: he's on our team, but he isn't one of the trainer's monsters)
   if (m.isJoe) return joeTick(g, m, dt, spd);
+  if (m.team === 'crew') return allyTick(g, m, dt, spd);
 
   if (m.fearT > 0) { // run!
     m.fearT -= dt;
@@ -398,7 +447,7 @@ export function mobTick(g, m, dt) {
   // blocked by a door / wall / ice? attack it
   const tt = g.grid.get(s.tx, s.ty);
   const blocked = g.grid.solidAt(s.tx, s.ty, g.doors);
-  if (blocked && (tt === T.DOOR || tt === T.ICE || (tt === T.WALL && m.role === 'carver'))) {
+  if (blocked && (tt === T.DOOR || tt === T.ICE || tt === T.DEBRIS || (tt === T.WALL && m.role === 'carver'))) {
     m.facing = angTo(m, s);
     if (dist(m, s) > TILE * 0.95) { const n = norm(s.x - m.x, s.y - m.y); moveActor(g, m, n.x * spd * dt, n.y * spd * dt); }
     if (m.atkT <= 0) {
@@ -491,6 +540,13 @@ function joeTick(g, m, dt, spd) {
   for (const d of g.doors) if ((d.broken || d.hp < d.maxHp) && Math.abs((d.x + .5) * TILE - m.x) < 50 && Math.abs((d.y + .5) * TILE - m.y) < 50 && d.owner === 'us') {
     if (d.broken) { const i = d.i; g.rebuild.set(i, (g.rebuild.get(i) || 0) + 120 * dt); if (g.rebuild.get(i) > 40) { g.grid.tiles[i] = T.DOOR; d.broken = false; d.hp = d.maxHp; g.orig.delete(i); g.rebuild.delete(i); g.grid.version++; } }
     else d.hp = Math.min(d.maxHp, d.hp + 80 * dt);
+  }
+  // still on the pod: head straight for our ship (through the tunnel), whoever came to get him
+  const es = g.enemyShips?.find((s) => s.kind === 'pod' && s.docked && !s.gone);
+  if (es && !onOurShip(g, m)) {
+    const f = fieldTo(g, idx(es.dock.x, es.dock.y + (es.side === 'top' ? 2 : -2)), true);
+    const s = g.grid.stepToward(f, m.x, m.y);
+    if (s) { const n = norm(s.x - m.x, s.y - m.y); moveActor(g, m, n.x * spd * dt, n.y * spd * dt); m.facing = Math.atan2(n.y, n.x); return; }
   }
   let leader = null, bd = Infinity;
   for (const c of g.crew) if (c.alive) { const d = dist2(c, m); if (d < bd) { bd = d; leader = c; } }

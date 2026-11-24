@@ -11,7 +11,17 @@ export function saveIdentity(id) { localStorage.setItem(KEY, JSON.stringify(id))
 const LAG = Math.max(0, Math.min(2000, Number(new URLSearchParams(location.search).get('lag')) || 0));
 
 export class Net extends EventTarget {
-  constructor() { super(); this.ws = null; this.retry = 500; this.queue = []; }
+  constructor() {
+    super(); this.ws = null; this.retry = 500; this.queue = [];
+    this.rtt = 0;            // round trip (ms), from the heartbeat
+    this.lastMsg = 0;
+    // Heartbeat: ping every 2s. If the server goes quiet for 6s, the connection is dead: reconnect.
+    setInterval(() => {
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      if (this.lastMsg && performance.now() - this.lastMsg > 6000) { this.ws.close(); return; }
+      this.#raw(JSON.stringify({ t: 'ping', c: performance.now() }));
+    }, 2000);
+  }
 
   #raw(json) {
     if (LAG) { const ws = this.ws; setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(json); }, LAG / 2); }
@@ -31,8 +41,14 @@ export class Net extends EventTarget {
       this.dispatchEvent(new Event('open'));
       for (const m of this.queue.splice(0)) this.send(m);
     };
+    this.ws.onopen = ((open) => () => { this.lastMsg = performance.now(); open(); })(this.ws.onopen);
     this.ws.onmessage = (e) => {
-      const deliver = () => { const msg = JSON.parse(e.data); this.dispatchEvent(new CustomEvent(msg.t, { detail: msg })); };
+      const deliver = () => {
+        this.lastMsg = performance.now();
+        const msg = JSON.parse(e.data);
+        if (msg.t === 'pong') { const r = performance.now() - msg.c; this.rtt = this.rtt ? this.rtt * 0.7 + r * 0.3 : r; return; }
+        this.dispatchEvent(new CustomEvent(msg.t, { detail: msg }));
+      };
       if (LAG) setTimeout(deliver, LAG / 2); else deliver();
     };
     this.ws.onclose = () => {

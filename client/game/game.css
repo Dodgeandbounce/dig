@@ -69,6 +69,19 @@
 .g-duel .hullb i { background: var(--danger); }
 .g-duel .ready i { background: #ff6a3a; animation: blink .5s infinite; }
 .g-duel small { color: var(--muted); }
+.g-duel .ships { display: flex; gap: .6rem; flex-wrap: wrap; max-width: 62vw; }
+.g-duel .ships .side { width: 180px; }
+.g-duel .side.beaten { opacity: .5; }
+.g-duel .side.incoming b { animation: blink .8s infinite; }
+.g-duel em.bad { color: var(--danger); font-style: normal; font-weight: 800; }
+
+.g-actions { position: absolute; left: 50%; transform: translateX(-50%); bottom: 11rem; display: flex; gap: .4rem; z-index: 5; }
+.g-root.piloting .g-actions { display: none; }
+.g-actions button { pointer-events: auto; font-size: .82rem; padding: .45rem .8rem; border-radius: 10px; background: rgba(36,24,15,.92); border: 1px solid #6a4a30; color: #f4e2c4; cursor: pointer; }
+.g-actions button:hover { background: #3a2818; }
+.g-actions .g-undock { background: #2f4a2a; border-color: #5a8a4a; font-weight: 700; }
+.g-actions .g-flee { background: #4a2420; border-color: #8a4a3a; }
+.g-actions button.hidden { display: none; }
 
 .g-me { position: absolute; left: .7rem; bottom: .7rem; width: min(520px, 46vw); background: rgba(14,9,6,.88); border: 1px solid #3a2a20;
   border-radius: 12px; padding: .55rem .7rem; font-size: .8rem; pointer-events: none; }

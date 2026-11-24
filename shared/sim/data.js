@@ -2,17 +2,22 @@
 // Pure data: shared by the browser (solo) and the server (multiplayer).
 
 export const TILE = 32;
-export const SLOT_W = 8;          // a room slot is 8x6 tiles (walls shared with neighbours)
-export const SLOT_H = 6;
-export const MAP_W = 104;         // whole world, in tiles (our ship + enemy ship + tunnel)
-export const MAP_H = 72;
+export const SLOT_W = 10;         // a room slot is 10x7 tiles (walls shared with neighbours)
+export const SLOT_H = 7;
+export const RING = 3;            // the walkway around our whole ship: 2 tiles of floor + 1 of hull
+export const MAP_W = 126;         // whole world, in tiles (our ship in the middle, enemy ships dock above and below)
+export const MAP_H = 93;
 export const SHIP_COLS = 11;      // our ship can grow to 11 x 6 rooms
 export const SHIP_ROWS = 6;
 export const SHIP_OX = 8;         // tile origin of our ship's slot (0,0)
-export const SHIP_OY = 32;
-export const ENEMY_OY = 4;        // enemy ships dock from above
+export const SHIP_OY = 25;
+export const ENEMY_OY = 2;        // highest row an enemy ship can sit at
+export const ENEMY_GAP = 5;       // dirt between a docked enemy ship and our hull (the boarding tunnel)
+export const MAX_DOCKED = 4;      // up to 4 enemy ships at once, deep down
+export const SHIP_UP_MAX = 10;    // ship upgrade levels
+export const CLASS_UP_MAX = 8;    // personal upgrade levels
 
-export const LEVELS = 12;         // descents from the surface to the core
+export const LEVELS = 30;         // descents from the surface to the core
 export const EARTH_KM = 6371;
 export const KM_PER_LEVEL = EARTH_KM / LEVELS;
 
@@ -20,8 +25,10 @@ export const SPLASH = 'another insane game by commanderstitch, right, yeah that 
 
 // ---------------------------------------------------------------------------
 // Tiles
-export const T = { VOID: 0, FLOOR: 1, WALL: 2, DOOR: 3, TUNNEL: 4, BREACH: 5, RUBBLE: 6, HULL: 7, ICE: 8 };
-export const TILE_HP = { [T.WALL]: 90, [T.HULL]: 140, [T.DOOR]: 60, [T.ICE]: 40 };
+// DEBRIS: wreckage that blocks the way until somebody clears (repairs) it.
+export const T = { VOID: 0, FLOOR: 1, WALL: 2, DOOR: 3, TUNNEL: 4, BREACH: 5, RUBBLE: 6, HULL: 7, ICE: 8, DEBRIS: 9 };
+export const TILE_HP = { [T.WALL]: 90, [T.HULL]: 140, [T.DOOR]: 60, [T.ICE]: 40, [T.DEBRIS]: 50 };
+export const BLAST_DOOR_HP = 220;
 
 // ---------------------------------------------------------------------------
 // Rooms. `cls` = the class whose job lives here. `sys` = the system the room powers.
@@ -168,6 +175,8 @@ export const CLASSES = {
   },
 };
 export const CLASS_ORDER = Object.keys(CLASSES);
+export const CREW_HP_MUL = 1.4;     // everyone is a bit tougher than the numbers above
+export const BULLET_SLOW = 0.7;     // bullets fly at 70% of their listed speed (same range): dodgeable, readable fights
 export const STARTER_CLASSES = ['pilot', 'engineer', 'urchid'];
 
 // ---------------------------------------------------------------------------
@@ -407,12 +416,164 @@ export const ENDINGS = {
 // ---------------------------------------------------------------------------
 // Urchid insults, unlocked by depth tier (0..4)
 export const INSULTS = [
-  ["You drill like my grandma. She's a rock.", 'Nice hat. Did the feeder drop it on you?', 'Is that your face or did a mole sit on you?', "Wow. Wrenching. So brave.", "I've seen faster dirt."],
-  ["You couldn't hit a cave wall from the inside.", 'Your aim is a war crime against bullets.', 'Even the feeders avoid you.', 'Bold of you to stand up while I sit down.'],
-  ['I would help, but then who would judge you?', "You're the reason the bubble shield has trust issues.", "Your cooking killed more of us than the enemies.", 'I bet you clap when the ship lands.'],
-  ['The Changed took one look at you and went back to being normal.', 'You fix doors like doors owe you money.', "If incompetence were fuel we'd be at the core by now."],
-  ["I'm not saying you're useless. The lounge chair is saying it.", 'Legends will be told about you. Short ones. At funerals.', "I've lived in this chair for 6,000 km and I still did more than you."],
+  ["You drill like my grandma. She's a rock.", 'Nice hat. Did the feeder drop it on you?', 'Is that your face or did a mole sit on you?', "Wow. Wrenching. So brave.", "I've seen faster dirt.",
+    "You walk like you're trying to sneak up on a sandwich and the sandwich is winning.",
+    "I'd call you a fossil, but fossils are interesting and somebody wants to dig them up.",
+    "Somewhere a worm is telling its kids a scary story, and the scary part is your haircut.",
+    "Hey, don't strain yourself. Oh wait, you physically can't. You've never once tried.",
+    "If brains were gems, you'd be the empty vault the thieves walk past out of pity."],
+  ["You couldn't hit a cave wall from the inside.", 'Your aim is a war crime against bullets.', 'Even the feeders avoid you.', 'Bold of you to stand up while I sit down.',
+    "You fight like a mop that got promoted above its station and is now afraid of floors.",
+    "Every time you miss, a bullet files a formal complaint and requests a transfer to a better crew.",
+    "You have the tactical brilliance of a pebble, and the pebble at least knows when to stay still.",
+    "I've watched mushrooms make better decisions than you, and I watched them over a very long lunch.",
+    "Your battle cry sounds like a kettle that has given up on being a kettle."],
+  ['I would help, but then who would judge you?', "You're the reason the bubble shield has trust issues.", "Your cooking killed more of us than the enemies.", 'I bet you clap when the ship lands.',
+    "They say a crew is only as strong as its weakest link. I'm sitting down, so congratulations, it's you.",
+    "If the enemy boarded and found you, they'd assume we were already defeated and leave out of respect.",
+    "You've got the survival instincts of a moth at a magma convention and the fashion sense to match.",
+    "I'd make fun of your strategy, but making fun of something requires it to exist first.",
+    "The engine room makes that grinding noise every time you walk past. That's the ship sighing."],
+  ['The Changed took one look at you and went back to being normal.', 'You fix doors like doors owe you money.', "If incompetence were fuel we'd be at the core by now.",
+    "Three thousand kilometers of solid rock and somehow you're still the densest thing down here.",
+    "When they write the history of this voyage, you'll be a footnote, and the footnote will say 'why'.",
+    "You're like a hull breach with legs: loud, leaky, and the whole crew wishes someone would patch you.",
+    "I've seen the Leviathan's teeth in my nightmares, and honestly they had a better attitude than you.",
+    "You make the lithostatic pressure down here feel light. That's the weight of disappointment, buddy."],
+  ["I'm not saying you're useless. The lounge chair is saying it.", 'Legends will be told about you. Short ones. At funerals.', "I've lived in this chair for 6,000 km and I still did more than you.",
+    "We're about to reach the center of the earth, and you're STILL the lowest point of the whole trip.",
+    "When the core finally melts us all, at least I won't have to watch you aim anymore. Silver linings.",
+    "Joe went down this tunnel alone with one wrench and a bad plan, and he was still better company than you.",
+    "If the island paradise has a gate, they'll take one look at you and install a second gate. Out of spite.",
+    "I've been insulting you for six thousand kilometers and I have never once run out of material. Think about that."],
 ];
+
+// Things the crew say. Each class has its own voice. Spoken now and then (bots and players).
+// idle: wandering the ship · fight: in combat · kill: after a kill · hurt: low on health · dock: a ship docks · fire: the ship is burning
+export const LINES = {
+  pilot: {
+    idle: ['Steady as she drills.', "Joe flew this tunnel once. I can do it better.", 'Anyone else hear that rattle? No? Good.', 'Hands on the wheel, eyes on the light.', 'I am one with the dirt.'],
+    fight: ['Not on MY ship!', 'Keep them off the bridge!', 'Somebody shoot the big one!', 'I fly AND I fight. Multitasking!'],
+    kill: ['Navigated straight through you.', 'Course corrected.', "That's a no-fly zone, pal."],
+    hurt: ['I need a medic and a better helmet!', 'Bridge is taking hits!'],
+    dock: ['Contact! Ship off the bow!', 'They are latching on! Brace!', 'Here they come. Everybody look busy!'],
+    fire: ['FIRE on my ship?! Get the janitor!', 'Who left the stove on in the engine?!'],
+  },
+  engineer: {
+    idle: ['Percussive maintenance is a science.', 'If it rattles, hit it. If it stops rattling, hit it again.', 'I love the smell of grease in the morning.', "This engine and I have an understanding. It's abusive.", 'Who touched my wrench? Nobody touches my wrench.'],
+    fight: ['Turret up! Eat lead, dirt-face!', "Watch the pipes, they're load-bearing!", "Traps are set. Walk into them. Please."],
+    kill: ['Fixed it.', 'Repaired your attitude.', 'Decommissioned.'],
+    hurt: ['I am the thing that needs repairing now!', 'Ow! Bad wrench! No!'],
+    dock: ['They better not scratch the paint.', 'Docking clamps? On MY hull?'],
+    fire: ['The engines are on fire! That is NOT a feature!', 'Extinguishers! Now!'],
+  },
+  urchid: {
+    idle: ['*sips coconut juice loudly*', 'Wake me up when we get to the paradise part.', 'This chair is the only crew member pulling its weight.', "I'm not lazy. I'm on energy-saving mode. Permanently.", 'Somebody bring me a snack. Not you. Someone competent.'],
+    fight: ['Wow, look at all that effort. Gross.', "I'd help, but my chair is very comfortable.", 'Fight harder, I can barely hear the screaming.'],
+    kill: ['I had nothing to do with that and I want full credit.'],
+    hurt: ['Ow. Did someone just hit my chair?'],
+    dock: ['Visitors! Hide the good snacks.', 'Oh great, more people to disappoint me.'],
+    fire: ["It's getting warm in here. Finally, decent ambience.", 'If my chair burns, I am suing everybody.'],
+  },
+  guard: {
+    idle: ['Vault secure. Perimeter secure. Snack secure.', 'I see everything. Everything.', 'Nobody touches the gems on my watch.', 'Patrolling. Patrolling. Still patrolling.'],
+    fight: ['Halt! You are not on the list!', 'Thieves! Get away from my vault!', 'Double pistols, double trouble!'],
+    kill: ['Access denied.', 'Case closed.', 'Your visit has been terminated.'],
+    hurt: ["I'm hit! Someone watch the vault!"],
+    dock: ['Guard the vault! They always go for the vault!', 'Locking down. Nobody in, nobody out.'],
+    fire: ['The vault is fireproof! I am NOT!'],
+  },
+  chef: {
+    idle: ['A little more spice... perfect.', 'Who wants grub skewers? Everybody wants grub skewers.', 'The secret ingredient is dirt. Locally sourced.', "Taste this. No, don't ask what it is.", 'My kitchen, my rules: no fighting near the soup!', 'Today\'s special: whatever fell through the feeder.'],
+    fight: ['You want a piece of me? I have a cleaver!', 'Order up: one beating, extra crispy!', 'Back of the line, intruder!'],
+    kill: ['Tenderized.', 'Chef\'s kiss.', "Now THAT'S a stew ingredient.", 'Sliced, diced and served.'],
+    hurt: ['Ow! Who seasons ME?!', 'Somebody save the soup!'],
+    dock: ['Visitors? I only cooked for us!', 'Uninvited guests get the burnt ones.'],
+    fire: ['A grease fire! Nobody panic, it\'s just... everywhere!', 'FLAMBÉ! Not on purpose!'],
+  },
+  mrclean: {
+    idle: ['A clean ship is a fast ship.', 'Spotless. Just how I like it.', 'Every speck of dirt is a personal insult.', "My broom and my axe. That's all a man needs.", 'Who tracked mud in here?!'],
+    fight: ['Time to take out the trash!', "I'll sweep you off your feet!", 'CHOP CHOP CHOP!'],
+    kill: ['Swept.', 'Mopped up.', "Another mess I'll have to clean.", 'Spotless.'],
+    hurt: ['You got blood on my floor! My OWN blood!'],
+    dock: ['Wipe your feet before you board, animals!'],
+    fire: ['Fire! Stand aside, this is MY job!', "I'll put it out. I'll put ALL of it out."],
+  },
+  missiletech: {
+    idle: ['Every dirt missile is a little work of art.', 'Boom is a love language.', 'I could aim this at the core and end the trip early.', 'Missiles: loaded. Coffee: loaded. Me: loaded.'],
+    fight: ['Rockets away!', 'VRRRRRM! Chainsaw time!', 'Get to the bay, I have targets to pick!'],
+    kill: ['Direct hit.', 'Splash damage, baby!', 'Kaboom, delivered.'],
+    hurt: ['Not the face! I need it to aim!'],
+    dock: ['Target acquired. Calculating which room to ruin.', 'Bay, man your stations. That means me.'],
+    fire: ['Fire near the missiles is extremely bad news! EXTREMELY!'],
+  },
+  commando: {
+    idle: ['Headband: tight. Rifle: clean. Attitude: legendary.', 'I was born in a foxhole. Literally.', 'Drop and give me twenty. Not you, the turret.', 'I could build a gun out of that. I could build a gun out of anything.'],
+    fight: ['FIRE IN THE HOLE!', 'Suppressing fire!', 'You picked the wrong ship, maggot!', 'Grenade out!'],
+    kill: ['Neutralized.', 'Hooah!', 'Scratch one.', 'Tango down.'],
+    hurt: ["It's just a flesh wound! A big one!"],
+    dock: ['Boarders! Lock and load!', 'Finally, some action!'],
+    fire: ['Fire on deck! Grab an extinguisher, soldier!'],
+  },
+  farmer: {
+    idle: ['Good dirt, this. Real good dirt.', 'Crops are coming in nice this layer.', "Ain't nothing a little elbow grease can't grow.", 'Shovel in one hand, shotgun in the other.'],
+    fight: ['Git off my farm!', 'Reap what ya sow!', 'Pitchfork says hello!'],
+    kill: ['Harvested.', 'Fertilizer.', 'Back to the soil with ya.'],
+    hurt: ["I've had worse from a mule."],
+    dock: ['Varmints! Grab the shotgun!'],
+    fire: ['Not the crops! Not the crops!'],
+  },
+  scientist: {
+    idle: [],   // uses JARGON
+    fight: ['Thermodynamically, you are about to lose.', 'Behold: applied chemistry!', 'Peer review THIS!'],
+    kill: ['Hypothesis confirmed.', 'Fascinating. It stopped.', 'Data point acquired.'],
+    hurt: ['I am experiencing a non-trivial amount of pain!'],
+    dock: ['Scanning their hull. It is ugly. That is my scientific opinion.'],
+    fire: ['Combustion! Exothermic! BAD!', 'The fire triangle needs oxygen, fuel, and heat. We have all three. HELP.'],
+  },
+  dog: { idle: [], fight: ['GRRRRR!', 'BARK BARK BARK!'], kill: ['*happy tail wag*', '*chews victoriously*'], hurt: ['*whimper*'], dock: ['*growls at the hull*', 'WOOF WOOF WOOF!'], fire: ['*barks at the fire*', 'AWOO?!'] },
+  chameleon: {
+    idle: ["You didn't see me. You never see me.", '...', "I've been standing next to you for an hour.", 'The vents are my highway.'],
+    fight: ['Behind you.', 'Surprise.', 'Shhh. Shhh. Shhh.'],
+    kill: ['Silent.', 'Gone.', "They never knew."],
+    hurt: ["Hey, I was invisible! That's cheating!"],
+    dock: ["I'll be on their ship before they're on ours."],
+    fire: ['Fire makes shadows. Shadows are nice. Put it out anyway.'],
+  },
+  trainer: {
+    idle: ['Gotta capture... most of them.', 'My monsters are good boys. Mostly.', "That one in the pen bit me. I love him."],
+    fight: ['Go! Get them!', 'Weaken it! I want it!', "That one's coming home with me!"],
+    kill: ['Not cube-worthy anyway.', 'Next!'],
+    hurt: ['Ow! Even my own monsters are judging me!'],
+    dock: ['New monsters to catch! I mean, enemies!'],
+    fire: ['Get the monsters out of the pen, it is on fire!'],
+  },
+  jorbal: {
+    idle: ['Bloop.', 'Bubbles make everything better.', 'Blorp blorp.', '*blows a tiny bubble*'],
+    fight: ['BUBBLE TIME!', 'Into the bubble you go!', 'Pop pop pop!'],
+    kill: ['Popped!', 'Snack!', 'Chain combo!'],
+    hurt: ['Blorp?! Ow!'],
+    dock: ['More things to bubble!'],
+    fire: ['Bubbles put out fire, right? RIGHT?'],
+  },
+  vaelift: {
+    idle: ['The Vurfenstaff hums. It knows.', 'I could step out of this dimension any time.', 'Vigilance is the only premium I pay.'],
+    fight: ['Behold the Vurfenstaff!', 'You cannot hit what is not here.', 'Ice wall!'],
+    kill: ['Phased out.', 'Back to the void.', 'The staff is satisfied.'],
+    hurt: ['A dimensional inconvenience.'],
+    dock: ['Assume guard positions. I am already in mine.'],
+    fire: ['Even the empty dimension has fewer fires than this ship.'],
+  },
+  agent: {
+    idle: ['Shaken, not stirred.', 'The name is 013. Just 013.', 'Always wear a suit. Even underground.', 'My watch is beeping. That means money.'],
+    fight: ['Target in sight.', 'Nothing personal. Strictly business.', 'Quietly, now.'],
+    kill: ['Mission accomplished.', 'Contract closed.', 'Expired.'],
+    hurt: ["I'll need a new suit. And a doctor. In that order."],
+    dock: ['Marks incoming. Payday.'],
+    fire: ['Fire ruins a good suit. Somebody put that out.'],
+  },
+  slots: { idle: ['*ding ding ding*', '*whirr*', 'PLAY ME!', 'Feeling lucky?', '*coin noises*'], fight: ['JACKPOT!', 'House always wins!', 'Rolling!'], kill: ['CHA-CHING!', 'Payout!', 'You lose!'], hurt: ['TILT! TILT!'], dock: ['New players at the table!'], fire: ['*alarm bells* *also regular bells*'] },
+};
 export const JARGON = ['Quantum-tunnelling the eigen-dirt!', 'Classic Mohorovičić discontinuity behaviour.', 'The lithostatic pressure is non-Newtonian, obviously.',
   'Recalibrating the isostatic flux capacitor.', 'Those are basalt-phase metamorphic resonances.', 'A textbook paleomagnetic reversal cascade!',
   'Hypothesis: the enemy is made of hostile peptides.', 'Peer review would DESTROY that boarding party.', 'Entropy is just dirt with ambition.',

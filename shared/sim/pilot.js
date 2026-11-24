@@ -1,7 +1,7 @@
 // The descent: the pilot steers through a brown tunnel toward the light at the core.
 // Rocks and creatures come at you; gem veins and fuel pockets are worth flying through.
 import { TILE, T, SLOT_W, SLOT_H } from './data.js';
-import { idx } from './grid.js';
+import { idx, roomCenter, roomPoint } from './grid.js';
 import { hitTile, rainPickup, addMess } from './combat.js';
 import { clamp } from './util.js';
 
@@ -34,7 +34,11 @@ export function descentTick(g, dt, pilotInput) {
     return;
   }
   const spd = speedFactor(g) * (d.boost ? 1.6 : 1) * g.speed;
-  d.progress += dt * spd / 48;
+  d.progress += dt * spd / 86;   // ~1.5 minutes a level at normal speed (30 levels down)
+  // the tunnel bends now and then: the pilot banks into it (the view outside follows)
+  d.turnT = (d.turnT ?? g.rng.range(4, 10)) - dt;
+  if (d.turnT <= 0) { d.turnT = g.rng.range(5, 14); d.heading = clamp(g.rng.range(-0.75, 0.75), -0.8, 0.8); }
+  d.bank = (d.bank || 0) + ((d.heading || 0) - (d.bank || 0)) * Math.min(1, dt * 0.6);
 
   // steering (pilot input or bot)
   const helm = g.rooms.find((r) => r.owner === 'us' && r.type === 'bridge');
@@ -104,27 +108,32 @@ function impact(g, kind) {
     // knock a hole in a random room's hull
     const rooms = g.rooms.filter((r) => r.owner === 'us');
     const r = g.rng.pick(rooms);
-    const walls = [];
-    for (let y = r.y0; y <= r.y0 + SLOT_H; y++) for (let x = r.x0; x <= r.x0 + SLOT_W; x++) if (g.grid.get(x, y) === T.HULL) walls.push([x, y]);
-    if (walls.length) { const [x, y] = g.rng.pick(walls); hitTile(g, x, y, 999, { hull: true }); }
+    const walls = g.hullNear(r);
+    if (walls.length) { const w = g.rng.pick(walls); hitTile(g, w.x, w.y, 999, { hull: true }); }
   }
   if (kind === 'creature' && g.rng.chance(0.3 + g.tier * 0.1)) {
     // it got inside
     const rooms = g.rooms.filter((r) => r.owner === 'us');
     const r = g.rng.pick(rooms);
     const type = g.rng.pick(g.roster.filter((x) => x.creature && x.tier <= g.tier));
-    if (type) { g.spawnMob(type.idx, (r.x0 + 4.5) * TILE, (r.y0 + 3.5) * TILE, {}); g.log('alert', `A ${type.name} burrowed in through the ${r.name}!`); }
+    if (type) { const p = roomCenter(r); for (let k = 0; k < 1 + (g.rng.chance(0.2 * g.tier) ? 1 : 0); k++) g.spawnMob(type.idx, p.x + k * 20, p.y, {}); g.log('alert', `A ${type.name} burrowed in through the ${r.name}!`); }
   }
 }
 
-function collectVein(g, kind, n) {
-  // gems rain into the feeder halls
-  const halls = g.rooms.filter((r) => r.owner === 'us' && r.type === 'hall');
-  const pool = halls.length ? halls : g.rooms.filter((r) => r.owner === 'us');
-  for (let k = 0; k < n; k++) {
-    const r = g.rng.pick(pool);
-    rainPickup(g, (r.x0 + 1.5 + g.rng() * 6) * TILE, (r.y0 + 1.5 + g.rng() * 4) * TILE, kind, 1);
+/** Somewhere to drop a gem: anywhere on the ship, a bit more often in a feeder hall. */
+function dropSpot(g) {
+  const halls = g.rooms.filter((r) => r.owner === 'us' && r.type === 'hall' && r.sys.hp > 0);
+  const all = g.rooms.filter((r) => r.owner === 'us');
+  const r = halls.length && g.rng.chance(0.3) ? g.rng.pick(halls) : g.rng.pick(all);
+  if (g.rng.chance(0.12) && g.hullTiles?.length) { // now and then it lands out in the walkway
+    const i = g.rng.pick(g.hullTiles); const x = i % g.W, y = (i / g.W) | 0;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (g.grid.get(x + dx, y + dy) === T.FLOOR) return { x: (x + dx + .5) * TILE, y: (y + dy + .5) * TILE };
   }
+  return roomPoint(r, g.rng);
+}
+
+function collectVein(g, kind, n) {
+  for (let k = 0; k < n; k++) { const p = dropSpot(g); rainPickup(g, p.x, p.y, kind, 1); }
 }
 
 /** Auto-feeders: gems, ore and food rain down into the ship as we drill. */
@@ -132,12 +141,9 @@ export function feeders(g, dt) {
   const s = g.ship;
   g.feedT = (g.feedT || 0) - dt * (1 + 0.25 * s.up.feeders) * (s.overclock?.sys === 'feeder' ? 1.5 : 1);
   if (g.feedT > 0) return;
-  g.feedT = 1.3;
-  const halls = g.rooms.filter((r) => r.owner === 'us' && r.type === 'hall' && r.sys.hp > 0);
-  const all = g.rooms.filter((r) => r.owner === 'us');
-  const r = halls.length && g.rng.chance(0.75) ? g.rng.pick(halls) : g.rng.pick(all);
+  g.feedT = g.rng.range(0.9, 1.8);
   const roll = g.rng();
-  const x = (r.x0 + 1.5 + g.rng() * 6) * TILE, y = (r.y0 + 1.5 + g.rng() * 4) * TILE;
+  const { x, y } = dropSpot(g);
   if (roll < 0.5) rainPickup(g, x, y, 'gem', 1 + (g.rng.chance(0.15) ? g.tier : 0));
   else if (roll < 0.75) rainPickup(g, x, y, 'ore', 1);
   else if (roll < 0.93) rainPickup(g, x, y, 'food', 1, g.rng.pick(['grub', 'shroom', 'fish', 'spice']));

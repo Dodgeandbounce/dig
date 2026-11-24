@@ -1,5 +1,5 @@
 // Movement, weapons, projectiles, explosions, destructible tiles and systems, pickups.
-import { T, TILE, TILE_HP, WEAPONS, ENEMY_WEAPONS, CLASSES } from './data.js';
+import { T, TILE, TILE_HP, WEAPONS, ENEMY_WEAPONS, CLASSES, SLOT_W, SLOT_H, BULLET_SLOW } from './data.js';
 import { idx, inMap } from './grid.js';
 import { clamp, norm, dist, dist2, angTo, angDiff, uid } from './util.js';
 
@@ -80,6 +80,7 @@ export function damage(g, t, amt, src = {}) {
   if (t.armor) mul -= t.armor;
   if (t.reinforced) mul -= 0.5;
   amt *= Math.max(0.1, mul);
+  if (t.cls && t.hp > t.maxHp * 0.3 && t.hp - amt <= t.maxHp * 0.3 && t.hp - amt > 0) g.quip?.(t, 'hurt');
   t.hp -= amt;
   t.hurtT = 0.15;
   g.fx({ t: 'hit', x: t.x, y: t.y, team: t.team, amt: Math.round(amt) });
@@ -130,12 +131,14 @@ export function killMob(g, m, src = {}) {
     }
     killer.wallet += Math.round(money);
     killer.kills = (killer.kills || 0) + 1;
+    if (killer.cls && g.rng.chance(0.3)) g.quip?.(killer, 'kill');
     g.stats.kills++;
     if (killer.cls === 'dog' && src.kind === 'bite') { killer.hp = Math.min(killer.maxHp, killer.hp + 12); g.fx({ t: 'text', x: killer.x, y: killer.y - 20, text: 'nom', color: '#f0a030' }); }
   }
   g.stats.score += type.bounty * 10;
   // drops
   if (m.carryGems) dropPickup(g, m.x, m.y, 'gem', m.carryGems);
+  if (src.kind === 'fire') { addMess(g, m.x, m.y, 'ash', 1); g.fx({ t: 'die', x: m.x, y: m.y, color: type.color, size: m.r }); return; }
   if (src.kind === 'crush') { for (let i = 0; i < 6; i++) dropPickup(g, m.x + g.rng.range(-20, 20), m.y + g.rng.range(-20, 20), 'coin', 2); g.fx({ t: 'coins', x: m.x, y: m.y }); }
   else if (g.rng.chance(0.35)) dropPickup(g, m.x, m.y, g.rng.chance(0.6) ? 'gem' : 'ore', 1 + type.tier);
   if (src.kind === 'jorbal') { dropPickup(g, m.x2 ?? m.x, m.y2 ?? m.y, 'food', 1, g.rng.pick(['grub', 'shroom', 'fish', 'spice'])); }
@@ -156,7 +159,20 @@ export function hitTile(g, tx, ty, dmg, src = {}) {
     const d = g.doors[g.grid.doorAt[i]];
     if (!d || d.broken) return false;
     d.hp -= dmg * (d.reinforced > 0 ? 0.5 : 1);
-    if (d.hp <= 0) { d.broken = true; d.hp = 0; d.open = 1; g.orig.set(i, T.DOOR); g.grid.tiles[i] = T.RUBBLE; g.grid.version++; g.fx({ t: 'boom', x: (tx + .5) * TILE, y: (ty + .5) * TILE, r: 30 }); g.log('alert', 'A door was smashed open!'); }
+    if (d.hp <= 0) {
+      d.broken = true; d.hp = 0; d.open = 1; g.orig.set(i, T.DOOR);
+      // sometimes the doorway caves in and blocks the way, sometimes it's just a gaping hole
+      const blocked = d.owner === 'us' && g.rng.chance(0.35);
+      g.grid.tiles[i] = blocked ? T.DEBRIS : T.RUBBLE; g.grid.hp[i] = blocked ? TILE_HP[T.DEBRIS] : 0;
+      g.grid.version++; g.fx({ t: 'boom', x: (tx + .5) * TILE, y: (ty + .5) * TILE, r: 30 });
+      g.log('alert', blocked ? 'A door was smashed and the doorway caved in! Clear the wreckage (hold E).' : 'A door was smashed open!');
+    }
+    return true;
+  }
+  if (t === T.DEBRIS) {
+    // wreckage can be blasted through
+    g.grid.hp[i] -= dmg;
+    if (g.grid.hp[i] <= 0) { g.grid.tiles[i] = T.RUBBLE; g.grid.hp[i] = 0; g.grid.version++; g.fx({ t: 'boom', x: (tx + .5) * TILE, y: (ty + .5) * TILE, r: 20 }); }
     return true;
   }
   if (t === T.WALL || t === T.ICE || (t === T.HULL && src.hull)) {
@@ -186,8 +202,11 @@ export function damageSystem(g, room, amt, src) {
 
 // ---------------------------------------------------------------------------
 // projectiles
+const SLOWED = new Set(['bullet', 'ppk', 'coin', 'knife', 'rocket', 'fireball', 'scrap']);
 export function spawnProj(g, p) {
   p.id = uid(); p.life ??= 2; p.r ??= 4; p.t = 0;
+  // slower bullets, same range: you can see them coming and dodge
+  if (SLOWED.has(p.kind) && p.vx !== undefined) { p.vx *= BULLET_SLOW; p.vy *= BULLET_SLOW; p.life /= BULLET_SLOW; }
   g.projs.push(p);
   return p;
 }
@@ -220,6 +239,8 @@ export function explode(g, x, y, radius, dmg, team, owner, opts = {}) {
     if (team === 'enemy' && !theirs) hitTile(g, tx, ty, (opts.wallDmg ?? dmg) * 0.6, { hull: opts.hull });
     if (team === 'crew' && theirs) hitTile(g, tx, ty, dmg * 0.5, { hull: false });
   }
+  // enemy bombs and fireballs can start fires on our ship
+  if (team === 'enemy' && g.rng.chance(opts.kind === 'fireball' ? 0.25 : 0.1)) ignite(g, cx, cy, 0.3);
   // systems in radius
   for (const room of g.rooms) {
     if (!room.sys || !room.alive) continue;
@@ -230,9 +251,85 @@ export function explode(g, x, y, radius, dmg, team, owner, opts = {}) {
 }
 
 export function tileOwner(g, tx, ty) {
-  const ri = g.grid.room[idx(tx, ty)];
-  if (ri >= 0) return g.rooms[ri].owner;
-  return ty < g.ourTopY ? 'them' : 'us';
+  const ri = inMap(tx, ty) ? g.grid.room[idx(tx, ty)] : -1;
+  if (ri >= 0) return g.rooms[ri]?.owner || 'them';
+  const B = g.box;
+  return B && tx >= B.x0 && tx <= B.x1 && ty >= B.y0 && ty <= B.y1 ? 'us' : 'them';
+}
+/** Is this world point inside our ship (rooms, walkway, hull)? */
+export function inOurBox(g, x, y) { return tileOwner(g, Math.floor(x / TILE), Math.floor(y / TILE)) === 'us'; }
+
+// ---------------------------------------------------------------------------
+// fire: spreads tile to tile, burns people and systems, dies down only when put out
+const FIRE_MAX = 90;
+export function fireAt(g, i) { return g.objs.find((o) => o.kind === 'fire' && o.i === i); }
+export function ignite(g, tx, ty, f = 0.2) {
+  if (g.storyMode || !inMap(tx, ty)) return null;
+  const i = idx(tx, ty);
+  const t = g.grid.tiles[i];
+  if (t !== T.FLOOR && t !== T.RUBBLE) return null;
+  if (tileOwner(g, tx, ty) !== 'us') return null;
+  const have = fireAt(g, i);
+  if (have) { have.f = Math.min(1, have.f + f * 0.5); return have; }
+  if (g.objs.filter((o) => o.kind === 'fire').length >= FIRE_MAX) return null;
+  const o = { id: uid(), kind: 'fire', i, x: (tx + .5) * TILE, y: (ty + .5) * TILE, f, t: 0 };
+  g.objs.push(o);
+  return o;
+}
+/** Set a room on fire in a few places. */
+export function igniteRoom(g, room, n = 1) {
+  if (!room || g.storyMode) return;
+  const first = !g.objs.some((o) => o.kind === 'fire');
+  for (let k = 0; k < n; k++) {
+    const tx = room.x0 + 1 + Math.floor(g.rng() * (SLOT_W - 1)), ty = room.y0 + 1 + Math.floor(g.rng() * (SLOT_H - 1));
+    ignite(g, tx, ty, 0.35);
+  }
+  const at = { x: (room.x0 + SLOT_W / 2) * TILE, y: (room.y0 + SLOT_H / 2) * TILE };
+  g.fx({ t: 'fire', x: at.x, y: at.y });
+  if (first) {
+    g.log('alert', `🔥 Fire in the ${room.name}! Hold E next to it to use your extinguisher (MrClean puts fires out fastest).`);
+    const near = g.crew.filter((c) => c.alive).sort((a, b) => dist2(a, at) - dist2(b, at))[0];
+    if (near) g.quip?.(near, 'fire', true);
+  }
+}
+export function updateFires(g, dt) {
+  const fires = g.objs.filter((o) => o.kind === 'fire');
+  if (!fires.length) return;
+  const dead = new Set();
+  for (const o of fires) {
+    o.t += dt;
+    o.f = Math.min(1, o.f + dt * 0.05);
+    // burns whoever stands in it
+    for (const c of g.crew) if (c.alive && !c.invuln && Math.abs(c.x - o.x) < 20 && Math.abs(c.y - o.y) < 20) damage(g, c, 7 * o.f * dt, { team: 'enemy', kind: 'fire' });
+    for (const m of g.mobs) if (m.alive && Math.abs(m.x - o.x) < 20 && Math.abs(m.y - o.y) < 20) { m.hp -= 7 * o.f * dt; if (m.hp <= 0) killMob(g, m, { kind: 'fire' }); }
+    // and the system in the room
+    const ri = g.grid.room[o.i];
+    if (ri >= 0 && g.rooms[ri]?.sys && g.rng.chance(dt * 2)) damageSystem(g, g.rooms[ri], 1.2 * o.f);
+    // spreads to the next tile (closed doors stop it)
+    if (g.rng.chance(dt * 0.09 * o.f)) {
+      const x = o.i % g.W, y = (o.i / g.W) | 0;
+      const [dx, dy] = [[1, 0], [-1, 0], [0, 1], [0, -1]][g.rng.int(0, 3)];
+      let nx = x + dx, ny = y + dy;
+      if (g.grid.get(nx, ny) === T.DOOR) { const d = g.doors[g.grid.doorAt[idx(nx, ny)]]; if (d && d.open > 0.75) { nx += dx; ny += dy; } }
+      ignite(g, nx, ny, 0.15);
+    }
+    // on a broken tile or after a long time it smoulders out
+    if (g.grid.tiles[o.i] !== T.FLOOR && g.grid.tiles[o.i] !== T.RUBBLE) dead.add(o);
+    if (o.t > 70 && g.rng.chance(dt * 0.05)) { dead.add(o); addMess(g, o.x, o.y, 'ash', 1); }
+  }
+  if (dead.size) g.objs = g.objs.filter((o) => !dead.has(o));
+}
+/** Spray the extinguisher at the nearest fire. MrClean is much better at it. */
+export function extinguish(g, c, dt) {
+  let best = null, bd = 48 * 48;
+  for (const o of g.objs) if (o.kind === 'fire') { const d = dist2(o, c); if (d < bd) { bd = d; best = o; } }
+  if (!best) return false;
+  const rate = c.cls === 'mrclean' ? 2.4 + 0.4 * (c.upgrades?.[1] || 0) : 0.6;
+  best.f -= rate * dt;
+  c.spraying = 0.2; c.sprayAt = { x: best.x, y: best.y };
+  if (g.rng.chance(dt * 8)) g.fx({ t: 'spray', x: c.x, y: c.y, x2: best.x, y2: best.y });
+  if (best.f <= 0) { g.objs.splice(g.objs.indexOf(best), 1); g.fx({ t: 'text', x: best.x, y: best.y - 10, text: 'out!', color: '#a0e0ff' }); if (c.cls === 'mrclean') c.wallet += 1; }
+  return true;
 }
 
 export function updateProjectiles(g, dt) {
@@ -468,7 +565,10 @@ function collect(g, c, p) {
       s.food[p.sub] = (s.food[p.sub] || 0) + p.amt; g.fx({ t: 'text', x: p.x, y: p.y - 10, text: `+${p.sub}`, color: '#f07070' }); break;
     case 'crop': s.food.crops = (s.food.crops || 0) + p.amt; g.fx({ t: 'text', x: p.x, y: p.y - 10, text: '+crop', color: '#c8b040' }); break;
     case 'coin': c.wallet += Math.round(p.amt * mul); g.fx({ t: 'text', x: p.x, y: p.y - 10, text: `+${Math.round(p.amt * mul)}$`, color: '#f4c542' }); break;
-    case 'gun': if (c.makeshift) return false; c.makeshift = 30; g.fx({ t: 'text', x: p.x, y: p.y - 10, text: 'makeshift gun!', color: '#90a050' }); break;
+    case 'gun':
+      if (c.makeshift?.ammo > 0 || c.cls === 'urchid') return false;
+      c.makeshift = { ammo: 8 + 2 * (p.sub || 0), lvl: p.sub || 0 };
+      g.fx({ t: 'text', x: p.x, y: p.y - 10, text: 'makeshift gun! (LMB)', color: '#90a050' }); break;
     default: return false;
   }
   g.fx({ t: 'pickup', x: p.x, y: p.y, kind: p.kind });

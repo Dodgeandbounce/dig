@@ -133,7 +133,12 @@ function onlineSession(net, playerId) {
   const kept = new Map();             // last copy of each part of the state (server only resends what changed)
   let fxq = [];
   let recvAt = 0, gap = 100;          // ms between the last two frames (for smoothing)
-  let shown = new Map();              // entity id -> position currently on screen
+  // Interpolation buffer: the last few snapshots, stamped with the server's game clock. Everything
+  // (except you) is drawn a little in the past, sliding between two real snapshots, so uneven
+  // network timing never shows up as stutter.
+  const snaps = [];                   // { st, pos: Map(id -> [x, y]) }
+  let clockOff = null;                // server game time minus local time (seconds), smoothed
+  const DELAY = 0.13;                 // how far in the past we draw (a bit more than one frame)
   let sendT = 0, pendingPress = {};
   // Prediction: your own crew member moves the moment you press a key. Each input message has a
   // sequence number; the server says which one it last got (ack) and how long it has applied it
@@ -174,16 +179,20 @@ function onlineSession(net, playerId) {
       if (!grid) return;
       const next = decodeState(unpackState(msg.s, msg.keep, kept), grid);
       seats = msg.seats || seats;
-      // Smoothing: each moving thing slides from where it is on screen to where the server says.
       const now = performance.now();
       if (g && !msg.join) gap = Math.max(40, Math.min(250, gap * 0.8 + (now - recvAt) * 0.2));
       recvAt = now;
-      for (const list of [next.crew, next.mobs, next.projs, next.pickups]) for (const e of list) {
-        const was = shown.get(e.id);
-        e._tx = e.x; e._ty = e.y;
-        if (was && Math.hypot(was.x - e.x, was.y - e.y) < 160) { e._fx = was.x; e._fy = was.y; e.x = was.x; e.y = was.y; }
-        else { e._fx = e.x; e._fy = e.y; }
-      }
+      // stamp this snapshot with the server's clock and remember where everything was
+      const st = next.time || 0;
+      const sample = st - now / 1000;
+      if (clockOff == null || msg.join || Math.abs(sample - clockOff) > 1) clockOff = sample;
+      else clockOff += (sample - clockOff) * (sample > clockOff ? 0.25 : 0.05); // late frames pull slowly, early ones quickly
+      if (msg.join || (snaps.length && st < snaps[snaps.length - 1].st)) snaps.length = 0;
+      const pos = new Map();
+      for (const list of [next.crew, next.mobs, next.projs, next.pickups]) for (const e of list) { pos.set(e.id, [e.x, e.y]); e._tx = e.x; e._ty = e.y; }
+      if (!snaps.length || st > snaps[snaps.length - 1].st) snaps.push({ st, pos });
+      else snaps[snaps.length - 1].pos = pos;
+      while (snaps.length > 6) snaps.shift();
       // The pilot's tunnel: rocks fly toward you between frames; the steering slides like everything else.
       const d = next.descent;
       if (d) {
@@ -222,11 +231,19 @@ function onlineSession(net, playerId) {
     step(dt, inp) {
       if (!g) return;
       const k = Math.min(1, (performance.now() - recvAt) / gap);
-      shown = new Map();
+      // draw everything at "server time minus a little", between the two snapshots around that moment
+      const rt = performance.now() / 1000 + (clockOff || 0) - DELAY;
+      let a = null, b = null;
+      for (let i = snaps.length - 1; i >= 0; i--) if (snaps[i].st <= rt) { a = snaps[i]; b = snaps[i + 1] || null; break; }
+      if (!a) { a = snaps[0]; b = null; }
+      const f = a && b ? Math.max(0, Math.min(1, (rt - a.st) / Math.max(0.001, b.st - a.st))) : 1;
       for (const list of [g.crew, g.mobs, g.projs, g.pickups]) for (const e of list) {
         if (e._tx == null) continue;
-        e.x = e._fx + (e._tx - e._fx) * k; e.y = e._fy + (e._ty - e._fy) * k;
-        shown.set(e.id, { x: e.x, y: e.y });
+        const pa = a?.pos.get(e.id), pb = b?.pos.get(e.id);
+        if (pa && pb && Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) < 200) { e.x = pa[0] + (pb[0] - pa[0]) * f; e.y = pa[1] + (pb[1] - pa[1]) * f; }
+        else if (pb && f >= 0.5) { e.x = pb[0]; e.y = pb[1]; }
+        else if (pa) { e.x = pa[0]; e.y = pa[1]; }
+        else { e.x = e._tx; e.y = e._ty; }  // brand new: show where the server has it
       }
       for (const m of g.mobs) if (m.sayT > 0) m.sayT -= dt;
       const d = g.descent;
@@ -250,7 +267,6 @@ function onlineSession(net, playerId) {
         me.facing = Math.atan2(inp.ay - me.y, inp.ax - me.x);
         me.moving = !!(inp.mx || inp.my);
         me._tx = null;
-        shown.set(me.id, { x: me.x, y: me.y });
       } else if (pred) stopPredicting();
       // controls: ~20×/s (always, so the server's ack keeps up), and right away when an ability key was pressed
       Object.assign(pendingPress, inp.pressed);
@@ -321,6 +337,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
       if (k === 'Tab') { e.preventDefault(); if (ui.kind() === 'upgrades') ui.closeModal(); else if (!ui.isOpen() || ui.kind() === 'panel') ui.openModal('upgrades'); return; }
       if (k === 'KeyH' && !ui.isOpen()) { ui.openModal('help'); return; }
       if (k === 'KeyM') { renderer.cam.overview = !renderer.cam.overview; return; }
+      if (k === 'KeyL' && !ui.isOpen()) { session.cmd({ t: 'seal' }); return; }
       if (k === 'KeyE' && view.pilot) { session.cmd({ t: 'helm', on: false }); return; }
       if (k === 'KeyE' && ui.kind() === 'panel') { ui.closeModal(); return; }
       if (['KeyQ', 'KeyF', 'KeyE', 'Space'].includes(k)) pressed[{ KeyQ: 'q', KeyF: 'f', KeyE: 'e', Space: 'space' }[k]] = true;
@@ -384,7 +401,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
     renderer.frame(cur, me, dt, view);
     uiT -= dt;
     if (uiT <= 0) { uiT = 0.1; ui.update(cur, me, view); }
-    setIntensity(cur.phase === 'encounter' ? 1 : 0);
+    setIntensity(cur.phase === 'encounter' || cur.mobs.some((m) => m.alive && m.team === 'enemy') ? 1 : 0, cur.tier);
   }
   requestAnimationFrame(loop);
 
@@ -399,7 +416,11 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
       case 'boom': sfx.boom(e.r); break;
       case 'pickup': sfx.pickup(e.kind); break;
       case 'clink': sfx.clink(); break;
-      case 'door': sfx.door(); break;
+      case 'door': sfx.door(e.blast); break;
+      case 'laugh': sfx.laugh(); break;
+      case 'docked': sfx.docked(); break;
+      case 'fire': sfx.fire(); break;
+      case 'spray': sfx.spray(); break;
       case 'seal': sfx.seal(); sfx.alarm(); break;
       case 'alarm': sfx.alarm(); break;
       case 'dig': sfx.dig(); break;
@@ -416,7 +437,12 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
       case 'impact': sfx.impact(); break;
       case 'down': sfx.down(); break;
       case 'ability': if (e.id === 'pounce' || e.id === 'howl') sfx.bark(); if (e.id === 'insult') sfx.insult(); break;
-      case 'say': { const a = g.crew.find((c) => c.id === e.id) || g.mobs.find((m) => m.id === e.id); if (a && !a.cls) { a.say = e.text; a.sayT = 3; } break; }
+      case 'say': {
+        const a = g.crew.find((c) => c.id === e.id) || g.mobs.find((m) => m.id === e.id);
+        if (a && !a.cls) { a.say = e.text; a.sayT = 3; }
+        if (a?.cls && Math.hypot(a.x - me.x, a.y - me.y) < 500) sfx.chirp(a.cls);
+        break;
+      }
       case 'switch': me = session.me() || me; break;
       case 'ending': sfx.victory(); break;
     }

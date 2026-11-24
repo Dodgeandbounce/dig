@@ -1,11 +1,11 @@
 // The tile world: both ships, the docking tunnel, doors, line of sight and pathfinding.
-import { T, TILE, TILE_HP, MAP_W, MAP_H, SLOT_W, SLOT_H, SHIP_OX, SHIP_OY, ROOMS } from './data.js';
+import { T, TILE, TILE_HP, MAP_W, MAP_H, SLOT_W, SLOT_H, SHIP_OX, SHIP_OY, ROOMS, RING } from './data.js';
 
 export const idx = (x, y) => y * MAP_W + x;
 export const inMap = (x, y) => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H;
 
-const SOLID = new Set([T.VOID, T.WALL, T.HULL, T.BREACH, T.ICE]);
-const STRUCT = new Set([T.WALL, T.HULL, T.DOOR, T.ICE]);
+const SOLID = new Set([T.VOID, T.WALL, T.HULL, T.BREACH, T.ICE, T.DEBRIS]);
+const STRUCT = new Set([T.WALL, T.HULL, T.DOOR, T.ICE, T.DEBRIS]);
 
 export class Grid {
   constructor() {
@@ -42,7 +42,7 @@ export class Grid {
   blocksShot(x, y, doors) {
     const t = this.get(x, y);
     if (t === T.DOOR) { const d = doors[this.doorAt[idx(x, y)]]; return !d || d.open < 0.6; }
-    return t === T.WALL || t === T.HULL || t === T.ICE || t === T.VOID;
+    return t === T.WALL || t === T.HULL || t === T.ICE || t === T.VOID || t === T.DEBRIS;
   }
   isStruct(t) { return STRUCT.has(t); }
 
@@ -181,34 +181,78 @@ export function buildRooms(grid, rooms, roomIndexBase, doorList, owner) {
   grid.version++;
 }
 
-function addDoor(grid, doorList, x, y, a, b, owner, orient) {
+export function addDoor(grid, doorList, x, y, a, b, owner, orient, hp = TILE_HP[T.DOOR]) {
   const i = idx(x, y);
   grid.tiles[i] = T.DOOR;
-  grid.hp[i] = TILE_HP[T.DOOR];
+  grid.hp[i] = hp;
   grid.doorAt[i] = doorList.length;
-  doorList.push({ i, x, y, a, b, owner, orient, open: 0, want: 0, sealed: false, hold: null, hp: TILE_HP[T.DOOR], maxHp: TILE_HP[T.DOOR], broken: false, reinforced: 0 });
+  const d = { i, x, y, a, b, owner, orient, open: 0, want: 0, sealed: false, hold: null, hp, maxHp: hp, broken: false, reinforced: 0 };
+  doorList.push(d);
+  return d;
+}
+
+/**
+ * The walkway around our ship: every empty tile within 2 of the ship's outer hull becomes floor, the
+ * next ring out becomes the new outer hull, and each room gets a door out to the walkway on each
+ * side that faces it. Returns the walkway tiles.
+ */
+export function buildRing(grid, rooms, doorList) {
+  const N = MAP_W * MAP_H;
+  const d = new Uint8Array(N).fill(255);
+  const q = [];
+  for (const room of rooms) for (let y = room.y0; y <= room.y0 + SLOT_H; y++) for (let x = room.x0; x <= room.x0 + SLOT_W; x++) {
+    const i = idx(x, y); if (d[i] === 0) continue; d[i] = 0; q.push(i);
+  }
+  for (let h = 0; h < q.length; h++) {
+    const i = q[h]; if (d[i] >= RING) continue;
+    const x = i % MAP_W, y = (i / MAP_W) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy; if (!inMap(nx, ny)) continue;
+      const j = ny * MAP_W + nx; if (d[j] !== 255) continue;
+      d[j] = d[i] + 1; q.push(j);
+    }
+  }
+  const ring = [];
+  for (let i = 0; i < N; i++) {
+    if (d[i] === 255 || d[i] === 0) continue;
+    if (d[i] < RING) { grid.tiles[i] = T.FLOOR; grid.hp[i] = 0; grid.room[i] = -1; ring.push(i); }
+    else { grid.tiles[i] = T.HULL; grid.hp[i] = TILE_HP[T.HULL]; }
+  }
+  // the rooms' old outer hull is now an inside wall
+  for (const room of rooms) for (const w of wallTilesOf(room, true)) if (grid.tiles[w.i] === T.HULL) { grid.tiles[w.i] = T.WALL; grid.hp[w.i] = TILE_HP[T.WALL]; }
+  // doors out to the walkway
+  const floorAt = (x, y) => inMap(x, y) && grid.tiles[idx(x, y)] === T.FLOOR && grid.room[idx(x, y)] < 0;
+  rooms.forEach((room, r) => {
+    const mx = room.x0 + (SLOT_W >> 1), my = room.y0 + (SLOT_H >> 1);
+    const sides = [[mx, room.y0, 0, -1, 'h'], [mx, room.y0 + SLOT_H, 0, 1, 'h'], [room.x0, my, -1, 0, 'v'], [room.x0 + SLOT_W, my, 1, 0, 'v']];
+    for (const [x, y, dx, dy, o] of sides) if (grid.tiles[idx(x, y)] === T.WALL && floorAt(x + dx, y + dy)) addDoor(grid, doorList, x, y, r, -1, 'us', o);
+  });
+  grid.version++;
+  return ring;
 }
 
 /** Room pixel helpers */
-export function roomCenter(room) { return { x: (room.x0 + 4.5) * TILE, y: (room.y0 + 3.5) * TILE }; }
+export function roomCenter(room) { return { x: (room.x0 + SLOT_W / 2 + 0.5) * TILE, y: (room.y0 + SLOT_H / 2 + 0.5) * TILE }; }
+/** A random point inside a room (away from the walls). */
+export function roomPoint(room, rng) { return { x: (room.x0 + 1.5 + rng() * (SLOT_W - 3)) * TILE, y: (room.y0 + 1.5 + rng() * (SLOT_H - 3)) * TILE }; }
 export function roomInterior(room) {
   return { x0: (room.x0 + 1) * TILE, y0: (room.y0 + 1) * TILE, x1: (room.x0 + SLOT_W) * TILE, y1: (room.y0 + SLOT_H) * TILE };
 }
 export function stationPos(room) {
-  // station sits on the back wall of the room (top interior row), centred
-  return { x: (room.x0 + 4.5) * TILE, y: (room.y0 + 1) * TILE + 14 };
+  // the console sits against the back wall in the top-left corner, clear of every door
+  return { x: (room.x0 + 2.5) * TILE, y: (room.y0 + 1) * TILE + 14 };
 }
 export function roomTiles(room) {
   const out = [];
   for (let y = room.y0 + 1; y < room.y0 + SLOT_H; y++) for (let x = room.x0 + 1; x < room.x0 + SLOT_W; x++) out.push(idx(x, y));
   return out;
 }
-export function wallTilesOf(room) {
+export function wallTilesOf(room, corners = false) {
   const out = [];
   for (let y = room.y0; y <= room.y0 + SLOT_H; y++) for (let x = room.x0; x <= room.x0 + SLOT_W; x++) {
     const edge = x === room.x0 || y === room.y0 || x === room.x0 + SLOT_W || y === room.y0 + SLOT_H;
     const corner = (x === room.x0 || x === room.x0 + SLOT_W) && (y === room.y0 || y === room.y0 + SLOT_H);
-    if (edge && !corner) out.push({ x, y, i: idx(x, y) });
+    if (edge && (corners || !corner)) out.push({ x, y, i: idx(x, y) });
   }
   return out;
 }

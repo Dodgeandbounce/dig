@@ -4,39 +4,44 @@ The design doc is the source of truth. This is how each part of it is built, and
 
 ## The loop
 
-Every level (12 from the surface to the core):
+Every level (30 from the surface to the core; a full run is well over an hour):
 
 1. **"Sea Level: −N km"**, then the **enemy mix** for the level (little portraits with percentages, e.g. *Rabbers 10% · Burlys 50% · Ques 40%*), then **DIG!**
-2. **The descent.** The pilot steers from the helm in a first-person brown tunnel toward the tiny bright light at the core. Rocks and boulders hit the hull (and sometimes knock holes in it), creatures can burrow inside, gem veins and fuel pockets pay out if you fly through them. *Shift* boosts (burns fuel twice as fast). Run out of fuel and you're **stranded**: call a fuel drop for 60, and every ship nearby hears it.
-   Meanwhile the **auto-feeders** rain gems, ore and food into the ship (mostly the Feeder Hall), and dirt filters in through the roof.
+2. **The descent** (about a minute and a half). The pilot steers from the helm in a first-person tunnel toward the tiny bright light at the core; the tunnel bends now and then and the view banks with it, and its walls get rockier (and, near the core, veined with magma). Outside the ship the dirt streams past diagonally, down and to the right, and swings when the tunnel turns. Rocks and boulders hit the hull (and sometimes knock holes in it), creatures dig in (more often the deeper you are), gem veins and fuel pockets pay out if you fly through them. *Shift* boosts (burns fuel twice as fast). Run out of fuel and you're **stranded**: call a fuel drop for 60, and every ship nearby hears it.
+   Meanwhile the **auto-feeders** rain gems, ore and food all over the ship (a bit more in the Feeder Hall), and dirt filters in through the roof.
    Ships can **ambush** you mid-descent; when that's dealt with you go back to piloting.
-3. **The fork.** The pilot picks the next stop: enemy dig-ship, port, fuel depot, discovery, creature nest, deep city, repair dock. A port is always offered if you haven't seen one in two levels.
-4. **The stop** — a fight, a shop, or one of Joe's notes — then the next level.
+3. **The fork.** The pilot picks the next stop: enemy dig-ships, port, fuel depot, creature nest, deep city, repair dock. A port is always offered if you haven't seen one in two levels. There is no "read a note" stop: **Joe's notes turn up wherever you go** (in a dead boarder's pocket, pinned up at the dock, scratched into a nest wall...).
+4. **The stop** — a fight or a shop — then the next level.
 
 The host can pause any time (Esc). Story beats pause the world.
 
 ## The ship
 
-- Built from **rooms** on a grid (up to 11×6). Rooms share walls; every shared wall gets a **door**. Doors open and close **slowly**.
+- Built from **rooms** on a grid (up to 11×6), each 10×7 tiles. Rooms share walls; every shared wall gets a **door**. Doors open and close **slowly**. Consoles sit in the back corner of each room, clear of the doors.
+- A **walkway runs around the whole ship** (inside the outer hull), and every room on the edge has a door out to it. Four heavy **blast doors** cut the walkway into sections: they're open until someone shuts them.
+- **Doors toggle**: press E to shut a door (boarders have to smash through) or prop it open (anyone can walk through, them too).
 - You start with a used two-person digger: Engine Room, D-Weapons Bay, Feeder Hall, Bridge, Bubble Generator.
 - **It keeps growing**: every crew member who joins brings their room (Kennel, Galley, Vault, Lab...), and ports sell more: extra engines, storage, crew quarters, feeder halls, corridors. You choose where each one goes.
 - Every room has a **system** at its station. Systems take damage and go **offline** at 0 (no helm = drifting, no D-weapons = no ship fire, no bubble generator = no shield, no lab = no research...).
-- **Fully destroyable**: doors, interior walls and the hull have HP. Enemy bombers and drillers carve new paths; missiles and rocks blow **breaches** in the hull. Breaches leak dirt (messes, and soil for the farmer) and slowly drain the hull.
+- **Fully destroyable**: doors, interior walls and the hull have HP. Enemy bombers and drillers carve new paths; missiles and rocks blow **breaches** in the hull. Breaches leak dirt (messes, and soil for the farmer), slowly drain the hull, and **creatures crawl in through them** (more often the deeper you go). A smashed doorway sometimes **caves in** and blocks the way until someone clears the wreckage; other times it's just a gaping hole. A wrecked system can bring wreckage down in front of the room's door.
+- **Fire**: a burning tile hurts whoever stands in it, damages the room's system, and spreads to the next tile (closed doors stop it). Lose an engine and fires break out all over the ship; enemy missiles hitting an already-broken room usually start one. Everyone carries an extinguisher (hold E next to a fire); MrClean puts fires out about four times faster.
 - **Fully repairable**: hold **E** next to anything broken (scrap makes it faster). Engineers fix best — and they fix engines by **hitting them with the wrench**. Patching structure also shores up the hull. Repair docks fix everything.
 - **Fully upgradeable**: ship upgrades at ports (plating, bubble layers, D-gun, D-missile, drill bits, feeders, fuel tank), research in the lab, personal class upgrades any time (Tab).
 
 ## Dockings
 
-- An enemy dig-ship docks above you, blows a hole in your hull, and runs a tunnel in. **Every door seals.** Crew with **clearance** (Pilot, Engineer, Guard, Scientist, Vaelift, Agent) can unseal doors with E; everyone else waits — or the enemy smashes through.
-- Boarders come in waves from their crew quarters. Enemies have roles: **brutes** hunt crew, **thieves** go for the vault and run back with your gems, **saboteurs** wreck systems, **carvers** dig through walls.
-- **Ship vs ship**: both sides fire **D-guns** and **D-missiles** on visible timers. Bubbles block D-gun shots, not missiles. The Missile Technician picks exactly which enemy room to hit (bridge, engine, bubble, guns, quarters).
+- **You see them coming**: enemy dig-ships drill toward you, above or below, for a few seconds before they latch on. Then each one blows a hole in your outer hull and runs a tunnel in. Shallow, it's one ship; deeper, two or three at once, and near the core up to **four**, of all sizes, arriving one after another. More ships = more holes = more ways in.
+- **Sealing is your call**: press **L** to seal every door (boarders have to beat their way through; so does anyone without **clearance**: Pilot, Engineer, Guard, Scientist, Vaelift, Agent), or prop the doors to the fight open so the fighters can get at them. (An all-bot crew seals automatically.)
+- **Lots of enemies**: boarders pour in from each ship's crew quarters (up to ~55 alive at once). Shallow ones are pushovers; deep ones are brutal, and every type rolls its own stats. Enemies have roles: **brutes** hunt crew, **thieves** go for the vault and run back with your gems, **saboteurs** wreck systems, **carvers** dig through walls.
+- **Ship vs ship** is the weapons bay's fight (or the pilot's, if there's no Missile Technician aboard): they pick which enemy room our **D-gun** and **D-missiles** hit. Bubbles block D-gun shots, not missiles. Lose the weapons bay and we can't fire. Lose the bridge and we can't escape (the pilot can otherwise cut the tunnels and run) or undock. Lose an engine and the ship catches fire.
 - **You can board them.** Their doors don't open for you — smash through. Wreck their systems at their stations.
-- **Victory**: destroy their hull (it breaks apart), wreck their bridge + engine or bridge + guns (they surrender and you strip it for crates), or kill their whole crew. Out of boarders and losing? They flee.
+- **Victory**: destroy their hull (it breaks apart), wreck their bridge + engine or bridge + guns (they surrender), or kill their whole crew. Out of boarders and losing? They flee (not without a bridge).
+- **Loot**: a ship that surrenders is yours to strip. Go over and press E on the crates. **Only the pilot undocks**; if anyone's still over there, the pilot gets a warning, and on the second signal laughs and yanks them back aboard. A bot pilot gives everyone about a minute.
 - Fog of war: you only see inside rooms where someone from the crew is.
 
 ## The story
 
-- **Joe's notes** turn up at discoveries and pinned up at ports. Each one gives something (scrap, an upgrade, a free engine room blueprint, money) and they get more chaotic as you go.
+- **Joe's notes** turn up wherever you stop (every few levels). Each one gives something (scrap, an upgrade, a free engine room blueprint, money) and they get more chaotic as you go.
 - Somewhere between 1/3 and 2/3 of the way down, a message pod hits the hull: the crew is changing, Joe escaped, and here's a **transponder ID**. The pilot types it into the targeting computer at the next fork to reveal Joe's derelict ship.
 - Joe's ship: skeletons, loot crates, and the journal on the bridge. Read it... and the Changed wake up.
 - **Do I go?** Follow Joe (much harder: deeper enemies, more of them, crazier notes) or take the easier main shaft.
@@ -46,7 +51,11 @@ The host can pause any time (Esc). Story beats pause the world.
 
 ## The 17 classes
 
-Everyone starts as Zap (Pilot) and Angie (Engineer), or as the Urchid. New classes join as the story goes (at ports, or freed prisoners after you beat a ship). At any port you can switch to any crew member.
+Everyone starts as Zap (Pilot) and Angie (Engineer), or as the Urchid. New classes join **two at a time** as the story goes (at ports, or freed prisoners after you beat a ship); the whole crew is aboard a bit past halfway down, so there's plenty of trip left to play with all of them. At any port you can switch to any crew member. Everyone talks: each class has its own lines for wandering the ship, fighting, kills, getting hurt, dockings and fires (and the Urchid's insults are longer and meaner the deeper you go).
+
+**Makeshift guns** (the Commando builds them at the armory): anyone except the Urchid can pick one up. It replaces your left click with a heavy scrap cannon for a handful of shots, then falls apart into 1 scrap.
+
+Everyone is tougher than before (+40% health), and bullets fly slower (same range), so you can see shots coming. Ship upgrades go to level 10 and class upgrades to level 8, to keep up with the deep enemies.
 
 | Class (default name) | Primary | Abilities | Their game |
 |---|---|---|---|

@@ -1,11 +1,31 @@
 // Every class's kit: primary fire, abilities, passives, and E-interactions.
-import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES } from './data.js';
+import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES, LINES } from './data.js';
 import { idx, inMap } from './grid.js';
 import {
   moveActor, melee, fireBullet, spawnProj, explode, damage, stat, addBuff, healActor, roomAt,
-  hostiles, popBubble, airAt, addMess, dropPickup, damageSystem, hitTile,
+  hostiles, popBubble, airAt, addMess, dropPickup, damageSystem, hitTile, tileOwner, extinguish,
 } from './combat.js';
 import { clamp, norm, dist, dist2, angTo, uid } from './util.js';
+
+/** The scrap gun anyone can carry: a few heavy shots, then it falls apart into 1 scrap. */
+export const MAKESHIFT = { kind: 'bullet', dmg: 24, rate: 0.42, speed: 600, spread: 0.06, range: 480 };
+
+/**
+ * Say something in character. kind: idle | fight | kill | hurt | dock | fire. Each crew member has a
+ * cooldown so the ship doesn't turn into a chat room; `force` skips it.
+ */
+export function quip(g, c, kind, force = false) {
+  if (!c || !c.alive || (!force && (c.quipT > g.time || c.sayT > 0))) return;
+  let pool = LINES[c.cls]?.[kind] || [];
+  if (kind === 'idle') {
+    if (c.cls === 'scientist') pool = JARGON;
+    else if (c.cls === 'dog') pool = DOG_BARKS;
+    else if (c.cls === 'chef') pool = [...pool, ...CHEF_LINES];
+  }
+  if (!pool.length) return;
+  c.quipT = g.time + (force ? 4 : 9 + g.rng() * 10);
+  say(g, c, g.rng.pick(pool));
+}
 
 const STAFF_FORMS = ['staff', 'blade', 'rifle', 'shotgun'];
 const STAFF_W = {
@@ -18,6 +38,7 @@ export const MINE_TYPES = ['proximity', 'timed', 'remote', 'c4'];
 const JARS = ['poison', 'acid', 'explosive'];
 
 export function weaponOf(c) {
+  if (c.makeshift?.ammo > 0) return MAKESHIFT;
   if (c.cls === 'vaelift') return STAFF_W[c.form || 'staff'];
   return WEAPONS[CLASSES[c.cls].weapon];
 }
@@ -45,8 +66,8 @@ export function crewTick(g, c, inp, dt) {
   const def = CLASSES[c.cls];
   for (const k in c.cd) if (c.cd[k] > 0) c.cd[k] -= dt * (1 + stat(c, 'cd'));
   if (c.coinWinT > 0) c.coinWinT -= dt;
-  if (c.makeshift > 0) c.makeshift -= dt;
   if (c.swingT > 0) c.swingT -= dt;
+  if (c.spraying > 0) c.spraying -= dt;
   if (c.hurtT > 0) c.hurtT -= dt;
   if (c.sayT > 0) c.sayT -= dt;
 
@@ -113,17 +134,27 @@ export function crewTick(g, c, inp, dt) {
 
 function primary(g, c, w, inp) {
   const ang = c.facing;
-  let mul = 1 + stat(c, 'dmg') + (c.makeshift > 0 ? 0.3 : 0) + (g.ship.research.has('skilltree') ? 0.1 : 0);
+  let mul = 1 + stat(c, 'dmg') + (g.ship.research.has('skilltree') ? 0.1 : 0);
   if (c.special) mul += 0.4;
   const rateMul = 1 + stat(c, 'rate');
   const up = c.upgrades;
   c.cd.fire = w.rate / Math.max(0.3, rateMul);
   if (c.cloaked && w.kind !== 'heckle') c.cloakBreak = 1;
+  if (w === MAKESHIFT) {
+    const lvl = c.makeshift.lvl || 0;
+    fireBullet(g, c, ang, w, 'crew', { mul: mul * (1 + 0.2 * lvl), kind: 'scrap', pierce: true });
+    g.fx({ t: 'shot', x: c.x, y: c.y, a: ang, w: 'scrap' });
+    if (--c.makeshift.ammo <= 0) {
+      c.makeshift = null; g.ship.scrap += 1;
+      g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'gun fell apart: +1 scrap', color: '#c0c0c0' });
+    }
+    return;
+  }
+  if (g.phase === 'encounter' && g.rng.chance(0.03)) quip(g, c, 'fight');
   switch (w.kind) {
     case 'heckle': {
       const target = nearestCrew(g, c);
-      const tier = Math.min(INSULTS.length - 1, Math.max(g.tier, up[1]));
-      say(g, c, g.rng.pick(INSULTS[g.rng.int(0, tier)]), target);
+      say(g, c, pickInsult(g, c), target);
       break;
     }
     case 'melee': {
@@ -176,6 +207,17 @@ function lob(g, c, tx, ty, kind, extra) {
   const a = Math.atan2(ty - c.y, tx - c.x);
   const ex = c.x + Math.cos(a) * d, ey = c.y + Math.sin(a) * d;
   spawnProj(g, { kind, sx: c.x, sy: c.y, tx: ex, ty: ey, x: c.x, y: c.y, dur: 0.35 + d / 700, team: 'crew', owner: c, life: 5, ...extra });
+}
+
+/** Meaner ones unlock deeper down (or with Sharper Tongue). Never the same one twice in a row. */
+function pickInsult(g, c, best = false) {
+  const tier = Math.min(INSULTS.length - 1, Math.max(g.tier, c.upgrades[1]) + (best ? c.upgrades[1] >> 1 : 0));
+  const pool = best ? [...INSULTS[tier], ...INSULTS[Math.max(0, tier - 1)]] : INSULTS.slice(0, tier + 1).flat();
+  const recent = (c.recentInsults ||= []);
+  let s = g.rng.pick(pool);
+  for (let k = 0; k < 6 && recent.includes(s); k++) s = g.rng.pick(pool);
+  recent.push(s); if (recent.length > 8) recent.shift();
+  return s;
 }
 
 function nearestCrew(g, c) {
@@ -241,8 +283,7 @@ const ABILITY_FNS = {
   trap(g, c) { const p = inFront(c, 22); g.objs.push({ id: uid(), kind: 'trap', owner: c.id, x: p.x, y: p.y, lvl: c.upgrades[2], armT: 0.6 }); },
   insult(g, c) {
     const target = nearestCrew(g, c);
-    const tier = Math.min(INSULTS.length - 1, g.tier + c.upgrades[1]);
-    say(g, c, g.rng.pick(INSULTS[tier]), target);
+    say(g, c, pickInsult(g, c, true), target);
     g.stats.insults++;
   },
   ghost(g, c) {
@@ -439,9 +480,14 @@ export function interactTarget(g, c) {
   }
   const rt = repairTarget(g, c);
   if (rt) return { kind: 'repair', obj: rt, label: `Hold E: repair ${rt.label}` };
+  for (const o of g.objs) if (o.kind === 'fire' && dist(o, c) < 48) return { kind: 'fire', obj: o, label: c.cls === 'mrclean' ? 'Hold E: put out the fire (fast)' : 'Hold E: fire extinguisher' };
   if (c.cls === 'mrclean') for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) return { kind: 'mess', obj: o, label: 'Hold E: sweep' };
   const d = nearDoor(g, c);
-  if (d) return { kind: 'door', obj: d, label: d.sealed ? (CLASSES[c.cls].clearance ? 'Unseal door (clearance)' : 'Sealed: needs clearance') : d.hold === 'closed' ? 'Open door' : 'Hold door shut' };
+  if (d) {
+    const what = d.blast ? 'blast door' : 'door';
+    return { kind: 'door', obj: d, label: d.sealed ? (CLASSES[c.cls].clearance ? `Unseal ${what} (clearance)` : 'Sealed: needs clearance')
+      : d.hold === 'closed' ? `Prop the ${what} open` : d.hold === 'open' ? `Shut the ${what}` : `Shut the ${what}` };
+  }
   return null;
 }
 function stationLabel(r) {
@@ -472,19 +518,19 @@ export function repairTarget(g, c, reach = 46) {
     const orig = g.orig.get(i);
     let label = null;
     if (t === T.BREACH) label = 'hull breach';
-    else if (t === T.RUBBLE && orig !== undefined) label = orig === T.DOOR ? 'smashed door' : 'smashed wall';
+    else if (t === T.DEBRIS) label = 'wreckage (blocking the way)';
+    else if (t === T.RUBBLE && orig !== undefined) label = orig === T.DOOR ? 'smashed door' : orig === T.FLOOR ? 'wreckage' : 'smashed wall';
     else if ((t === T.WALL || t === T.HULL) && g.grid.hp[i] < TILE_HP[t]) label = 'damaged wall';
     else if (t === T.DOOR) { const d = g.doors[g.grid.doorAt[i]]; if (d && d.hp < d.maxHp) label = 'damaged door'; }
     if (!label) continue;
-    if (tileOwnerSimple(g, ty) === 'them') continue;
+    if (tileOwner(g, tx, ty) === 'them') continue;
     // don't rebuild a wall on top of someone
-    if ((t === T.RUBBLE || t === T.BREACH) && occupied(g, tx, ty)) continue;
+    if ((t === T.RUBBLE || t === T.BREACH) && orig !== T.FLOOR && occupied(g, tx, ty)) continue;
     const dx = (tx + .5) * TILE - c.x, dy = (ty + .5) * TILE - c.y, d = dx * dx + dy * dy;
     if (d < bd) { bd = d; best = { i, tx, ty, label }; }
   }
   return best;
 }
-const tileOwnerSimple = (g, ty) => (ty < g.ourTopY ? 'them' : 'us');
 function occupied(g, tx, ty) {
   for (const a of [...g.crew, ...g.mobs]) if (a.alive && Math.floor(a.x / TILE) === tx && Math.floor(a.y / TILE) === ty) return true;
   return false;
@@ -508,13 +554,19 @@ function interactPress(g, c) {
     case 'door': {
       const d = it.obj;
       if (d.sealed) { if (CLASSES[c.cls].clearance || c.isJoe) { d.sealed = false; d.hold = null; g.fx({ t: 'door', x: d.x, y: d.y, unseal: true }); } else g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'no clearance', color: '#ff8080' }); }
-      else { d.hold = d.hold === 'closed' ? null : 'closed'; g.fx({ t: 'door', x: d.x, y: d.y }); }
+      else {
+        // toggle: shut it (boarders have to smash through) or prop it open (anyone can pass, them too)
+        d.hold = d.hold === 'closed' ? 'open' : 'closed';
+        g.fx({ t: 'door', x: d.x, y: d.y, blast: !!d.blast, open: d.hold === 'open' });
+      }
       break;
     }
   }
 }
 
 function interactHold(g, c, dt) {
+  // fires come first: everyone carries an extinguisher
+  if (extinguish(g, c, dt)) return;
   // sweeping
   if (c.cls === 'mrclean') {
     for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) {
@@ -570,9 +622,9 @@ export function repairTile(g, c, t, amt) {
     return;
   }
   if (tt === T.WALL || tt === T.HULL) { g.grid.hp[i] = Math.min(TILE_HP[tt], g.grid.hp[i] + amt); return; }
-  // rebuilding a breach / rubble
+  // rebuilding a breach / rubble, clearing wreckage
   g.rebuild.set(i, (g.rebuild.get(i) || 0) + amt);
-  const target = tt === T.BREACH ? T.HULL : g.orig.get(i);
+  const target = tt === T.BREACH ? T.HULL : g.orig.get(i) ?? T.FLOOR;
   if (g.rebuild.get(i) >= (TILE_HP[target] || 60) * 0.7) {
     g.rebuild.delete(i);
     g.orig.delete(i);
@@ -580,7 +632,7 @@ export function repairTile(g, c, t, amt) {
       g.grid.tiles[i] = T.DOOR;
       const d = g.doors[g.grid.doorAt[i]];
       if (d) { d.broken = false; d.hp = d.maxHp * 0.6; d.open = 0; }
-    } else { g.grid.tiles[i] = target; g.grid.hp[i] = TILE_HP[target] * 0.7; }
+    } else { g.grid.tiles[i] = target; g.grid.hp[i] = (TILE_HP[target] || 0) * 0.7; }
     g.grid.version++;
     g.fx({ t: 'fixed', x: (t.tx + .5) * TILE, y: (t.ty + .5) * TILE });
     g.stats.repairs++;
@@ -610,6 +662,8 @@ function hitThingsInFront(g, c, dmg) {
     const d = g.doors[g.grid.doorAt[idx(tx, ty)]];
     if (d && d.owner === 'them' && d.open < 0.75) { hitTile(g, tx, ty, dmg); g.fx({ t: 'bang', x: (tx + .5) * TILE, y: (ty + .5) * TILE }); }
   }
+  // hack through wreckage
+  if (g.grid.get(tx, ty) === T.DEBRIS) { hitTile(g, tx, ty, dmg * 0.8); g.fx({ t: 'bang', x: (tx + .5) * TILE, y: (ty + .5) * TILE }); }
 }
 
 function ventTravel(g, c, from) {
@@ -630,7 +684,12 @@ function passive(g, c, dt) {
     c.spinT -= dt; c.spinTick -= dt;
     if (c.spinTick <= 0) { c.spinTick = 0.2; melee(g, c, { dmg: 18 * (1 + 0.2 * c.upgrades[0]), range: 58, arc: 7 }, 0, 'crew', { knock: 90 }); g.fx({ t: 'swing', x: c.x, y: c.y, a: g.time * 20, r: 58, cls: 'mrclean' }); }
   }
-  if (c.cls === 'scientist' && g.rng.chance(dt / 35)) say(g, c, g.rng.pick(JARGON));
+  // everyone talks now and then, in their own voice
+  if (c.cls !== 'urchid' && g.rng.chance(dt / 50)) {
+    const busy = g.mobs.some((m) => m.alive && m.team === 'enemy' && Math.abs(m.x - c.x) < 300 && Math.abs(m.y - c.y) < 300);
+    quip(g, c, busy ? 'fight' : 'idle');
+  }
+  if (c.cls === 'urchid' && !c.human && g.rng.chance(dt / 40)) quip(g, c, 'idle');
   if (c.cls === 'chef' && c.cooking) {
     c.cooking.t -= dt;
     if (c.cooking.t <= 0) { g.serveMeal(c, c.cooking); c.cooking = null; say(g, c, g.rng.pick(CHEF_LINES)); }

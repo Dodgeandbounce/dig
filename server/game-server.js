@@ -221,6 +221,8 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     const conn = { socket, playerId: null, name: null, worldId: null, synced: false };
     conns.add(conn);
     socket.on('message', (msg) => {
+      // heartbeat: the browser pings every 2s, measures the round trip, and reconnects if we go quiet
+      if (msg?.t === 'ping') return socket.send({ t: 'pong', c: msg.c });
       const handler = handlers[msg?.t];
       if (!handler) return;
       if (msg.t !== 'hello' && !conn.playerId) return socket.send({ t: 'error', message: 'Say hello first' });
@@ -253,6 +255,8 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
       for (const w of worlds.values()) if (w.online.size && metaKey(w) !== w.lastMeta) broadcastWorld(w);
     }), META_MS),
     setInterval(guard('lobby', () => broadcastLobby()), LOBBY_MS),
+    // a connection that has said nothing (not even a heartbeat) for 30s is dead: free its seat
+    setInterval(guard('heartbeat', () => { const now = Date.now(); for (const c of conns) if (now - (c.socket.lastSeen || now) > 30000) c.socket.close(1001, 'timeout'); }), 5000),
     setInterval(guard('save', () => saveAll()), SAVE_MS),
     setInterval(guard('save-games', () => { for (const w of worlds.values()) if (w.gameDirty) saveGame(w); }), GAME_SAVE_MS),
   ];

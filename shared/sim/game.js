@@ -1,19 +1,19 @@
 // Do I Go? — the whole game simulation. Runs in the browser for solo play and
 // can run on the server for multiplayer (inputs in, snapshots out).
 import {
-  T, TILE, TILE_HP, MAP_W, MAP_H, SLOT_W, SLOT_H, SHIP_COLS, SHIP_ROWS, SHIP_OX, SHIP_OY, ENEMY_OY,
-  LEVELS, KM_PER_LEVEL, ROOMS, CLASSES, CLASS_ORDER, STARTER_CLASSES, BUYABLE_ROOMS, SHIP_UPGRADES,
+  T, TILE, TILE_HP, MAP_W, MAP_H, SLOT_W, SLOT_H, SHIP_COLS, SHIP_ROWS, SHIP_OX, SHIP_OY, ENEMY_OY, ENEMY_GAP, MAX_DOCKED,
+  LEVELS, KM_PER_LEVEL, ROOMS, CLASSES, CLASS_ORDER, STARTER_CLASSES, BUYABLE_ROOMS, SHIP_UPGRADES, SHIP_UP_MAX, CLASS_UP_MAX,
   CLASS_UPGRADES, UPGRADE_BASE_COST, RECIPES, RESEARCH, NODE_TYPES, PORT_NAMES, PORT_FLAVOR, JOE_NOTES,
-  TRANSPONDER_NOTE, JOURNAL_TEXT, BROTHER_NOTES, ENDINGS, AGENT_BRIEFS,
+  TRANSPONDER_NOTE, JOURNAL_TEXT, BROTHER_NOTES, ENDINGS, AGENT_BRIEFS, CREW_HP_MUL, BLAST_DOOR_HP, RING,
 } from './data.js';
 import { makeRng } from './rng.js';
-import { Grid, idx, inMap, buildRooms, slotRect, stationPos, roomTiles, wallTilesOf } from './grid.js';
+import { Grid, idx, inMap, buildRooms, buildRing, addDoor, slotRect, stationPos, roomTiles, wallTilesOf, roomCenter, roomPoint } from './grid.js';
 import { makeRoster, tierFor, levelMix } from './roster.js';
 import {
   updateProjectiles, updatePickups, damage, hitTile, damageSystem, addMess, dropPickup, rainPickup, tickBuffs,
-  addBuff, roomAt, tileOwner, healActor, explode,
+  addBuff, roomAt, tileOwner, healActor, explode, igniteRoom, updateFires, inOurBox,
 } from './combat.js';
-import { crewTick, interactTarget, say, spinSlots } from './classes.js';
+import { crewTick, interactTarget, say, spinSlots, quip } from './classes.js';
 import { botInput, mobTick, rebuildFields, updateObjects, pickMissileTarget } from './ai.js';
 import { newDescent, descentTick, feeders, speedFactor } from './pilot.js';
 import { clamp, dist, uid } from './util.js';
@@ -26,8 +26,11 @@ const START_LAYOUT = [
   { type: 'shield', sx: 5, sy: 3 },
 ];
 
+export const GAME_VERSION = 2;   // bump when saved games can't be loaded any more (map size, layout)
+
 export class Game {
   constructor({ seed, playerClass = 'pilot', playerName, shipName, speed = 1 } = {}) {
+    this.v = GAME_VERSION;
     this.seed = seed ?? ((Math.random() * 2 ** 31) | 0);
     this.rng = makeRng(this.seed);
     this.W = MAP_W;
@@ -48,13 +51,15 @@ export class Game {
     this.roster = makeRoster(this.rng);
     this.level = 1;
     this.path = null;
-    this.transponderLevel = this.rng.int(4, 7);
+    this.transponderLevel = this.rng.int(10, 16);
     this.transponderCode = String(this.rng.int(1000, 9999));
     this.noteIdx = 0;
     this.brotherIdx = 0;
+    this.lastNoteLevel = 0;
     this.joe = { state: 'missing' };
     this.storyMode = playerClass === 'urchid';
-    this.ourTopY = SHIP_OY;
+    this.box = { x0: 0, y0: SHIP_OY, x1: MAP_W - 1, y1: MAP_H - 1 };   // our ship's bounds (tiles, outer hull included)
+    this.enemyShips = [];
 
     this.ship = {
       name: (shipName || '').trim().slice(0, 32) || `The D-${this.rng.int(100, 999)}`,
@@ -92,8 +97,16 @@ export class Game {
     this.tips.add(key);
     this.log('tip', `💡 ${text}`);
   }
+  quip(c, kind, force) { quip(this, c, kind, force); }
   panel(c, type, room) { if (c.human) this.fx({ t: 'panel', crew: c.id, panel: type, room: room ? this.rooms.indexOf(room) : null }); }
   get tier() { return tierFor(this.level, this.path); }
+  /** The enemy ship that matters most right now (docked and still fighting, else any). */
+  get enemyShip() {
+    const l = this.enemyShips; if (!l?.length) return null;
+    return l.find((s) => s.docked && !s.done) || l.find((s) => !s.done && !s.gone) || l.find((s) => !s.gone) || null;
+  }
+  /** Enemy ships that are docked and still in the fight. */
+  get fightingShips() { return (this.enemyShips || []).filter((s) => s.docked && !s.done); }
   get depthKm() { return Math.round(((this.level - 1) + (this.phase === 'descent' ? Math.min(1, this.descent.progress) : (this.levelDone || this.phase === 'route') ? 1 : 0)) * KM_PER_LEVEL); }
 
   // -------------------------------------------------------------------------
@@ -101,10 +114,11 @@ export class Game {
   addCrew(cls, name) {
     const def = CLASSES[cls];
     const home = this.rooms.find((r) => r.owner === 'us' && r.type === def.room) || this.rooms[0];
+    const hp = Math.round(def.hp * (cls === 'urchid' ? 1 : CREW_HP_MUL));
     const c = {
       id: uid(), cls, name: (name || '').trim().slice(0, 16) || def.def, team: 'crew', human: false,
-      x: home.station.x + this.rng.range(-30, 30), y: home.station.y + 60, r: cls === 'slots' ? 13 : cls === 'dog' ? 10 : 11,
-      hp: def.hp, maxHp: def.hp, alive: true, downT: 0, wallet: 25, upgrades: [0, 0, 0],
+      x: home.station.x + 40 + this.rng.range(-20, 40), y: home.station.y + 60, r: cls === 'slots' ? 13 : cls === 'dog' ? 10 : 11,
+      hp, maxHp: hp, alive: true, downT: 0, wallet: 25, upgrades: [0, 0, 0],
       cd: { fire: 0, q: 0, f: 0, rmb: 0, space: 0 }, buffs: [], facing: 0, aim: { x: 0, y: 0 },
       stunT: 0, slowT: 0, kills: 0, repairs: 0, monsters: [], summonIdx: 0, wiggle: [], bot: {},
       form: 'staff', jar: 'poison', mineType: 'proximity', missionRank: 0, carrying: 0,
@@ -147,16 +161,18 @@ export class Game {
   // -------------------------------------------------------------------------
   // ship layout (rebuilt when rooms are added). Damage to existing tiles is kept.
   layoutShip() {
+    // the whole area our ship could ever cover
+    const AX0 = SHIP_OX - RING, AY0 = SHIP_OY - RING, AX1 = SHIP_OX + SHIP_COLS * SLOT_W + RING, AY1 = SHIP_OY + SHIP_ROWS * SLOT_H + RING;
     const keepTiles = new Map();
     if (this.rooms) {
-      for (let y = SHIP_OY; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+      for (let y = AY0; y <= AY1; y++) for (let x = AX0; x <= AX1; x++) {
         const i = idx(x, y), t = this.grid.tiles[i];
-        if (t === T.BREACH || t === T.RUBBLE || ((t === T.WALL || t === T.HULL) && this.grid.hp[i] < TILE_HP[t])) keepTiles.set(i, { t, hp: this.grid.hp[i] });
+        if (t === T.BREACH || t === T.RUBBLE || t === T.DEBRIS || ((t === T.WALL || t === T.HULL) && this.grid.hp[i] < TILE_HP[t])) keepTiles.set(i, { t, hp: this.grid.hp[i] });
       }
     }
     const oldDoors = new Map((this.doors || []).filter((d) => d.owner === 'us').map((d) => [d.i, d]));
     const oldSys = new Map((this.rooms || []).filter((r) => r.owner === 'us').map((r) => [`${r.sx},${r.sy}`, r]));
-    this.grid.clearRegion(0, SHIP_OY - 1, MAP_W - 1, MAP_H - 1);
+    this.grid.clearRegion(AX0, AY0, AX1, AY1);
     // keep only enemy-side doors (none at ports)
     this.doors = (this.doors || []).filter((d) => d.owner === 'them');
     const rooms = this.ourRooms.map((r) => {
@@ -171,21 +187,85 @@ export class Game {
     // enemy rooms (if any) keep their indices after ours
     const theirs = (this.rooms || []).filter((r) => r.owner === 'them');
     buildRooms(this.grid, rooms, 0, this.doors, 'us');
+    // the walkway around the whole ship, with a door out of every room that touches it
+    const ring = buildRing(this.grid, rooms, this.doors);
+    this.addBlastDoors(ring);
     this.rooms = [...rooms, ...theirs];
     // re-index enemy rooms in the grid
     theirs.forEach((r, k) => { for (const i of roomTiles(r)) this.grid.room[i] = rooms.length + k; });
-    for (const d of this.doors) { if (d.owner === 'them') { d.a += 0; } }
-    this.doors.forEach((d, k) => { this.grid.doorAt[d.i] = k; const o = oldDoors.get(d.i); if (o && d.owner === 'us') { d.hp = o.hp; d.hold = o.hold; } });
+    this.doors.forEach((d, k) => { this.grid.doorAt[d.i] = k; const o = oldDoors.get(d.i); if (o && d.owner === 'us') { d.hp = Math.min(d.maxHp, o.hp); d.hold = o.hold; } });
     for (const [i, s] of keepTiles) {
-      const now = this.grid.tiles[i];
-      if (now === T.WALL || now === T.HULL) { this.grid.tiles[i] = s.t; this.grid.hp[i] = s.hp; if (s.t === T.RUBBLE && !this.orig.has(i)) this.orig.set(i, now); }
+      const now = this.grid.tiles[i], was = this.orig.get(i);
+      const back = s.t === T.BREACH ? now === T.HULL
+        : (s.t === T.RUBBLE || s.t === T.DEBRIS) ? (now === T.WALL || (now === T.FLOOR && was === T.FLOOR))
+        : now === s.t;
+      if (!back) continue;
+      this.grid.tiles[i] = s.t; this.grid.hp[i] = s.hp;
+      if (s.t === T.BREACH) this.orig.set(i, T.HULL);
+      else if (s.t === T.RUBBLE || s.t === T.DEBRIS) this.orig.set(i, was ?? now);
     }
+    for (const [i] of [...this.orig]) { const t = this.grid.tiles[i]; if (t !== T.RUBBLE && t !== T.BREACH && t !== T.DEBRIS) this.orig.delete(i); }
     this.grid.version++;
-    this.ourTopY = Math.min(...rooms.map((r) => r.y0));
+    // our bounds and outer hull
+    let x0 = MAP_W, y0 = MAP_H, x1 = 0, y1 = 0;
+    this.hullTiles = [];
+    for (let y = AY0; y <= AY1; y++) for (let x = AX0; x <= AX1; x++) {
+      const t = this.grid.tiles[idx(x, y)];
+      if (t === T.VOID) continue;
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+      if (t === T.HULL || t === T.BREACH) this.hullTiles.push(idx(x, y));
+    }
+    this.box = { x0, y0, x1, y1 };
     // vents for the chameleon
     this.objs = (this.objs || []).filter((o) => o.kind !== 'vent' || o.owner !== 'us');
     if (this.crew?.some((c) => c.cls === 'chameleon')) this.addVents(rooms, 'us');
     this.recalcShip();
+  }
+
+  /** Four heavy blast doors across the walkway (top, bottom, left, right). Open unless someone shuts them. */
+  addBlastDoors(ring) {
+    if (!ring.length) return;
+    const set = new Set(ring);
+    const G = this.grid;
+    const floor = (x, y) => inMap(x, y) && set.has(idx(x, y));
+    const nearDoor = (x, y) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => G.get(x + dx, y + dy) === T.DOOR);
+    let x0 = MAP_W, y0 = MAP_H, x1 = 0, y1 = 0;
+    for (const i of ring) { const x = i % MAP_W, y = (i / MAP_W) | 0; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    const cx = Math.round((x0 + x1) / 2), cy = Math.round((y0 + y1) / 2);
+    // run of walkway tiles across the corridor, scanning from the outside in
+    const tryLine = (fixed, vertical, from, to) => {
+      const step = from < to ? 1 : -1;
+      for (let p = from; p !== to; p += step) {
+        const [x, y] = vertical ? [fixed, p] : [p, fixed];
+        if (!floor(x, y)) continue;
+        const run = [];
+        let q = p;
+        while (run.length < 4) { const [rx, ry] = vertical ? [fixed, q] : [q, fixed]; if (!floor(rx, ry)) break; run.push([rx, ry]); q += step; }
+        if (run.length >= 1 && run.length <= 3 && !run.some(([rx, ry]) => nearDoor(rx, ry))) return run;
+        return null;
+      }
+      return null;
+    };
+    const sides = [
+      [(o) => tryLine(cx + o, true, y0 - 1, cy), 'v'],
+      [(o) => tryLine(cx + o, true, y1 + 1, cy), 'v'],
+      [(o) => tryLine(cy + o, false, x0 - 1, cx), 'h'],
+      [(o) => tryLine(cy + o, false, x1 + 1, cx), 'h'],
+    ];
+    for (const [find, orient] of sides) {
+      let run = null;
+      for (const o of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]) { run = find(o); if (run) break; }
+      if (!run) continue;
+      for (const [x, y] of run) { const d = addDoor(G, this.doors, x, y, -1, -1, 'us', orient, BLAST_DOOR_HP); d.blast = true; d.hold = 'open'; d.open = 1; }
+    }
+  }
+
+  /** Hull tiles of our ship near a room (for things that punch holes in it). */
+  hullNear(room, reach = 7) {
+    const c = roomCenter(room);
+    const tx = c.x / TILE, ty = c.y / TILE;
+    const near = (this.hullTiles || []).filter((i) => this.grid.tiles[i] === T.HULL && Math.abs((i % MAP_W) - tx) < SLOT_W / 2 + reach && Math.abs(((i / MAP_W) | 0) - ty) < SLOT_H / 2 + reach);
+    return near.map((i) => ({ i, x: i % MAP_W, y: (i / MAP_W) | 0 }));
   }
 
   addVents(rooms, owner) {
@@ -214,13 +294,14 @@ export class Game {
   // spawning
   spawnMob(typeIdx, x, y, opts = {}) {
     const ty = this.roster[typeIdx];
-    const tierScale = 1 + Math.max(0, this.tier - ty.tier) * 0.25;
+    // older types keep up a little, every level adds a bit, and each one is a bit random
+    const tierScale = (1 + Math.max(0, this.tier - ty.tier) * 0.3) * (1 + 0.02 * (this.level - 1)) * (opts.team === 'crew' ? 1 : this.rng.range(0.85, 1.2));
     const hp = ty.hp * tierScale * (opts.hpMul || 1) * (this.storyMode && opts.team !== 'crew' ? 0.25 : 1) * (1 + 0.08 * Math.max(0, this.humanCount() - 1));
     const m = {
       id: uid(), type: typeIdx, team: opts.team || 'enemy', name: ty.name, x, y, r: 11 * ty.size, hp, maxHp: hp, alive: true,
       speed: ty.speed, dmgMul: ty.dmgMul * tierScale * (opts.dmgMul || 1), weapon: ty.weapon, role: ty.role, armor: ty.armor,
       atkT: this.rng.range(0.3, 1.2), facing: 0, defender: !!opts.defender, boss: !!ty.boss, isMonster: !!opts.isMonster, ownerId: opts.ownerId,
-      marked: false,
+      marked: false, esId: opts.esId,
     };
     if (m.team === 'enemy' && !m.boss && opts.markable !== false) {
       const agent = this.crew.find((c) => c.cls === 'agent');
@@ -256,6 +337,7 @@ export class Game {
     if (this.paused || this.storyOpen) return;
     this.time += dt;
     this.phaseT += dt;
+    if (this.departWarnT > 0) this.departWarnT -= dt;
 
     if (this.time - (this.fieldsAt || -9) > (this.mobs.length ? 0.35 : 1)) rebuildFields(this);
     this.updateDoors(dt);
@@ -291,7 +373,8 @@ export class Game {
   respawn(c) {
     const q = this.rooms.filter((r) => r.owner === 'us' && (r.type === 'quarters' || r.type === CLASSES[c.cls].room));
     const r = q[0] || this.rooms[0];
-    c.alive = true; c.hp = c.maxHp; c.x = (r.x0 + 4.5) * TILE + this.rng.range(-20, 20); c.y = (r.y0 + 4) * TILE;
+    const p = roomCenter(r);
+    c.alive = true; c.hp = c.maxHp; c.x = p.x + this.rng.range(-20, 20); c.y = p.y + 16;
     this.fx({ t: 'respawn', x: c.x, y: c.y });
   }
 
@@ -304,18 +387,19 @@ export class Game {
       if (d.owner === 'them') {
         // their doors open for them; we have to smash through
         for (const m of this.mobs) if (m.alive && m.team === 'enemy' && Math.abs(m.x - cx) < 46 && Math.abs(m.y - cy) < 46) { want = 1; break; }
-      } else if (!d.sealed && d.hold !== 'closed') {
+      } else if (d.sealed) want = 0;
+      else if (d.hold === 'open') want = 1;            // propped open: anyone can walk through, them too
+      else if (d.hold !== 'closed') {
         for (const c of this.crew) if (c.alive && Math.abs(c.x - cx) < 50 && Math.abs(c.y - cy) < 50) { want = 1; break; }
         if (!want) for (const m of this.mobs) if (m.alive && m.team === 'crew' && Math.abs(m.x - cx) < 46 && Math.abs(m.y - cy) < 46) { want = 1; break; }
       }
-      const before = d.open;
-      d.open = clamp(d.open + (want ? 1 : -1) * dt / 1.1, 0, 1); // they open and close slowly
-      if ((before < 0.75) !== (d.open < 0.75)) this.grid.version += 0; // passability read live
+      d.open = clamp(d.open + (want ? 1 : -1) * dt / (d.blast ? 1.8 : 1.1), 0, 1); // they open and close slowly (blast doors slower)
     }
   }
 
   shipTick(dt) {
     const s = this.ship;
+    updateFires(this, dt);
     if (s.evasiveT > 0) s.evasiveT -= dt;
     for (const r of this.rooms) if (r.reinforced > 0) r.reinforced -= dt;
     // breaches leak dirt and drain the hull
@@ -323,19 +407,37 @@ export class Game {
     if (this.leakT <= 0) {
       this.leakT = 1;
       let breaches = 0;
-      for (let y = this.ourTopY; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+      const B = this.box;
+      const creatures = this.roster.filter((x) => x.creature && x.tier <= this.tier);
+      const calm = this.phase === 'port' || this.phase === 'briefing';
+      for (let y = B.y0; y <= B.y1; y++) for (let x = B.x0; x <= B.x1; x++) {
         if (this.grid.tiles[idx(x, y)] !== T.BREACH) continue;
         breaches++;
-        if (this.rng.chance(0.18)) {
-          // dirt pours in next to the hole
-          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (this.grid.get(x + dx, y + dy) === T.FLOOR) { addMess(this, (x + dx + .5) * TILE, (y + dy + .5) * TILE, 'dirt', 1); break; }
+        let inside = null;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (this.grid.get(x + dx, y + dy) === T.FLOOR) { inside = [x + dx, y + dy]; break; }
+        if (!inside) continue;
+        // dirt pours in next to the hole...
+        if (this.rng.chance(0.18)) addMess(this, (inside[0] + .5) * TILE, (inside[1] + .5) * TILE, 'dirt', 1);
+        // ...and things crawl in through it. The deeper we are, the more often.
+        if (!calm && creatures.length && this.mobs.length < 70 && this.rng.chance(0.006 * (1 + this.tier * 1.3))) {
+          const type = this.rng.pick(creatures);
+          this.spawnMob(type.idx, (inside[0] + .5) * TILE, (inside[1] + .5) * TILE, { markable: false });
+          if (this.time - (this.crawlLogAt || -99) > 12) { this.crawlLogAt = this.time; this.log('alert', `A ${type.name} crawled in through a hull breach! Patch those holes.`); }
         }
       }
       const drain = breaches * 0.35 * (s.research.has('plating') ? 0.5 : 1) * (this.phase === 'port' ? 0 : 1);
       if (!this.storyMode) s.hull = Math.max(0, s.hull - drain);
       this.breaches = breaches;
+      // lose an engine and the whole ship starts catching fire
+      if (!calm && !this.storyMode) {
+        const dead = this.rooms.filter((r) => r.owner === 'us' && r.type === 'engine' && r.sys.hp <= 0).length;
+        if (dead && this.rng.chance(0.14 * dead)) {
+          const r = this.rng.pick(this.rooms.filter((x) => x.owner === 'us'));
+          igniteRoom(this, r, 1);
+        }
+      }
       // clean ship buff
-      const messes = this.objs.filter((o) => o.kind === 'mess' && o.y > this.ourTopY * TILE).reduce((a, o) => a + o.amt, 0);
+      const messes = this.objs.filter((o) => o.kind === 'mess' && inOurBox(this, o.x, o.y)).reduce((a, o) => a + o.amt, 0);
       this.messCount = messes;
       this.cleanBuff = messes <= 2;
       this.recalcShip();
@@ -424,10 +526,11 @@ export class Game {
     if (this.path === 'brother' && L === LEVELS - 1 && this.joe.state === 'alive') { add('discovery', { rescue: true, name: "Joe's Pod", icon: '♥', desc: 'A weak signal. Joe\'s pod. Things are scratching at it.' }); return nodes; }
     const lastPort = this.lastPortLevel || 0;
     const needPort = L - lastPort >= 2;
-    const pool = { ship: 4 + this.tier, port: needPort ? 6 : 2, fuel: this.ship.fuel < 45 ? 4 : 1.5, discovery: 2.5, nest: this.tier >= 1 ? 1.5 : 0.3, city: L >= 3 ? 1.2 : 0, repair: this.ship.hull < this.ship.hullMax * 0.5 ? 3 : 0.8 };
+    // (no "read a note" stop: Joe's notes turn up wherever you go)
+    const pool = { ship: 4 + this.tier, port: needPort ? 6 : 2, fuel: this.ship.fuel < 45 ? 4 : 1.5, nest: this.tier >= 1 ? 2 + this.tier * 0.5 : 0.4, city: L >= 5 ? 1.2 : 0, repair: this.ship.hull < this.ship.hullMax * 0.5 ? 3 : 0.8 };
     const n = this.rng.chance(0.4) ? 3 : 2;
     const used = new Set();
-    if (needPort) { add(this.rng.chance(0.3) && L >= 3 ? 'city' : 'port'); used.add('port'); used.add('city'); }
+    if (needPort) { add(this.rng.chance(0.3) && L >= 5 ? 'city' : 'port'); used.add('port'); used.add('city'); }
     while (nodes.length < n) {
       const t = this.rng.weighted(pool);
       if (used.has(t)) { pool[t] = 0; if (Object.values(pool).every((v) => !v)) break; continue; }
@@ -441,6 +544,7 @@ export class Game {
   arrive(node) {
     this.levelDone = true;
     this.fx({ t: 'arrive', node: node.type });
+    if (!node.boss && !node.rescue && !node.derelict) this.maybeNote(node);
     if (node.boss) return this.startEncounter('boss');
     if (node.rescue) return this.startEncounter('pod');
     if (node.derelict) return this.startEncounter('derelict');
@@ -452,10 +556,28 @@ export class Game {
     }
   }
 
+  /** Joe's notes (or, on the brother path, his journal pages) turn up at whatever stop you picked. */
+  maybeNote(node) {
+    const brother = this.path === 'brother';
+    const left = brother ? this.brotherIdx < BROTHER_NOTES.length : this.noteIdx < JOE_NOTES.length;
+    if (!left) return;
+    const gap = this.level - this.lastNoteLevel;
+    if (gap < 2 || !(gap >= 5 || this.rng.chance(0.3))) return;
+    this.lastNoteLevel = this.level;
+    const where = { ship: "stuffed in a dead boarder's pocket", nest: 'scratched into the wall of the nest', port: 'pinned up at the dock', city: 'tucked under a bar stool in the city', fuel: 'taped to a fuel pump', repair: 'wedged in a toolbox at the repair dock' }[node.type] || 'in the dirt';
+    if (brother) {
+      this.story({ title: "A page from Joe's journal", lines: [BROTHER_NOTES[this.brotherIdx++], `(found ${where})`], kind: 'note' });
+      return;
+    }
+    const n = JOE_NOTES[this.noteIdx++];
+    this.applyReward(n.reward);
+    this.story({ title: 'A note from Joe', lines: [n.text, `(found ${where}) ${n.rewardText}`], kind: 'note' });
+  }
+
   afterFightRecruit() {
     if (!this.pendingRecruit) return;
     this.pendingRecruit = false;
-    this.recruit(1, 'was a prisoner on their ship and joins up');
+    this.recruit(2, 'were prisoners on their ship and join up');
   }
 
   nextLevel() {
@@ -478,7 +600,7 @@ export class Game {
       const n = JOE_NOTES[this.noteIdx++];
       lines.push(n.text); reward = n;
     } else lines.push('An old drill site. Somebody carved "Z + J" into the rock. Gems everywhere.');
-    for (let k = 0; k < 8 + this.tier * 3; k++) { const r = this.rng.pick(this.rooms.filter((x) => x.owner === 'us')); rainPickup(this, (r.x0 + 1.5 + this.rng() * 6) * TILE, (r.y0 + 1.5 + this.rng() * 4) * TILE, this.rng.chance(0.7) ? 'gem' : 'ore', 1); }
+    for (let k = 0; k < 8 + this.tier * 3; k++) { const r = this.rng.pick(this.rooms.filter((x) => x.owner === 'us')); const p = roomPoint(r, this.rng); rainPickup(this, p.x, p.y, this.rng.chance(0.7) ? 'gem' : 'ore', 1); }
     if (reward) { this.applyReward(reward.reward); lines.push(`(${reward.rewardText})`); }
     this.story({ title: this.path === 'brother' ? "A page from Joe's journal" : 'A note from Joe', lines, kind: 'note',
       after: this.rng.chance(0.35 + this.tier * 0.1) ? 'ambush' : 'aftermath' });
@@ -488,7 +610,7 @@ export class Game {
     const s = this.ship;
     if (r.scrap) s.scrap += r.scrap;
     if (r.money) for (const c of this.crew) c.wallet += r.money;
-    if (r.upgrade) { s.up[r.upgrade] = Math.min(5, s.up[r.upgrade] + 1); this.recalcShip(); }
+    if (r.upgrade) { s.up[r.upgrade] = Math.min(SHIP_UP_MAX, s.up[r.upgrade] + 1); this.recalcShip(); }
     if (r.room) { const slot = this.freeSlotNear(); if (slot) { this.ourRooms.push({ type: r.room, sx: slot.sx, sy: slot.sy }); this.layoutShip(); } }
   }
 
@@ -508,16 +630,11 @@ export class Game {
       shop: full, rooms: full, upgrades: full || kind === 'repair',
       recruits: [],
     };
-    // story: Joe's note sometimes waits at ports too
-    if (full && this.rng.chance(0.45) && this.noteIdx < JOE_NOTES.length && this.path !== 'brother') {
-      const n = JOE_NOTES[this.noteIdx++]; this.applyReward(n.reward);
-      this.story({ title: `A note pinned up at ${this.port.name}`, lines: [n.text, `(${n.rewardText})`], kind: 'note' });
-    }
     if (kind === 'repair') { for (const r of this.rooms) if (r.owner === 'us' && r.sys) r.sys.hp = r.sys.max; this.repairAllTiles(); this.log('ship', 'The repair dock fixed every system and hole. Free of charge (they love foxes).'); }
     if (kind === 'fuel') { this.ship.hull = Math.min(this.ship.hullMax, this.ship.hull + 30); }
     if (kind === 'city') { for (const c of this.crew) addBuff(c, { regen: 1, speed: 0.1 }, 120, 'city'); this.log('ship', 'Real beds, real food, live music. The crew is well rested (+regen, +speed).'); }
-    // new crew sign on
-    if (full) this.recruit();
+    // new crew sign on, two at a time
+    if (full) this.recruit(2);
     this.botsShop();
     // a missile restock for free and some loot from the trip
     this.ship.missiles = Math.min(this.ship.missilesMax, this.ship.missiles + 1);
@@ -527,7 +644,8 @@ export class Game {
 
   recruit(max = 2, how = 'signs on') {
     const have = new Set(this.crew.map((c) => c.cls));
-    const next = CLASS_ORDER.filter((k) => !have.has(k) && k !== 'urchid' && CLASSES[k].unlock <= Math.ceil(this.level / 1.2) && CLASSES[k].unlock > 0);
+    // the whole crew is aboard about 60% of the way down, so there's time to play with all of them
+    const next = CLASS_ORDER.filter((k) => !have.has(k) && k !== 'urchid' && CLASSES[k].unlock <= Math.ceil(this.level / 2.3) && CLASSES[k].unlock > 0);
     const n = Math.min(max, next.length, 17 - this.crew.length);
     for (let k = 0; k < n; k++) {
       const cls = next[k];
@@ -552,26 +670,27 @@ export class Game {
       for (let guard = 0; guard < 6; guard++) {
         const k = [0, 1, 2].sort((a, b) => c.upgrades[a] - c.upgrades[b])[0];
         const cost = UPGRADE_BASE_COST * (c.upgrades[k] + 1);
-        if (c.upgrades[k] >= 5 || c.wallet - cost < 20) break;
+        if (c.upgrades[k] >= CLASS_UP_MAX || c.wallet - cost < 20) break;
         c.wallet -= cost; c.upgrades[k]++;
       }
     }
     if (noHumans) for (const id of ['plating', 'dgun', 'bubble', 'dmissile']) {
       const lvl = s.up[id]; const cost = SHIP_UPGRADES[id].cost * (lvl + 1);
       const payer = bots.find((c) => c.wallet >= cost + 20);
-      if (payer && lvl < 5) { payer.wallet -= cost; s.up[id]++; this.recalcShip(); }
+      if (payer && lvl < SHIP_UP_MAX) { payer.wallet -= cost; s.up[id]++; this.recalcShip(); }
     }
   }
 
   repairAllTiles() {
     for (const [i, t] of [...this.orig]) {
-      if (this.grid.room[i] >= 0 && this.rooms[this.grid.room[i]]?.owner === 'them') continue;
-      const y = (i / MAP_W) | 0; if (y < this.ourTopY) continue;
+      if (tileOwner(this, i % MAP_W, (i / MAP_W) | 0) !== 'us') continue;
       if (t === T.DOOR) { const d = this.doors[this.grid.doorAt[i]]; if (d) { d.broken = false; d.hp = d.maxHp; } }
-      this.grid.tiles[i] = t; this.grid.hp[i] = TILE_HP[t]; this.orig.delete(i);
+      this.grid.tiles[i] = t; this.grid.hp[i] = TILE_HP[t] || 0; this.orig.delete(i);
     }
-    for (let y = this.ourTopY; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) { const i = idx(x, y); const t = this.grid.tiles[i]; if (TILE_HP[t]) this.grid.hp[i] = TILE_HP[t]; }
+    const B = this.box;
+    for (let y = B.y0; y <= B.y1; y++) for (let x = B.x0; x <= B.x1; x++) { const i = idx(x, y); const t = this.grid.tiles[i]; if (TILE_HP[t] && t !== T.DEBRIS) this.grid.hp[i] = TILE_HP[t]; }
     for (const d of this.doors) if (d.owner === 'us') d.hp = d.maxHp;
+    this.objs = this.objs.filter((o) => o.kind !== 'fire');
     this.grid.version++;
   }
 
@@ -584,118 +703,181 @@ export class Game {
     const rng = this.rng;
     this.markedLeft = 1 + (this.crew.find((c) => c.cls === 'agent')?.upgrades[2] || 0) + (this.markedBonus || 0);
     // air currents for the jorbal: random per docking, all connected
-    this.air = [0, 1, 2].map(() => ({ x: (SHIP_OX + rng.range(10, 70)) * TILE, y: (SHIP_OY + rng.range(4, 30)) * TILE, s: rng.range(0.6, 1.2), spin: rng.chance(0.5) ? 1 : -1, out: rng.range(-0.3, 0.3) }));
+    const B = this.box;
+    this.air = [0, 1, 2].map(() => ({ x: rng.range(B.x0 + 4, B.x1 - 4) * TILE, y: rng.range(B.y0 + 3, B.y1 - 3) * TILE, s: rng.range(0.6, 1.2), spin: rng.chance(0.5) ? 1 : -1, out: rng.range(-0.3, 0.3) }));
     this.air.drift = { x: rng.range(-20, 20), y: rng.range(-15, 15) };
+    this.weFled = false; this.fleeT = 0;
+    const noHumans = !this.crew.some((c) => c.human);
 
     if (kind === 'nest') {
-      this.enemyShip = null;
-      this.nest = { waves: 3 + tier, waveT: 2, left: 3 + tier };
+      this.nest = { waves: 4 + tier * 2, waveT: 2, left: 4 + tier * 2 };
       this.log('alert', '♨ Creatures! They\'re burrowing into the hull!');
-      this.sealDoors(true);
+      if (noHumans) this.sealDoors(true);
       return;
     }
-    const layout = enemyLayout(kind, tier, rng, this.ship.name);
-    if (this.path === 'brother' && kind === 'ship') layout.boarders = Math.round(layout.boarders * 1.3);
-    // bigger crew, bigger fights: lots of enemies
-    const crewN = this.crew.length;
-    layout.boarders = Math.round(layout.boarders * (0.75 + 0.06 * crewN));
-    layout.wave += Math.floor(crewN / 5);
-    this.buildEnemyShip(layout, kind);
-    this.sealDoors(kind !== 'derelict' && kind !== 'pod');
+    // how many ships come for us: one up top, up to four deep down
+    let n = 1;
     if (kind === 'ship') {
-      this.log('alert', `☠ ${this.enemyShip.name} is docking! All doors sealed. Defend the ship!`);
-      this.tip('docking', 'Doors are sealed. Boarders will smash through. Pilot, Engineer, Guard, Scientist, Vaelift and Agent have clearance: press E at a sealed door to open it.');
-      this.tip('duel', 'Both ships trade D-gun and D-missile fire (top of the screen). Bubbles stop guns, not missiles. Wreck their bridge and engine and they give up.');
+      n = [1, 1 + (rng.chance(0.4) ? 1 : 0), 2 + (rng.chance(0.25) ? 1 : 0), 2 + (rng.chance(0.6) ? 1 : 0), 3 + (rng.chance(0.5) ? 1 : 0)][tier];
+      if (this.path === 'brother' && rng.chance(0.4)) n++;
+      n = Math.min(MAX_DOCKED, n);
     }
-    if (kind === 'boss') { this.log('alert', '☀ THE CORE. Something enormous is docking with us.'); this.fx({ t: 'boss' }); }
+    let delay = kind === 'ship' ? rng.range(6, 8) : 4;
+    for (let k = 0; k < n; k++) {
+      const layout = enemyLayout(kind, tier, rng, this.ship.name, k);
+      if (this.path === 'brother' && kind === 'ship') layout.boarders = Math.round(layout.boarders * 1.3);
+      // bigger crew, bigger fights: lots of enemies (split between the ships)
+      const crewN = this.crew.length;
+      layout.boarders = Math.round(layout.boarders * (0.8 + 0.07 * crewN) / Math.sqrt(n));
+      layout.wave += Math.floor(crewN / 5);
+      // several ships share the gunnery: each one fires less often
+      layout.gunPeriod *= 0.7 + 0.3 * n; layout.missilePeriod *= 0.7 + 0.3 * n;
+      const es = this.planEnemyShip(layout, kind, delay);
+      if (!es) break;
+      delay += rng.range(14, 26);
+    }
+    if (noHumans && kind !== 'derelict' && kind !== 'pod') this.sealDoors(true);
+    if (kind === 'ship') {
+      const first = this.enemyShips[0];
+      const m = this.enemyShips.length;
+      this.log('alert', m > 1 ? `☠ ${m} ships are closing in! ${first.name} docks first.` : `☠ ${first.name} is coming in to dock! Defend the ship!`);
+      this.tip('docking', 'Ships are docking. Press L to seal every door (boarders have to smash through, but so do you without clearance), or prop doors open with E for the fighters. The 4 blast doors in the outer walkway are open until someone shuts them.');
+      this.tip('duel', 'The weapons bay (or the pilot, if there is no missile tech) picks which enemy room the D-guns and missiles hit. Bubbles stop guns, not missiles. Wreck their bridge and engine and they give up.');
+    }
+    if (kind === 'boss') { this.log('alert', '☀ THE CORE. Something enormous is coming up to meet us.'); this.fx({ t: 'boss' }); }
     if (kind === 'derelict') this.log('story', 'Joe\'s ship. Dark. Cold. Docking...');
     if (kind === 'pod') this.log('story', 'Joe\'s pod! Get to him before they do!');
   }
 
   sealDoors(on) {
-    for (const d of this.doors) if (d.owner === 'us' && !d.broken) { d.sealed = on; if (on) d.hold = null; }
+    for (const d of this.doors) if (d.owner === 'us' && !d.broken) { d.sealed = on; if (on && !d.blast) d.hold = null; }
+    this.doorsSealed = on;
     this.grid.version++;
     if (on) this.fx({ t: 'seal' });
   }
 
-  buildEnemyShip(layout, kind) {
-    const tier = this.tier;
-    // dock at a room that's the top of its column
-    const ours = this.rooms.filter((r) => r.owner === 'us');
-    const exposed = ours.filter((r) => !ours.some((o) => o.sx === r.sx && o.sy < r.sy));
-    const prefer = exposed.filter((r) => r.type !== 'bridge');
-    const dock = this.rng.pick(prefer.length ? prefer : exposed);
-    const dockX = dock.x0 + 4, dockY = dock.y0;
+  /**
+   * Reserve a spot above or below our ship for an enemy ship and start its approach.
+   * It's drawn coming in while `approachT` counts down, then docks (rooms built, tunnel blown).
+   */
+  planEnemyShip(layout, kind, approach) {
     const cols = Math.max(...layout.rooms.map((r) => r.c)) + 1;
     const rows = Math.max(...layout.rooms.map((r) => r.r)) + 1;
-    const airCol = layout.airlock ?? Math.floor(cols / 2);
-    let ex0 = dockX - 4 - airCol * SLOT_W;
-    ex0 = clamp(ex0, 2, MAP_W - cols * SLOT_W - 3);
-    const ey0 = Math.max(ENEMY_OY, this.ourTopY - 4 - rows * SLOT_H);
+    const w = cols * SLOT_W + 1, h = rows * SLOT_H + 1;
+    const B = this.box;
+    const taken = this.enemyShips.filter((s) => !s.gone).map((s) => s.rect);
+    const overlaps = (r) => taken.some((t) => r.x0 < t.x0 + t.w + 2 && t.x0 < r.x0 + r.w + 2 && r.y0 < t.y0 + t.h + 2 && t.y0 < r.y0 + r.h + 2);
+    const spots = [];
+    const topY = B.y0 - ENEMY_GAP - h, botY = B.y1 + ENEMY_GAP + 1;
+    const mid = Math.round((B.x0 + B.x1) / 2);
+    for (const side of ['top', 'bottom']) {
+      const y0 = side === 'top' ? topY : botY;
+      if (y0 < ENEMY_OY || y0 + h > MAP_H - 2) continue;
+      for (const x0 of [mid - (w >> 1), B.x0 - 4, B.x1 - w + 4, mid - w - 2, mid + 2, B.x0 + 6, B.x1 - w - 6]) {
+        const r = { x0: clamp(x0, 2, MAP_W - w - 2), y0, w, h };
+        if (!overlaps(r)) spots.push({ side, rect: r });
+      }
+    }
+    if (!spots.length) return null;
+    // from above or below (toward the core), wherever there's room. The first one lines up with the middle.
+    const pick = this.enemyShips.length === 0 ? (this.rng.chance(0.5) ? spots[0] : spots.find((s) => s.side === 'bottom') || spots[0]) : this.rng.pick(spots);
+    const es = {
+      id: uid(), kind, name: layout.name, layout, side: pick.side, rect: pick.rect, cols, rows,
+      approachT: approach, approachMax: approach, docked: false,
+      rooms: [], tunnel: [], dock: null, airlock: null,
+      hull: layout.hull, hullMax: layout.hull, bubble: layout.bubble, bubbleMax: layout.bubble, bubbleT: 0,
+      gunT: this.rng.range(0, 2), gunPeriod: layout.gunPeriod, gunDmg: layout.gunDmg, missileT: 0, missilePeriod: layout.missilePeriod, missileDmg: layout.missileDmg,
+      crewLeft: layout.boarders, spawnT: 2, wave: layout.wave, done: false, stolen: 0, surrendered: false, inbound: [],
+    };
+    this.enemyShips.push(es);
+    return es;
+  }
+
+  /** An approaching ship arrives: build it into the world, dig the boarding tunnel, blow the holes. */
+  dockShip(es) {
+    const tier = this.tier, kind = es.kind, layout = es.layout, R = es.rect;
     const base = this.rooms.length;
     const rooms = layout.rooms.map((lr) => {
       const def = ROOMS[lr.type] || {};
-      const room = { type: lr.type, name: lr.name || def.name || lr.type, owner: 'them', x0: ex0 + lr.c * SLOT_W, y0: ey0 + lr.r * SLOT_H, alive: true, reinforced: 0,
-        sys: { type: lr.type, max: Math.round((lr.hp || def.hp || 80) * (1 + 0.35 * tier)), hp: 0 }, c: lr.c, r: lr.r };
+      const room = { type: lr.type, name: lr.name || def.name || lr.type, owner: 'them', esId: es.id, x0: R.x0 + lr.c * SLOT_W, y0: R.y0 + lr.r * SLOT_H, alive: true, reinforced: 0,
+        sys: { type: lr.type, max: Math.round((lr.hp || def.hp || 80) * 1.3 * (1 + 0.6 * tier)), hp: 0 }, c: lr.c, r: lr.r };
       room.sys.hp = room.sys.max;
       room.station = stationPos(room);
       return room;
     });
     buildRooms(this.grid, rooms, base, this.doors, 'them');
     this.rooms.push(...rooms);
-    // airlock + tunnel
-    const bottom = rooms.filter((r) => r.r === rows - 1);
-    const airRoom = bottom.find((r) => r.c === airCol) || bottom[0];
-    const ax = airRoom.x0 + 4, ay = airRoom.y0 + SLOT_H;
+    // airlock on the side facing us
+    const dir = es.side === 'top' ? 1 : -1;
+    const facing = rooms.filter((r) => r.r === (es.side === 'top' ? es.rows - 1 : 0));
+    const airCol = layout.airlock ?? Math.floor(es.cols / 2);
+    const airRoom = facing.find((r) => r.c === airCol) || facing[0];
+    const ax = airRoom.x0 + (SLOT_W >> 1), ay = es.side === 'top' ? airRoom.y0 + SLOT_H : airRoom.y0;
+    // our nearest outer hull tile on that side (with the walkway right behind it)
+    let best = null, bd = Infinity;
+    for (const i of this.hullTiles || []) {
+      if (this.grid.tiles[i] !== T.HULL) continue;
+      const x = i % MAP_W, y = (i / MAP_W) | 0;
+      if (this.grid.get(x, y - dir) !== T.VOID || this.grid.get(x, y + dir) !== T.FLOOR) continue;
+      if (this.enemyShips.some((o) => o !== es && o.dock && Math.abs(o.dock.x - x) < 4 && Math.abs(o.dock.y - y) < 4)) continue;
+      const d = Math.abs(x - ax) * 1.5 + Math.abs(y - ay);
+      if (d < bd) { bd = d; best = { x, y }; }
+    }
+    if (!best) best = { x: clamp(ax, this.box.x0 + 3, this.box.x1 - 3), y: es.side === 'top' ? this.box.y0 : this.box.y1 };
+    const dockX = best.x, dockY = best.y;
     const tunnel = [];
-    const carve = (x, y) => { if (!inMap(x, y)) return; const i = idx(x, y); if (this.grid.tiles[i] === T.VOID || this.grid.tiles[i] === T.HULL) { this.grid.tiles[i] = T.TUNNEL; this.grid.hp[i] = 0; tunnel.push(i); } };
+    const carve = (x, y) => { if (!inMap(x, y)) return; const i = idx(x, y); if (this.grid.tiles[i] === T.VOID) { this.grid.tiles[i] = T.TUNNEL; this.grid.hp[i] = 0; tunnel.push(i); } };
     const midY = Math.round((ay + dockY) / 2);
-    for (let y = ay + 1; y <= midY; y++) for (let k = -1; k <= 1; k++) carve(ax + k, y);
+    for (let y = Math.min(ay + dir, midY); y <= Math.max(ay + dir, midY); y++) for (let k = -1; k <= 1; k++) carve(ax + k, y);
     for (let x = Math.min(ax, dockX) - 1; x <= Math.max(ax, dockX) + 1; x++) for (let k = -1; k <= 1; k++) carve(x, midY + k);
-    for (let y = midY; y < dockY; y++) for (let k = -1; k <= 1; k++) carve(dockX + k, y);
+    for (let y = Math.min(midY, dockY - dir); y <= Math.max(midY, dockY - dir); y++) for (let k = -1; k <= 1; k++) carve(dockX + k, y);
     // tunnel walls
     for (const i of [...tunnel]) {
       const x = i % MAP_W, y = (i / MAP_W) | 0;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const j = idx(x + dx, y + dy); if (this.grid.tiles[j] === T.VOID) { this.grid.tiles[j] = T.HULL; this.grid.hp[j] = 999; tunnel.push(-j - 1); } }
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const j = idx(x + dx, y + dy); if (inMap(x + dx, y + dy) && this.grid.tiles[j] === T.VOID) { this.grid.tiles[j] = T.HULL; this.grid.hp[j] = 999; tunnel.push(-j - 1); } }
     }
     // blow the holes: their airlock and our hull
     const ai = idx(ax, ay); this.grid.tiles[ai] = T.TUNNEL; this.grid.hp[ai] = 0;
     const di = idx(dockX, dockY); this.grid.tiles[di] = T.TUNNEL; this.grid.hp[di] = 0;
     this.grid.version++;
     this.fx({ t: 'boom', x: (dockX + .5) * TILE, y: (dockY + .5) * TILE, r: 50 });
+    this.fx({ t: 'docked', x: (dockX + .5) * TILE, y: (dockY + .5) * TILE });
+    // which of our rooms is nearest the hole (crew on their ship get sent home there)
+    let home = 0, hd = Infinity;
+    this.rooms.forEach((r, k) => { if (r.owner !== 'us') return; const c = roomCenter(r); const d = Math.hypot(c.x / TILE - dockX, c.y / TILE - dockY); if (d < hd) { hd = d; home = k; } });
+    Object.assign(es, { docked: true, rooms: rooms.map((r) => this.rooms.indexOf(r)), tunnel, dock: { x: dockX, y: dockY, room: home }, airlock: { x: ax, y: ay } });
 
-    const es = this.enemyShip = {
-      kind, name: layout.name, rooms: rooms.map((r) => this.rooms.indexOf(r)), tunnel, dock: { x: dockX, y: dockY, room: this.rooms.indexOf(dock) },
-      airlock: { x: ax, y: ay },
-      hull: layout.hull, hullMax: layout.hull, bubble: layout.bubble, bubbleMax: layout.bubble, bubbleT: 0,
-      gunT: this.rng.range(0, 2), gunPeriod: layout.gunPeriod, gunDmg: layout.gunDmg, missileT: 0, missilePeriod: layout.missilePeriod, missileDmg: layout.missileDmg,
-      crewLeft: layout.boarders, spawnT: 3, wave: layout.wave, done: false, stolen: 0, surrendered: false, inbound: [],
-    };
     // defenders, decorations, crates
     for (const r of rooms) {
+      const p = roomCenter(r);
       if (kind === 'ship' || kind === 'boss') {
-        const n = r.type === 'bridge' ? 1 : r.type === 'weapons' ? (tier >= 2 ? 2 : 1) : r.type === 'shield' && tier >= 3 ? 1 : 0;
-        for (let k = 0; k < n; k++) this.spawnMob(this.pickType(), (r.x0 + 3 + k * 2) * TILE, (r.y0 + 3.5) * TILE, { defender: true });
+        const n = r.type === 'bridge' ? 1 + (tier >= 3 ? 1 : 0) : r.type === 'weapons' ? 1 + Math.floor(tier / 2) : r.type === 'shield' && tier >= 2 ? 1 : r.type === 'engine' && tier >= 3 ? 1 : 0;
+        for (let k = 0; k < n; k++) this.spawnMob(this.pickType(), p.x - 40 + k * 40, p.y, { defender: true, esId: es.id });
       }
       if (kind === 'derelict') {
-        for (let k = 0; k < 2; k++) this.objs.push({ id: uid(), kind: 'skeleton', x: (r.x0 + 2 + this.rng() * 5) * TILE, y: (r.y0 + 2 + this.rng() * 3) * TILE, a: this.rng() * 6 });
-        this.objs.push({ id: uid(), kind: 'crate', x: (r.x0 + 6.5) * TILE, y: (r.y0 + 4.5) * TILE, owner: 'them' });
-        if (r.type === 'bridge') this.objs.push({ id: uid(), kind: 'journal', x: (r.x0 + 4.5) * TILE, y: (r.y0 + 3) * TILE, owner: 'them' });
+        for (let k = 0; k < 2; k++) { const q = roomPoint(r, this.rng); this.objs.push({ id: uid(), kind: 'skeleton', x: q.x, y: q.y, a: this.rng() * 6 }); }
+        this.objs.push({ id: uid(), kind: 'crate', x: (r.x0 + SLOT_W - 2.5) * TILE, y: (r.y0 + SLOT_H - 2.5) * TILE, owner: 'them' });
+        if (r.type === 'bridge') this.objs.push({ id: uid(), kind: 'journal', x: p.x, y: p.y, owner: 'them' });
       }
       if (kind === 'pod') {
-        const joe = this.spawnMob(this.roster.findIndex((x) => x.creature), (r.x0 + 4.5) * TILE, (r.y0 + 3.5) * TILE, { team: 'crew', markable: false });
-        Object.assign(joe, { isJoe: true, name: 'Joe', hp: 320, maxHp: 320, speed: 150, r: 11, following: false, atkT: 0, armor: 0.3 });
+        const joe = this.spawnMob(this.roster.findIndex((x) => x.creature), p.x, p.y, { team: 'crew', markable: false });
+        Object.assign(joe, { isJoe: true, name: 'Joe', hp: 450, maxHp: 450, speed: 150, r: 11, following: false, atkT: 0, armor: 0.3 });
         this.joe.mob = joe;
-        this.nest = { waves: 4 + tier, waveT: 4, left: 4 + tier, pod: r };
+        this.nest = { waves: 5 + tier, waveT: 4, left: 5 + tier, pod: r };
       }
       if (kind === 'boss' && r.type === 'core') {
         const bi = this.roster.findIndex((x) => x.boss);
-        const boss = this.spawnMob(bi, (r.x0 + 4.5) * TILE, (r.y0 + 3.5) * TILE, { defender: true });
+        const boss = this.spawnMob(bi, p.x, p.y, { defender: true, esId: es.id });
         boss.r = 34; boss.hp = boss.maxHp = this.roster[bi].hp * (this.path === 'brother' ? 1.3 : 1) * (1 + 0.15 * Math.max(0, this.humanCount() - 1));
         this.boss = boss;
       }
     }
     if (this.crew.some((c) => c.cls === 'chameleon')) this.addVents(rooms, 'them');
+    if (kind === 'ship') {
+      this.log('alert', `☠ ${es.name} has docked and blown a hole in our hull!`);
+      const talkers = this.rng.shuffle(this.crew.filter((c) => c.alive)).slice(0, 2);
+      for (const c of talkers) quip(this, c, 'dock', true);
+    }
   }
 
   pickType() {
@@ -704,62 +886,112 @@ export class Game {
     return this.mix[0].type;
   }
 
+  /** Is this point on that enemy ship (or in its tunnel)? */
+  onEnemyShip(es, p) {
+    const R = es.rect, tx = Math.floor(p.x / TILE), ty = Math.floor(p.y / TILE);
+    if (tx >= R.x0 - 1 && tx <= R.x0 + R.w && ty >= R.y0 - 1 && ty <= R.y0 + R.h) return true;
+    return (es._tun ||= new Set(es.tunnel.map((i) => (i >= 0 ? i : -i - 1)))).has(idx(tx, ty));
+  }
+
+  /** One enemy ship leaves (fled, destroyed, or the encounter is over). Its tiles go back to dirt. */
+  detachShip(es) {
+    if (es.gone) return;
+    es.gone = true; es.done = true;
+    if (!es.docked) return;
+    const on = (p) => this.onEnemyShip(es, p);
+    const dock = this.rooms[es.dock.room] || this.rooms[0];
+    const home = roomCenter(dock);
+    for (const c of this.crew) if (on(c)) { c.x = home.x + this.rng.range(-20, 20); c.y = home.y; c.riding = null; }
+    for (const m of this.mobs) {
+      if (!on(m)) continue;
+      if (m.team === 'crew') { m.x = home.x; m.y = home.y; } else m.alive = false;
+    }
+    this.mobs = this.mobs.filter((m) => m.team === 'crew' || m.alive);
+    const R = es.rect;
+    this.grid.clearRegion(R.x0, R.y0, R.x0 + R.w - 1, R.y0 + R.h - 1);
+    for (const i of es.tunnel) { const j = i >= 0 ? i : -i - 1; if (this.grid.room[j] < 0 && (this.grid.tiles[j] === T.TUNNEL || this.grid.tiles[j] === T.HULL)) { this.grid.tiles[j] = T.VOID; this.grid.hp[j] = 0; } }
+    const ai = idx(es.airlock.x, es.airlock.y); if (this.grid.room[ai] < 0) { this.grid.tiles[ai] = T.VOID; this.grid.hp[ai] = 0; }
+    // the hole they blew stays a breach until someone patches it
+    const di = idx(es.dock.x, es.dock.y);
+    this.grid.tiles[di] = T.BREACH; this.grid.hp[di] = 0; this.orig.set(di, T.HULL);
+    for (const id of es.rooms) { const r = this.rooms[id]; if (r) { r.alive = false; r.gone = true; } }
+    for (const d of this.doors) if (d.owner === 'them' && on({ x: (d.x + .5) * TILE, y: (d.y + .5) * TILE })) { d.gone = true; d.broken = true; }
+    this.objs = this.objs.filter((o) => !(o.owner === 'them' && on(o)) && !(o.kind === 'vent' && o.owner === 'them' && on(o)));
+    this.pickups = this.pickups.filter((p) => !on(p));
+    for (const [i] of [...this.orig]) if (i !== di && on({ x: ((i % MAP_W) + .5) * TILE, y: (((i / MAP_W) | 0) + .5) * TILE })) this.orig.delete(i);
+    if (this.ship.missileTarget != null && es.rooms.includes(this.ship.missileTarget)) this.ship.missileTarget = null;
+    this.grid.version++;
+  }
+
   cleanupEnemy() {
-    if (this.enemyShip) {
-      const es = this.enemyShip;
-      // everyone still on their ship comes home
-      const dock = this.rooms[es.dock.room];
-      for (const c of this.crew) if (tileOwner(this, Math.floor(c.x / TILE), Math.floor(c.y / TILE)) === 'them') { c.x = (dock.x0 + 4.5) * TILE; c.y = (dock.y0 + 3.5) * TILE; c.riding = null; }
-      for (const m of this.mobs) if (m.team === 'crew' && tileOwner(this, Math.floor(m.x / TILE), Math.floor(m.y / TILE)) === 'them') { m.x = (dock.x0 + 4.5) * TILE; m.y = (dock.y0 + 3.5) * TILE; }
-      this.mobs = this.mobs.filter((m) => m.team === 'crew' || (m.alive && tileOwner(this, Math.floor(m.x / TILE), Math.floor(m.y / TILE)) === 'us'));
-      this.grid.clearRegion(0, 0, MAP_W - 1, this.ourTopY - 1);
-      for (const i of es.tunnel) { const j = i >= 0 ? i : -i - 1; const y = (j / MAP_W) | 0; if (y >= this.ourTopY && (this.grid.tiles[j] === T.TUNNEL || this.grid.tiles[j] === T.HULL) && this.grid.room[j] < 0) { this.grid.tiles[j] = T.VOID; this.grid.hp[j] = 0; } }
-      // the hole they blew stays a breach until someone patches it
-      const di = idx(es.dock.x, es.dock.y);
-      this.grid.tiles[di] = T.BREACH; this.grid.hp[di] = 0; this.orig.set(di, T.HULL);
-      const n = this.rooms.filter((r) => r.owner === 'us').length;
-      this.rooms.length = n;
+    for (const es of this.enemyShips || []) this.detachShip(es);
+    if (this.rooms.some((r) => r.owner === 'them') || this.doors.some((d) => d.owner === 'them')) {
+      this.rooms.length = this.rooms.filter((r) => r.owner === 'us').length;
       this.doors = this.doors.filter((d) => d.owner === 'us');
       this.doors.forEach((d, k) => { this.grid.doorAt[d.i] = k; });
-      this.objs = this.objs.filter((o) => o.owner !== 'them' && !(o.y < this.ourTopY * TILE));
-      this.pickups = this.pickups.filter((p) => p.y >= this.ourTopY * TILE);
-      for (const [i] of [...this.orig]) if (((i / MAP_W) | 0) < this.ourTopY) this.orig.delete(i);
       this.grid.version++;
-      this.enemyShip = null;
     }
+    this.enemyShips = [];
     this.boss = null;
     this.nest = null;
     this.air = null;
+    this.fleeT = 0;
     this.ship.missileTarget = null;
     this.sealDoors(false);
   }
 
   onSystemDestroyed(room) {
-    const es = this.enemyShip;
-    if (room.owner === 'them' && es && !es.done) {
-      const alive = (t) => this.rooms.some((r) => r.owner === 'them' && r.type === t && r.sys.hp > 0);
-      const hasEngine = this.rooms.some((r) => r.owner === 'them' && r.type === 'engine');
-      if (!alive('bridge') && (!hasEngine || !alive('engine')) && !alive('weapons') && es.kind === 'ship') this.surrender('Their bridge, guns and engine are wrecked. They surrender!');
-      else if (!alive('bridge') && hasEngine && !alive('engine') && es.kind === 'ship') this.surrender('Their bridge and engine are wrecked. They surrender!');
+    if (room.owner === 'them') {
+      const es = this.enemyShips.find((s) => s.id === room.esId);
+      if (es && !es.done && es.kind === 'ship') {
+        const mine = es.rooms.map((id) => this.rooms[id]);
+        const alive = (t) => mine.some((r) => r.type === t && r.sys.hp > 0);
+        const hasEngine = mine.some((r) => r.type === 'engine');
+        if (!alive('bridge') && (!hasEngine || !alive('engine')) && !alive('weapons')) this.surrender(es, `${es.name}: bridge, guns and engine wrecked. They surrender!`);
+        else if (!alive('bridge') && hasEngine && !alive('engine')) this.surrender(es, `${es.name}: bridge and engine wrecked. They surrender!`);
+      }
+      return;
     }
-    if (room.owner === 'us' && room.type === 'vault') this.recalcShip();
+    if (room.type === 'vault') this.recalcShip();
+    if (room.type === 'engine' && !this.storyMode) { igniteRoom(this, room, 4); this.log('alert', `The ${room.name} is on FIRE! With an engine down, fires will break out all over the ship.`); }
+    if (room.type === 'bridge') this.log('alert', 'The bridge is wrecked! We can\'t escape or undock until it\'s repaired.');
+    // wreckage piles up in front of a door: the room is cut off until somebody clears it
+    if (this.rng.chance(0.5)) this.blockDoorway(room);
   }
 
-  surrender(msg) {
-    const es = this.enemyShip; if (!es || es.done) return;
+  /** Wreckage falls in front of one of the room's doors (blocks the way until repaired). */
+  blockDoorway(room) {
+    const ri = this.rooms.indexOf(room);
+    const doors = this.doors.filter((d) => d.owner === 'us' && !d.broken && (d.a === ri || d.b === ri));
+    if (!doors.length) return;
+    const d = this.rng.pick(doors);
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const x = d.x + dx, y = d.y + dy, i = idx(x, y);
+      if (this.grid.room[i] !== ri || this.grid.tiles[i] !== T.FLOOR) continue;
+      if ([...this.crew, ...this.mobs].some((a) => a.alive && Math.floor(a.x / TILE) === x && Math.floor(a.y / TILE) === y)) continue;
+      this.orig.set(i, T.FLOOR); this.grid.tiles[i] = T.DEBRIS; this.grid.hp[i] = TILE_HP[T.DEBRIS]; this.grid.version++;
+      this.fx({ t: 'boom', x: (x + .5) * TILE, y: (y + .5) * TILE, r: 24 });
+      this.log('alert', `Wreckage blocks a door of the ${room.name}. Hold E on it to clear it.`);
+      return;
+    }
+  }
+
+  surrender(es, msg) {
+    if (!es || es.done) return;
     es.done = true; es.surrendered = true;
     this.log('loot', `🏳 ${msg}`);
-    for (const m of this.mobs) if (m.team === 'enemy' && tileOwner(this, Math.floor(m.x / TILE), Math.floor(m.y / TILE)) === 'them') m.alive = false;
-    for (const r of this.rooms) if (r.owner === 'them') for (let k = 0; k < 1 + (this.rng.chance(0.5) ? 1 : 0); k++) this.objs.push({ id: uid(), kind: 'crate', x: (r.x0 + 2 + this.rng() * 5) * TILE, y: (r.y0 + 2 + this.rng() * 3) * TILE, owner: 'them' });
-    if (es.stolen) this.objs.push({ id: uid(), kind: 'crate', x: this.rooms[es.rooms[0]].station.x, y: this.rooms[es.rooms[0]].station.y + 40, owner: 'them', gems: es.stolen });
+    for (const m of this.mobs) if (m.team === 'enemy' && this.onEnemyShip(es, m)) m.alive = false;
+    for (const id of es.rooms) { const r = this.rooms[id]; for (let k = 0; k < 1 + (this.rng.chance(0.5) ? 1 : 0); k++) { const p = roomPoint(r, this.rng); this.objs.push({ id: uid(), kind: 'crate', x: p.x, y: p.y, owner: 'them' }); } }
+    if (es.stolen) { const r = this.rooms[es.rooms[0]]; this.objs.push({ id: uid(), kind: 'crate', x: r.station.x + 40, y: r.station.y + 40, owner: 'them', gems: es.stolen }); }
+    this.tip('loot', 'They gave up! Their ship is yours to loot: walk over and press E on the crates. When everyone is back aboard, the pilot undocks.');
   }
 
-  destroyEnemyShip() {
-    const es = this.enemyShip; if (!es || es.done) return;
+  destroyEnemyShip(es) {
+    if (!es || es.done) return;
     es.done = true; es.destroyed = true;
-    this.log('loot', `💥 ${es.name} is breaking apart! Everybody back aboard!`);
+    this.log('loot', `💥 ${es.name} is breaking apart! Everybody off it!`);
     this.fx({ t: 'shipdie' });
-    for (const id of es.rooms) { const r = this.rooms[id]; this.fx({ t: 'boom', x: r.station.x, y: r.station.y + 40, r: 90 }); }
+    for (const id of es.rooms) { const r = this.rooms[id]; const p = roomCenter(r); this.fx({ t: 'boom', x: p.x, y: p.y, r: 90 }); }
     // keep the wreck long enough for the explosion, then detach
     es.detachT = 1.2;
   }
@@ -787,7 +1019,7 @@ export class Game {
     this.log('loot', '☀ THE CORE LEVIATHAN FALLS!');
     this.fx({ t: 'bossdie' });
     this.stats.score += 5000;
-    if (this.enemyShip) this.destroyEnemyShip();
+    for (const es of this.enemyShips) this.destroyEnemyShip(es);
     this.won = true;
     this.wonAt = this.time;
   }
@@ -807,33 +1039,53 @@ export class Game {
 
 // ---------------------------------------------------------------------------
 // enemy ship layouts
-function enemyLayout(kind, tier, rng, ourName) {
-  const prefix = ['The', 'Old', 'Big', 'Mean', 'Rusty', 'Black'][rng.int(0, 5)];
-  const noun = ['Gnasher', 'Burrower', 'Mole King', 'Grinder', 'Tunnel Rat', 'Dirt Shark', 'Rockjaw', 'Gravedigger', 'Wormhole', 'Excavator'][rng.int(0, 9)];
+function enemyLayout(kind, tier, rng, ourName, k = 0) {
+  const prefix = ['The', 'Old', 'Big', 'Mean', 'Rusty', 'Black', 'Grim', 'Mad'][rng.int(0, 7)];
+  const noun = ['Gnasher', 'Burrower', 'Mole King', 'Grinder', 'Tunnel Rat', 'Dirt Shark', 'Rockjaw', 'Gravedigger', 'Wormhole', 'Excavator', 'Skullbore', 'Mudlark'][rng.int(0, 11)];
   if (kind === 'pod') return { name: "Joe's Pod", rooms: [{ type: 'pod', name: "Joe's Pod", c: 0, r: 0, hp: 200 }], hull: 9999, bubble: 0, gunPeriod: 999, gunDmg: 0, missilePeriod: 999, missileDmg: 0, boarders: 0, wave: 0 };
   if (kind === 'derelict') return { name: "Joe's Ship (derelict)", rooms: [{ type: 'quarters', c: 0, r: 0 }, { type: 'bridge', c: 1, r: 0 }, { type: 'engine', c: 2, r: 0 }], airlock: 1, hull: 9999, bubble: 0, gunPeriod: 999, gunDmg: 0, missilePeriod: 999, missileDmg: 0, boarders: 0, wave: 0 };
   if (kind === 'boss') {
     return { name: 'The Leviathan\'s Hive', airlock: 1,
       rooms: [{ type: 'weapons', c: 0, r: 0 }, { type: 'quarters', c: 1, r: 0 }, { type: 'quarters', c: 2, r: 0 }, { type: 'shield', c: 3, r: 0 },
         { type: 'engine', c: 0, r: 1 }, { type: 'core', name: "Leviathan's Lair", c: 1, r: 1, hp: 500 }, { type: 'bridge', c: 2, r: 1 }, { type: 'quarters', c: 3, r: 1 }],
-      hull: 1600, bubble: 3, gunPeriod: 4.5, gunDmg: 26, missilePeriod: 9, missileDmg: 40, boarders: 40, wave: 4 };
+      hull: 2600, bubble: 4, gunPeriod: 4, gunDmg: 34, missilePeriod: 8, missileDmg: 55, boarders: 70, wave: 7 };
   }
-  const cols = Math.min(5, 3 + Math.floor(tier / 1.5) + (rng.chance(0.4) ? 1 : 0));
-  const rows = tier >= 2 ? 2 : 1;
+  // all shapes and sizes: little raiders to big two-deck carriers, a bit random every time
+  const TS = [1, 1.7, 2.7, 4, 5.6][tier];
+  const cols = clamp(2 + rng.int(0, 1 + tier), 2, 5);
+  const rows = tier >= 2 && rng.chance(0.25 + 0.15 * tier) ? 2 : 1;
   const must = ['bridge', 'weapons', 'quarters', 'engine', 'shield'];
   const total = cols * rows;
   const types = [...must.slice(0, Math.min(total, tier >= 1 ? 5 : 4))];
-  while (types.length < total) types.push(rng.chance(0.5) ? 'quarters' : 'corridor');
+  while (types.length < total) types.push(rng.chance(0.55) ? 'quarters' : 'corridor');
   rng.shuffle(types);
-  const rooms = types.map((t, k) => ({ type: t, c: k % cols, r: Math.floor(k / cols) }));
+  const rooms = types.map((t, i) => ({ type: t, c: i % cols, r: Math.floor(i / cols) }));
+  const v = () => rng.range(0.85, 1.2);
   return {
     name: `${prefix} ${noun}`, rooms,
-    hull: 70 + tier * 50 + total * 10,
-    bubble: tier >= 1 ? 1 + Math.floor(tier / 2) : 0,
-    gunPeriod: 8 - 0.5 * tier, gunDmg: 4 + 3 * tier,
-    missilePeriod: 16 - tier, missileDmg: 10 + 5 * tier,
-    boarders: 5 + tier * 3 + total * 2, wave: 2 + Math.floor(tier / 2),
+    hull: Math.round((130 + total * 36) * TS * v()),
+    bubble: tier >= 1 ? Math.floor(tier / 1.5) + (rng.chance(0.3) ? 1 : 0) : 0,
+    gunPeriod: (8.5 - 0.6 * tier) * v(), gunDmg: Math.round((3 + 3.4 * tier) * v()),
+    missilePeriod: (16 - 1.4 * tier) * v(), missileDmg: Math.round((8 + 6 * tier) * v()),
+    boarders: Math.round((10 + tier * 8 + total * 3) * rng.range(0.8, 1.25)), wave: 3 + tier + (total >= 6 ? 1 : 0),
   };
+}
+
+/** Creatures dig straight through the hull somewhere. */
+function burrowIn(g, n) {
+  const rooms = g.rooms.filter((r) => r.owner === 'us');
+  const r = g.rng.pick(rooms);
+  const creatures = g.roster.filter((x) => x.creature && x.tier <= g.tier + 1);
+  if (!creatures.length) return;
+  const walls = g.hullNear(r);
+  let at = roomCenter(r);
+  if (walls.length && !g.storyMode) {
+    const w = g.rng.pick(walls); hitTile(g, w.x, w.y, 9999, { hull: true });
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (g.grid.get(w.x + dx, w.y + dy) === T.FLOOR) { at = { x: (w.x + dx + .5) * TILE, y: (w.y + dy + .5) * TILE }; break; }
+  }
+  for (let k = 0; k < n; k++) g.spawnMob(g.rng.pick(creatures).idx, at.x + g.rng.range(-20, 20), at.y + g.rng.range(-20, 20), { markable: false });
+  g.log('alert', `♨ Creatures burst through the hull near the ${r.name}!`);
+  g.fx({ t: 'alarm' });
 }
 
 // ---------------------------------------------------------------------------
@@ -848,7 +1100,7 @@ const PHASES = {
         if (me?.cls === 'pilot') g.tip('helm', 'You fly this thing: walk up to the helm on the Bridge and press E to steer the descent.');
         else if (me?.cls === 'engineer') g.tip('wrench', 'Damaged engines and systems? Hit them with your wrench (left click). Hold E to patch holes and doors.');
         else if (me?.cls === 'urchid') g.tip('urchid', "Sit back. Q insults whoever is closest. F peeks through a crewmate's eyes.");
-        g.tip('feeders', 'Gems, ore and food rain into the Feeder Hall while we drill. Walk over them to grab them.');
+        g.tip('feeders', 'Gems, ore and food rain into the ship while we drill (more of them in the Feeder Hall). Walk over them to grab them.');
       }
     },
   },
@@ -858,17 +1110,23 @@ const PHASES = {
       const pilot = g.crew.find((c) => c.cls === 'pilot');
       const human = pilot && pilot.human && pilot.atHelm && pilot.alive ? g.inputs.get(pilot.id) || {} : null;
       descentTick(g, dt, human);
-      // ambushes: ships find you mid-descent
       const d = g.descent;
       if (d.stranded) {
         d.strandT = (d.strandT || 0) + dt;
         if (!g.crew.some((c) => c.human && c.alive) || (d.strandT > 20 && !pilot?.human)) COMMANDS.callFuel(g, pilot || g.crew[0], {});
         return;
       }
-      if (d.progress > 0.25 && d.progress < 0.85 && !d.ambushed && g.level > 1 && g.rng.chance(dt * (0.006 + 0.003 * g.tier))) {
+      // creatures dig in while we drill (more and more often, deeper down)
+      if (d.progress > 0.12 && d.progress < 0.92 && g.level > 2 && (d.invasions || 0) < 1 + Math.floor(g.tier / 2)
+        && g.rng.chance(dt * (0.004 + 0.004 * g.tier))) {
+        d.invasions = (d.invasions || 0) + 1;
+        burrowIn(g, 2 + g.tier + g.rng.int(0, 2));
+      }
+      // ambushes: ships find you mid-descent
+      if (d.progress > 0.25 && d.progress < 0.85 && !d.ambushed && g.level > 1 && g.rng.chance(dt * (0.004 + 0.003 * g.tier))) {
         d.ambushed = true;
         g.resume = d;
-        g.log('alert', '☠ Ambush! A ship cut across our tunnel!');
+        g.log('alert', '☠ Ambush! Ships cut across our tunnel!');
         g.startEncounter('ship');
         return;
       }
@@ -898,7 +1156,6 @@ const PHASES = {
   discovery: {
     update(g) {
       if (g.storyOpen) return;
-      // story closed -> after
       if (g.discoveryAfter === 'ambush') { g.discoveryAfter = null; g.startEncounter('nest'); g.nest.waves = 1 + Math.floor(g.tier / 2); g.nest.left = g.nest.waves; }
       else if (g.phaseT > 0.5) g.startAftermath(true);
     },
@@ -907,7 +1164,13 @@ const PHASES = {
   aftermath: {
     update(g) {
       if (g.storyOpen) return;
-      if (!g.crew.some((c) => c.human) && g.phaseT > 3) COMMANDS.continue(g, g.crew[0], {});
+      const pilot = g.crew.find((c) => c.cls === 'pilot');
+      if (!g.crew.some((c) => c.human) && g.phaseT > 3) { COMMANDS.continue(g, pilot || g.crew[0], { force: true }); return; }
+      // a bot pilot gives everyone a minute to loot, then calls everyone back
+      if (pilot && !pilot.human) {
+        if (g.phaseT > 60 && !g.departSoon) { g.departSoon = true; say(g, pilot, 'Undocking in 15 seconds! Everybody back aboard!'); g.log('ship', `${pilot.name}: "Undocking in 15 seconds!"`); }
+        if (g.phaseT > 75) COMMANDS.continue(g, pilot, { force: true });
+      }
     },
   },
   port: {
@@ -915,15 +1178,17 @@ const PHASES = {
   },
 };
 
+const onOurs = (g, m) => tileOwner(g, Math.floor(m.x / TILE), Math.floor(m.y / TILE)) === 'us';
+
 function encounterTick(g, dt) {
   if (g.storyOpen) return;
   if (g.won) { if (g.time - g.wonAt > 3) g.endGame(); return; }
-  const s = g.ship, es = g.enemyShip;
+  const s = g.ship, ships = g.enemyShips;
   // backstop: nothing should drag on forever (the core boss excepted)
-  if (g.phaseT > 240 && es?.kind !== 'boss' && es?.kind !== 'derelict') {
+  if (g.phaseT > 300 + 60 * ships.length && !ships.some((x) => x.kind === 'boss' || x.kind === 'derelict')) {
     for (const m of g.mobs) if (m.team === 'enemy' && m.alive) { m.alive = false; g.fx({ t: 'poof', x: m.x, y: m.y }); }
     if (g.joe.mob?.alive && g.joe.state !== 'saved') { g.joe.state = 'saved'; g.log('loot', '♥ Joe makes a run for it and dives through our airlock!'); }
-    if (es && !es.done) { es.done = true; es.fled = true; g.log('ship', `${es.name} breaks off and digs away.`); }
+    for (const es of ships) if (!es.done) { es.done = true; es.fled = true; g.log('ship', `${es.name} breaks off and digs away.`); g.detachShip(es); }
     if (g.nest) g.nest.left = 0;
     return g.endEncounter(true);
   }
@@ -931,26 +1196,19 @@ function encounterTick(g, dt) {
   if (g.nest) {
     const n = g.nest;
     n.waveT -= dt;
-    if (n.waveT <= 0 && n.left > 0) {
-      n.left--; n.waveT = 9 - g.tier;
+    if (n.waveT <= 0 && n.left > 0 && (!n.pod || ships[0]?.docked)) {
+      n.left--; n.waveT = Math.max(4, 9 - g.tier);
       const creatures = g.roster.filter((x) => x.creature && x.tier <= g.tier + 1);
-      const count = 2 + g.tier + (g.path === 'brother' ? 1 : 0) + Math.floor(g.crew.length / 5);
+      const count = 3 + g.tier * 2 + (g.path === 'brother' ? 1 : 0) + Math.floor(g.crew.length / 4);
       if (n.pod) {
-        for (let k = 0; k < count; k++) g.spawnMob(g.rng.pick(creatures).idx, (n.pod.x0 + 1.5 + g.rng() * 6) * TILE, (n.pod.y0 + 1.5) * TILE, { markable: false });
-      } else {
-        const rooms = g.rooms.filter((r) => r.owner === 'us');
-        const r = g.rng.pick(rooms);
-        const walls = wallTilesOf(r).filter((w) => g.grid.tiles[w.i] === T.HULL);
-        if (walls.length) { const w = g.rng.pick(walls); hitTile(g, w.x, w.y, 9999, { hull: true }); }
-        for (let k = 0; k < count; k++) g.spawnMob(g.rng.pick(creatures).idx, (r.x0 + 2 + g.rng() * 5) * TILE, (r.y0 + 2 + g.rng() * 3) * TILE, {});
-        g.log('alert', `Creatures burst into the ${r.name}!`);
-      }
+        for (let k = 0; k < count; k++) { const p = roomPoint(n.pod, g.rng); g.spawnMob(g.rng.pick(creatures).idx, p.x, p.y, { markable: false }); }
+      } else burrowIn(g, count);
     }
     // Joe
     if (g.joe.mob) {
       const joe = g.joe.mob;
-      if (joe.alive && !joe.following && g.crew.some((c) => c.alive && dist(c, joe) < 50)) { joe.following = true; g.fx({ t: 'say', id: joe.id, text: 'ZAP?! You CAME! Get me out of here!' }); g.log('story', 'Joe: "ZAP?! You came!"'); }
-      if (joe.alive && joe.following && tileOwner(g, Math.floor(joe.x / TILE), Math.floor(joe.y / TILE)) === 'us' && g.joe.state !== 'saved') {
+      if (joe.alive && !joe.following && g.crew.some((c) => c.alive && dist(c, joe) < 60)) { joe.following = true; g.fx({ t: 'say', id: joe.id, text: 'ZAP?! You CAME! Get me out of here!' }); g.log('story', 'Joe: "ZAP?! You came! I\'m right behind you!"'); }
+      if (joe.alive && joe.following && onOurs(g, joe) && g.joe.state !== 'saved') {
         g.joe.state = 'saved';
         g.log('loot', '♥ Joe is aboard! He hugs you. He immediately starts fixing the doors.');
         g.fx({ t: 'joe' });
@@ -963,173 +1221,219 @@ function encounterTick(g, dt) {
       if (left && n.doneT > 45) { for (const m of g.mobs) if (m.team === 'enemy') m.alive = false; g.log('ship', 'The last creatures burrow back into the dirt.'); }
     }
     if (n.left <= 0 && !left && joeDone) return g.endEncounter(true);
-    if (!es) return;
   }
-  if (!es) return;
-  if (es.detachT !== undefined) {
-    es.detachT -= dt;
-    if (es.detachT <= 0) {
-      // ship gone: anything on it dies, our people come home
-      for (const m of g.mobs) if (m.team === 'enemy' && tileOwner(g, Math.floor(m.x / TILE), Math.floor(m.y / TILE)) === 'them') m.alive = false;
-      g.cleanupEnemy();
-      g.enemyShip = { ...es, gone: true, done: true };
-    }
-  }
-  if (es.gone) {
-    es.goneT = (es.goneT || 0) + dt;
-    if (es.goneT > 60) for (const m of g.mobs) if (m.team === 'enemy' && m.alive) { m.alive = false; g.fx({ t: 'poof', x: m.x, y: m.y }); }
-    if (!g.mobs.some((m) => m.alive && m.team === 'enemy') && (!g.boss || !g.boss.alive)) return g.endEncounter(true);
-    return;
-  }
-  if (es.kind === 'derelict') {
-    const journal = g.objs.find((o) => o.kind === 'journal');
-    if (journal && !journal.read) {
-      if (g.phaseT > 4 && !g.journalHint) { g.journalHint = true; g.log('story', "Joe's journal is on their bridge. Go read it (E)."); }
-      if (!g.crew.some((c) => c.human) && g.phaseT > 8) g.readJournal(g.crew[0], journal);
-    }
-    if (g.derelictStage === 'changed' && !g.mobs.some((m) => m.alive && m.team === 'enemy')) { g.derelictStage = 'choice'; g.choosePath(); }
-    return;
-  }
-  if (es.kind === 'pod') return;
+  if (!ships.length) return;
 
-  const ours = (t) => g.rooms.find((r) => r.owner === 'us' && r.type === t);
-  const theirs = (t) => g.rooms.find((r) => r.owner === 'them' && r.type === t && r.sys.hp > 0);
+  // our escape: the pilot cuts the tunnels and runs (needs the bridge)
+  if (g.fleeT > 0) {
+    const bridge = g.rooms.find((r) => r.owner === 'us' && r.type === 'bridge');
+    if (!bridge || bridge.sys.hp <= 0) { g.fleeT = 0; g.log('alert', 'The bridge is wrecked! The escape is off.'); }
+    else {
+      g.fleeT -= dt;
+      if (g.fleeT <= 0) {
+        g.weFled = true;
+        for (const es of ships) if (!es.done && !es.gone) { es.done = true; es.fled = true; es.detachT = 0.5; }
+        g.log('alert', 'We tore free of their clamps and ran for it!');
+        g.fx({ t: 'shipdie' });
+      }
+    }
+  }
+  const pilot = g.crew.find((c) => c.cls === 'pilot');
+  if (pilot && !pilot.human && !g.fleeT && !g.weFled && s.hull < s.hullMax * 0.18 && g.fightingShips.some((x) => x.kind === 'ship')) COMMANDS.flee(g, pilot, {});
+
+  for (const es of ships) {
+    if (es.gone) continue;
+    if (!es.docked) { es.approachT -= dt; if (es.approachT <= 0) g.dockShip(es); continue; }
+    if (es.detachT !== undefined) { es.detachT -= dt; if (es.detachT <= 0) { g.detachShip(es); continue; } }
+    if (es.kind === 'derelict') {
+      const journal = g.objs.find((o) => o.kind === 'journal');
+      if (journal && !journal.read) {
+        if (g.phaseT > 6 && !g.journalHint) { g.journalHint = true; g.log('story', "Joe's journal is on their bridge. Go read it (E)."); }
+        if (!g.crew.some((c) => c.human) && g.phaseT > 10) g.readJournal(g.crew[0], journal);
+      }
+      if (g.derelictStage === 'changed' && !g.mobs.some((m) => m.alive && m.team === 'enemy')) { g.derelictStage = 'choice'; g.choosePath(); }
+      continue;
+    }
+    if (es.kind === 'pod' || es.done) continue;
+    shipFight(g, es, dt);
+  }
+  const fighting = g.fightingShips.filter((x) => x.kind === 'ship' || x.kind === 'boss');
+  if (fighting.length) ourWeapons(g, fighting, dt);
+  else s.missileTarget = null;
+
+  // all of them beaten (or gone) and nobody left aboard: victory
+  if (ships.every((x) => x.kind === 'derelict' || x.kind === 'pod') || g.boss?.alive) return;
+  const pending = ships.some((x) => !x.done && !x.gone);
+  if (pending) return;
+  const aboard = g.mobs.filter((m) => m.alive && m.team === 'enemy' && onOurs(g, m));
+  g.mopT = (g.mopT || 0) + dt;
+  if (aboard.length && g.mopT > 60) for (const m of aboard) { m.alive = false; g.fx({ t: 'poof', x: m.x, y: m.y }); }
+  if (!aboard.length || g.mopT > 60) g.endEncounter(true);
+}
+
+/** Our D-gun and D-missiles: they hit whatever room the weapons officer (or the pilot) picked. */
+function ourWeapons(g, fighting, dt) {
+  const s = g.ship;
+  const wr = g.rooms.find((r) => r.owner === 'us' && r.type === 'weapons');
+  if (!wr || wr.sys.hp <= 0) return;
   const eff = (r) => (r ? Math.max(0.3, r.sys.hp / r.sys.max) : 0);
-
-  if (!es.done) {
-    // ---- our D-weapons
-    const wr = ours('weapons');
-    if (wr && wr.sys.hp > 0) {
-      const oc = s.overclock?.sys === 'weapons' ? 1.3 : 1;
-      s.dgunT += dt * eff(wr) * oc;
-      const gp = 5 / (1 + 0.15 * s.up.dgun);
-      if (s.dgunT >= gp) {
-        s.dgunT = 0;
-        const dmg = 18 + 5 * s.up.dgun;
-        if (es.bubble > 0) { es.bubble--; es.bubbleT = 0; g.fx({ t: 'dfire', who: 'us', w: 'gun', blocked: true }); }
-        else { es.hull -= dmg; g.fx({ t: 'dfire', who: 'us', w: 'gun', dmg }); const r = g.rng.pick(g.rooms.filter((x) => x.owner === 'them')); damageSystem(g, r, dmg * 0.4); }
-      }
-      const tech = g.crew.find((c) => c.cls === 'missiletech' && c.alive);
-      const techHere = tech && g.rooms[roomAt(g, tech)] === wr;
-      if (s.missiles > 0 && !s.missileReady) {
-        s.missileT += dt * eff(wr) * oc * (techHere ? 1.6 : 1);
-        if (s.missileT >= 9 / (1 + 0.1 * s.up.dmissile)) { s.missileReady = true; s.missileT = 0; if (tech?.human) g.fx({ t: 'text', x: wr.station.x, y: wr.station.y - 20, text: 'D-MISSILE READY', color: '#ff6a3a' }); }
-      }
-      if (s.missileReady && (!tech || !tech.human || g.phaseT - (s.readyAt || 0) > 12)) {
-        if (s.missileTarget == null || !g.rooms[s.missileTarget]?.sys?.hp) s.missileTarget = pickMissileTarget(g);
-        fireMissile(g);
-      }
-      if (s.missileReady && !s.readyAt) s.readyAt = g.phaseT;
-    }
-    // missiles in flight
-    for (const m of es.inbound) m.t -= dt;
-    for (const m of es.inbound.filter((x) => x.t <= 0)) missileImpact(g, m);
-    es.inbound = es.inbound.filter((x) => x.t > 0);
-
-    // ---- their bubble
-    if (theirs('shield') && es.bubble < es.bubbleMax) { es.bubbleT += dt; if (es.bubbleT > 11) { es.bubbleT = 0; es.bubble++; } }
-    // ---- their D-weapons
-    if (theirs('weapons')) {
-      es.gunT += dt;
-      if (es.gunT >= es.gunPeriod) {
-        es.gunT = 0;
-        if (s.evasiveT > 0) g.fx({ t: 'dfire', who: 'them', w: 'gun', miss: true });
-        else if (s.bubble > 0) { s.bubble--; s.bubbleT = 0; g.fx({ t: 'dfire', who: 'them', w: 'gun', blocked: true }); }
-        else { if (!g.storyMode) s.hull -= es.gunDmg; g.fx({ t: 'dfire', who: 'them', w: 'gun', dmg: es.gunDmg }); }
-      }
-      es.missileT += dt;
-      if (es.missileT >= es.missilePeriod) {
-        es.missileT = 0;
-        if (s.evasiveT > 0) { g.fx({ t: 'dfire', who: 'them', w: 'missile', miss: true }); g.log('ship', 'Evasive! Their D-missile sails past.'); }
-        else enemyMissile(g, es);
-      }
-    }
-    // ---- boarders
-    if (es.crewLeft > 0) {
-      es.spawnT -= dt;
-      if (es.spawnT <= 0) {
-        es.spawnT = Math.max(4, 8.5 - g.tier * 0.7);
-        const q = g.rooms.filter((r) => r.owner === 'them' && (r.type === 'quarters' || r.type === 'core') && r.sys.hp > 0);
-        const from = q.length ? g.rng.pick(q) : g.rooms[es.rooms[0]];
-        const n = Math.min(es.crewLeft, es.wave);
-        for (let k = 0; k < n; k++) g.spawnMob(g.pickType(), (from.x0 + 2 + g.rng() * 5) * TILE, (from.y0 + 2 + g.rng() * 3) * TILE, {});
-        es.crewLeft -= n;
-        if (q.length === 0) es.crewLeft = Math.max(0, es.crewLeft - 2); // no quarters = fewer reinforcements
-      }
-    }
-    if (es.hull <= 0) { if (es.kind === 'boss') { es.hull = 0; } else g.destroyEnemyShip(); }
-    // everybody on their side dead and no more coming? they give up
-    if (!es.done && es.kind === 'ship' && es.crewLeft <= 0 && !g.mobs.some((m) => m.alive && m.team === 'enemy')) g.surrender('Their crew is finished. The ship is ours to strip.');
-    // out of boarders and nobody's coming over to finish them? they cut the tunnel and run
-    const onOurs = g.mobs.some((m) => m.alive && m.team === 'enemy' && tileOwner(g, Math.floor(m.x / TILE), Math.floor(m.y / TILE)) === 'us');
-    if (!es.done && es.kind === 'ship' && g.phaseT > 150) { es.fleeT = Math.max(es.fleeT || 0, 7); if (!es.fleeWarned) { es.fleeWarned = true; g.log('alert', `${es.name} has had enough. It's spinning up to flee!`); } }
-    if (!es.done && es.kind === 'ship' && ((es.crewLeft <= 0 && !onOurs) || g.phaseT > 150)) {
-      es.fleeT = (es.fleeT || 0) + dt;
-      if (es.fleeT > 6 && !es.fleeWarned) { es.fleeWarned = true; g.log('alert', `${es.name} is spinning up its drill to flee! Finish it in 20s or board it!`); }
-      if (es.fleeT > 26) {
-        es.done = true; es.fled = true; es.detachT = 0.6;
-        g.log('ship', `${es.name} cut the tunnel and fled into the dirt.`);
-      }
-    } else if (es.fleeT) es.fleeT = Math.max(0, es.fleeT - dt);
+  const valid = (i) => { const r = g.rooms[i]; return r && r.owner === 'them' && !r.gone && r.sys?.hp > 0 && fighting.some((x) => x.id === r.esId); };
+  if (!valid(s.missileTarget)) s.missileTarget = pickMissileTarget(g);
+  const target = g.rooms[s.missileTarget];
+  const es = target ? fighting.find((x) => x.id === target.esId) : fighting[0];
+  if (!es) return;
+  const oc = s.overclock?.sys === 'weapons' ? 1.3 : 1;
+  s.dgunT += dt * eff(wr) * oc;
+  const gp = 5 / (1 + 0.15 * s.up.dgun);
+  if (s.dgunT >= gp) {
+    s.dgunT = 0;
+    const dmg = 18 + 6 * s.up.dgun;
+    if (es.bubble > 0) { es.bubble--; es.bubbleT = 0; g.fx({ t: 'dfire', who: 'us', w: 'gun', blocked: true, room: s.missileTarget }); }
+    else { es.hull -= dmg; g.fx({ t: 'dfire', who: 'us', w: 'gun', dmg, room: s.missileTarget }); if (target) damageSystem(g, target, dmg * 0.6); }
   }
-  if (es.done && !es.unsealed) { es.unsealed = true; g.sealDoors(false); }
-  if (es.done && es.kind !== 'boss' && !g.mobs.some((m) => m.alive && m.team === 'enemy' && tileOwner(g, Math.floor(m.x / TILE), Math.floor(m.y / TILE)) === 'us')) {
-    if (!es.victoryAt) { es.victoryAt = g.time; g.endEncounter(true); }
+  const tech = g.crew.find((c) => c.cls === 'missiletech' && c.alive);
+  const techHere = tech && g.rooms[roomAt(g, tech)] === wr;
+  if (s.missiles > 0 && !s.missileReady) {
+    s.missileT += dt * eff(wr) * oc * (techHere ? 1.6 : 1);
+    if (s.missileT >= 9 / (1 + 0.1 * s.up.dmissile)) { s.missileReady = true; s.missileT = 0; if (tech?.human) g.fx({ t: 'text', x: wr.station.x, y: wr.station.y - 20, text: 'D-MISSILE READY', color: '#ff6a3a' }); }
   }
+  // the officer fires by hand; if nobody does for a while, it goes on its own
+  const officer = tech || g.crew.find((c) => c.cls === 'pilot');
+  if (s.missileReady && (!officer || !officer.human || g.phaseT - (s.readyAt || 0) > 12)) fireMissile(g);
+  if (s.missileReady && !s.readyAt) s.readyAt = g.phaseT;
+}
+
+/** One docked enemy ship's turn: its shields, its guns, its boarders, giving up or running. */
+function shipFight(g, es, dt) {
+  const s = g.ship;
+  es.fightT = (es.fightT || 0) + dt;
+  const mine = es.rooms.map((id) => g.rooms[id]);
+  const theirs = (t) => mine.find((r) => r.type === t && r.sys.hp > 0);
+  // missiles in flight
+  for (const m of es.inbound) m.t -= dt;
+  for (const m of es.inbound.filter((x) => x.t <= 0)) missileImpact(g, es, m);
+  es.inbound = es.inbound.filter((x) => x.t > 0);
+  // their bubble
+  if (theirs('shield') && es.bubble < es.bubbleMax) { es.bubbleT += dt; if (es.bubbleT > 11) { es.bubbleT = 0; es.bubble++; } }
+  // their D-weapons
+  if (theirs('weapons')) {
+    es.gunT += dt;
+    if (es.gunT >= es.gunPeriod) {
+      es.gunT = 0;
+      if (s.evasiveT > 0) g.fx({ t: 'dfire', who: 'them', w: 'gun', miss: true, from: es.id });
+      else if (s.bubble > 0) { s.bubble--; s.bubbleT = 0; g.fx({ t: 'dfire', who: 'them', w: 'gun', blocked: true, from: es.id }); }
+      else {
+        const r = enemyTarget(g);
+        if (!g.storyMode) { s.hull -= es.gunDmg; if (r) damageSystem(g, r, es.gunDmg * 0.4); }
+        g.fx({ t: 'dfire', who: 'them', w: 'gun', dmg: es.gunDmg, from: es.id, room: r ? g.rooms.indexOf(r) : null });
+      }
+    }
+    es.missileT += dt;
+    if (es.missileT >= es.missilePeriod) {
+      es.missileT = 0;
+      if (s.evasiveT > 0) { g.fx({ t: 'dfire', who: 'them', w: 'missile', miss: true, from: es.id }); g.log('ship', 'Evasive! Their D-missile sails past.'); }
+      else enemyMissile(g, es);
+    }
+  }
+  // boarders
+  if (es.crewLeft > 0) {
+    es.spawnT -= dt;
+    const crowd = g.mobs.reduce((a, m) => a + (m.alive && m.team === 'enemy' ? 1 : 0), 0);
+    if (es.spawnT <= 0 && crowd >= 55) es.spawnT = 1.5;   // the tunnels are jammed: wait a moment
+    else if (es.spawnT <= 0) {
+      es.spawnT = Math.max(2.5, 6.5 - g.tier * 0.7) * g.rng.range(0.8, 1.2);
+      const q = mine.filter((r) => (r.type === 'quarters' || r.type === 'core') && r.sys.hp > 0);
+      const from = q.length ? g.rng.pick(q) : mine[0];
+      const n = Math.min(es.crewLeft, es.wave);
+      for (let k = 0; k < n; k++) { const p = roomPoint(from, g.rng); g.spawnMob(g.pickType(), p.x, p.y, { esId: es.id }); }
+      es.crewLeft -= n;
+      if (q.length === 0) es.crewLeft = Math.max(0, es.crewLeft - 2); // no quarters = fewer reinforcements
+    }
+  }
+  if (es.hull <= 0) { if (es.kind === 'boss') es.hull = 0; else { g.destroyEnemyShip(es); return; } }
+  if (es.kind !== 'ship') return;
+  // their whole crew is finished? they give up
+  const theirCrew = g.mobs.filter((m) => m.alive && m.team === 'enemy' && m.esId === es.id);
+  if (es.crewLeft <= 0 && !theirCrew.length) { g.surrender(es, `${es.name}'s crew is finished. The ship is ours to strip.`); return; }
+  // out of boarders (or fighting too long)? they cut the tunnel and run. Not without a bridge, though.
+  if (!theirs('bridge')) { es.fleeT = 0; return; }
+  const boarding = theirCrew.some((m) => onOurs(g, m));
+  if ((es.crewLeft <= 0 && !boarding) || es.fightT > 160) {
+    es.fleeT = (es.fleeT || 0) + dt;
+    if (es.fleeT > 6 && !es.fleeWarned) { es.fleeWarned = true; g.log('alert', `${es.name} is spinning up its drill to flee! Wreck its bridge or board it in the next 20s!`); }
+    if (es.fleeT > 26) { es.done = true; es.fled = true; es.detachT = 0.6; g.log('ship', `${es.name} cut the tunnel and fled into the dirt.`); }
+  } else if (es.fleeT) es.fleeT = Math.max(0, es.fleeT - dt);
+}
+
+/** Which of our rooms their gunners aim for: weapons, shields and engines first. */
+function enemyTarget(g) {
+  const ours = g.rooms.filter((r) => r.owner === 'us' && r.sys);
+  if (!ours.length) return null;
+  const w = { weapons: 3, shield: 3, engine: 2.5, bridge: 2, vault: 1.5 };
+  const k = g.rng.weighted(Object.fromEntries(ours.map((r, i) => [i, w[r.type] || 1])));
+  return ours[+k] || g.rng.pick(ours);
 }
 
 function fireMissile(g) {
-  const s = g.ship, es = g.enemyShip;
-  if (!s.missileReady || s.missiles <= 0 || !es || es.done) return;
+  const s = g.ship;
+  if (!s.missileReady || s.missiles <= 0) return;
   const target = s.missileTarget ?? pickMissileTarget(g);
-  if (target == null) return;
+  const r = g.rooms[target];
+  const es = r && g.enemyShips.find((x) => x.id === r.esId && x.docked && !x.done);
+  if (!es) return;
   s.missiles--; s.missileReady = false; s.missileT = 0; s.readyAt = 0;
   es.inbound.push({ t: 0.9, room: target });
   g.fx({ t: 'dfire', who: 'us', w: 'missile', room: target });
 }
 
-function missileImpact(g, m) {
-  const s = g.ship, es = g.enemyShip; if (!es || es.done) return;
-  const r = g.rooms[m.room]; if (!r) return;
+function missileImpact(g, es, m) {
+  const s = g.ship;
+  const r = g.rooms[m.room]; if (!r || r.gone) return;
   const tech = g.crew.find((c) => c.cls === 'missiletech');
-  let dmg = (30 + 8 * s.up.dmissile) * (s.research.has('schematic') ? 1.5 : 1) * (s.research.has('guidance') ? 1.25 : 1) * (1 + 0.25 * (tech?.upgrades[0] || 0)) * (tech?.special ? 1.4 : 1);
+  let dmg = (30 + 9 * s.up.dmissile) * (s.research.has('schematic') ? 1.5 : 1) * (s.research.has('guidance') ? 1.25 : 1) * (1 + 0.25 * (tech?.upgrades[0] || 0)) * (tech?.special ? 1.4 : 1);
   damageSystem(g, r, dmg);
-  es.hull -= 22 + 6 * s.up.dmissile;
-  g.fx({ t: 'boom', x: r.station.x, y: r.station.y + 40, r: 70 });
-  explode(g, r.station.x, r.station.y + 50, 70, 25, 'crew', tech, { kind: 'missile' });
+  es.hull -= 22 + 7 * s.up.dmissile;
+  const p = roomCenter(r);
+  g.fx({ t: 'boom', x: p.x, y: p.y, r: 70 });
+  explode(g, p.x, p.y, 70, 25, 'crew', tech, { kind: 'missile' });
   if (g.boss && g.boss.alive && r.type === 'core') damage(g, g.boss, dmg * 0.6, { owner: tech, kind: 'missile' });
-  g.log('ship', `D-missile hits their ${r.name}!`);
+  g.log('ship', `D-missile hits ${es.name}'s ${r.name}!`);
 }
 
 function enemyMissile(g, es) {
   const s = g.ship;
-  const ours = g.rooms.filter((r) => r.owner === 'us');
-  const r = g.rng.pick(ours);
+  const r = enemyTarget(g) || g.rng.pick(g.rooms.filter((x) => x.owner === 'us'));
+  const already = r.sys && r.sys.hp < r.sys.max * 0.5;   // hitting a broken room again: likely fire
   if (!g.storyMode) { damageSystem(g, r, es.missileDmg); s.hull -= es.missileDmg * 0.5; }
-  g.fx({ t: 'dfire', who: 'them', w: 'missile', room: g.rooms.indexOf(r) });
-  g.fx({ t: 'boom', x: r.station.x, y: r.station.y + 50, r: 70 });
-  for (const c of g.crew) if (c.alive && g.rooms[roomAt(g, c)] === r) damage(g, c, 12 + g.tier * 3, { team: 'enemy', kind: 'missile' });
-  if (g.rng.chance(0.35) && !g.storyMode) {
-    const walls = wallTilesOf(r).filter((w) => g.grid.tiles[w.i] === T.HULL);
-    if (walls.length) { const w = g.rng.pick(walls); hitTile(g, w.x, w.y, 9999, { hull: true }); }
+  const p = roomCenter(r);
+  g.fx({ t: 'dfire', who: 'them', w: 'missile', room: g.rooms.indexOf(r), from: es.id });
+  g.fx({ t: 'boom', x: p.x, y: p.y, r: 70 });
+  for (const c of g.crew) if (c.alive && g.rooms[roomAt(g, c)] === r) damage(g, c, 12 + g.tier * 4, { team: 'enemy', kind: 'missile' });
+  if (!g.storyMode) {
+    if (g.rng.chance(already ? 0.6 : 0.15)) igniteRoom(g, r, already ? 3 : 1);
+    if (g.rng.chance(0.35)) { const walls = g.hullNear(r, 2); if (walls.length) { const w = g.rng.pick(walls); hitTile(g, w.x, w.y, 9999, { hull: true }); } }
   }
-  g.log('alert', `Their D-missile slams into our ${r.name}!`);
+  g.log('alert', `${es.name}'s D-missile slams into our ${r.name}!`);
 }
 
 Game.prototype.endEncounter = function (win) {
-  const es = this.enemyShip;
+  const ships = this.enemyShips || [];
   const tier = this.tier;
   const loot = { scrap: 20 + tier * 15, gems: 6 + tier * 6, money: 15 + tier * 12 };
-  if (es?.surrendered) { loot.scrap *= 1.5; loot.money *= 1.5; }
-  if (es?.fled) { loot.scrap *= 0.5; loot.gems = Math.round(loot.gems * 0.5); loot.money *= 0.5; }
-  if (es?.kind === 'derelict' || es?.kind === 'pod') { loot.gems = 0; }
+  // every ship beaten pays; surrendered ones pay more, ones that got away less
+  let mul = ships.length ? 0 : 1;
+  for (const es of ships) mul += es.kind === 'derelict' || es.kind === 'pod' ? 0.6 : es.surrendered ? 1.5 : es.fled ? 0.5 : 1;
+  if (this.weFled) mul = 0.2;
+  loot.scrap *= mul; loot.money *= mul; loot.gems = Math.round(loot.gems * mul);
+  if (ships.some((es) => es.kind === 'derelict' || es.kind === 'pod')) loot.gems = 0;
   this.ship.scrap += Math.round(loot.scrap);
   this.ship.gems = Math.min(this.ship.gemCap, this.ship.gems + loot.gems);
   for (const c of this.crew) c.wallet += Math.round(loot.money);
   this.ship.missiles = Math.min(this.ship.missilesMax, this.ship.missiles + 1);
   this.lastLoot = loot;
-  this.log('loot', `Victory! +${Math.round(loot.scrap)} scrap, +${loot.gems} gems, +${Math.round(loot.money)} each.`);
-  if (es?.kind === 'ship' && this.rng.chance(0.6)) this.pendingRecruit = true;
+  this.lastLoot.fled = !!this.weFled;
+  this.log('loot', `${this.weFled ? 'We got away.' : 'Victory!'} +${Math.round(loot.scrap)} scrap, +${loot.gems} gems, +${Math.round(loot.money)} each.`);
+  if (!this.weFled && ships.some((es) => es.kind === 'ship' && (es.surrendered || es.destroyed)) && this.rng.chance(0.5)) this.pendingRecruit = true;
   this.fx({ t: 'victory' });
   this.startAftermath(!!this.resume);
 };
@@ -1137,7 +1441,12 @@ Game.prototype.endEncounter = function (win) {
 Game.prototype.startAftermath = function (resumeAfter) {
   this.setPhase('aftermath');
   this.sealDoors(false);
+  this.departSoon = false;
+  this.departWarnT = 0;
+  this.mopT = 0;
   this.afterResume = !!this.resume;
+  const looted = (this.enemyShips || []).some((es) => !es.gone && es.surrendered);
+  if (looted) this.log('ship', 'Their ship is ours to loot. Grab the crates (E). When everyone is back, the pilot undocks.');
 };
 
 Game.prototype.choosePath = function () {
@@ -1169,7 +1478,7 @@ const COMMANDS = {
       g.derelictStage = 'changed';
       const es = g.enemyShip;
       const changed = g.roster.find((x) => x.id === undefined && x.name === 'The Changed') || g.roster.find((x) => x.creature);
-      if (es) for (const id of es.rooms) { const r = g.rooms[id]; for (let k = 0; k < 2 + g.tier; k++) g.spawnMob(changed.idx, (r.x0 + 2 + g.rng() * 5) * TILE, (r.y0 + 2 + g.rng() * 3) * TILE, { markable: false }); }
+      if (es) for (const id of es.rooms) { const r = g.rooms[id]; for (let k = 0; k < 3 + g.tier; k++) { const p = roomPoint(r, g.rng); g.spawnMob(changed.idx, p.x, p.y, { markable: false }); } }
       g.log('alert', 'The skeletons... aren\'t all skeletons. THE CHANGED!');
     }
   },
@@ -1202,12 +1511,52 @@ const COMMANDS = {
     g.startEncounter('ship');
     if (g.enemyShip) { g.enemyShip.crewLeft += 6; g.enemyShip.hull *= 1.3; g.enemyShip.hullMax = g.enemyShip.hull; }
   },
-  continue(g) {
+  /** Undock and keep digging. Only the pilot gives the signal (a bot pilot does it when asked). */
+  continue(g, c, cmd = {}) {
     if (g.phase !== 'aftermath') return;
-    // auto-strip crates
-    for (const o of [...g.objs]) if (o.kind === 'crate') g.lootCrate(g.player, o);
+    const bridge = g.rooms.find((r) => r.owner === 'us' && r.type === 'bridge');
+    if (bridge && bridge.sys.hp <= 0) {
+      g.log('alert', 'The bridge is wrecked. Repair it (hold E at the helm) before we can undock.');
+      return { error: 'The bridge is wrecked' };
+    }
+    const pilot = g.crew.find((x) => x.cls === 'pilot');
+    if (pilot && pilot.human && c !== pilot && !cmd.force) {
+      g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'only the pilot can undock', color: '#ffb0a0' });
+      g.log('ship', `${c.name} asks ${pilot.name} to undock.`);
+      return { error: 'Only the pilot can undock' };
+    }
+    const away = g.crew.filter((x) => tileOwner(g, Math.floor(x.x / TILE), Math.floor(x.y / TILE)) === 'them');
+    if (away.length && !cmd.force && !(g.departWarnT > 0)) {
+      g.departWarnT = 12;
+      g.log('alert', `⚠ ${away.map((x) => x.name).join(', ')} ${away.length > 1 ? 'are' : 'is'} still on the other ship! Signal again to undock anyway.`);
+      if (pilot) say(g, pilot, 'Hold on, not everyone is back aboard!');
+      return { warn: true };
+    }
+    if (away.length && pilot) {
+      say(g, pilot, 'HAHAHAHA! Hold on to something!');
+      g.log('ship', `${pilot.name} laughs, hits the recall clamp, and yanks ${away.map((x) => x.name).join(', ')} back aboard.`);
+      g.fx({ t: 'laugh', id: pilot.id });
+    }
+    // whatever's left in the crates gets stripped on the way out
+    for (const o of [...g.objs]) if (o.kind === 'crate') g.lootCrate(pilot || c, o);
     if (g.resume) { const d = g.resume; g.resume = null; g.cleanupEnemy(); g.afterFightRecruit(); g.descent = d; g.setPhase('descent'); g.fx({ t: 'dig' }); return; }
     g.nextLevel();
+  },
+  /** Pilot: cut the boarding tunnels and run (10s, needs the bridge). */
+  flee(g, c) {
+    if (g.phase !== 'encounter' || c.cls !== 'pilot' || g.fleeT > 0) return;
+    if (!g.fightingShips.some((s) => s.kind === 'ship')) return;
+    const bridge = g.rooms.find((r) => r.owner === 'us' && r.type === 'bridge');
+    if (!bridge || bridge.sys.hp <= 0) { g.log('alert', 'The bridge is wrecked. There is no escaping like this.'); return { error: 'The bridge is wrecked' }; }
+    g.fleeT = 10;
+    g.log('alert', `${c.name}: "Cutting the tunnels! Ten seconds, hold them off!"`);
+    say(g, c, 'Cutting the tunnels! Hold them off!');
+  },
+  /** Seal (or unseal) every door on the ship. */
+  seal(g, c, cmd) {
+    const on = cmd.on ?? !g.doorsSealed;
+    g.sealDoors(!!on);
+    g.log('ship', on ? `🔒 ${c.name} sealed every door. Boarders have to smash through.` : `🔓 ${c.name} unsealed the doors.`);
   },
   depart(g) { if (g.phase === 'port') { g.port = null; g.nextLevel(); } },
   sell(g, c) {
@@ -1246,7 +1595,7 @@ const COMMANDS = {
   buyUpgrade(g, c, cmd, s) {
     if (g.phase !== 'port' || !g.port.upgrades) return;
     const def = SHIP_UPGRADES[cmd.id]; if (!def) return;
-    const lvl = s.up[cmd.id]; if (lvl >= 5) return;
+    const lvl = s.up[cmd.id]; if (lvl >= SHIP_UP_MAX) return;
     const cost = def.cost * (lvl + 1);
     if (c.wallet < cost) return;
     c.wallet -= cost; s.up[cmd.id]++;
@@ -1274,7 +1623,7 @@ const COMMANDS = {
   },
   classUpgrade(g, c, cmd) {
     const k = cmd.track; if (k < 0 || k > 2) return;
-    const lvl = c.upgrades[k]; if (lvl >= 5) return;
+    const lvl = c.upgrades[k]; if (lvl >= CLASS_UP_MAX) return;
     const cost = UPGRADE_BASE_COST * (lvl + 1);
     if (c.wallet < cost) return;
     c.wallet -= cost; c.upgrades[k]++;
@@ -1339,13 +1688,10 @@ const COMMANDS = {
   craftGun(g, c, cmd, s) {
     if (c.cls !== 'commando' || s.scrap < 15) return;
     s.scrap -= 15;
-    const armory = g.rooms.find((r) => r.owner === 'us' && r.type === 'armory');
-    dropPickup(g, armory.station.x, armory.station.y + 40, 'gun', 1);
-    // bots grab them via buff
-    const bots = g.crew.filter((x) => x.alive && !x.makeshift && x.cls !== 'urchid');
-    const t = bots[g.rng.int(0, Math.max(0, bots.length - 1))];
-    if (t && !t.human) t.makeshift = 45 * (1 + 0.2 * c.upgrades[2]);
-    g.log('ship', `${c.name} mashed broken parts into a makeshift gun.`);
+    const armory = g.rooms.find((r) => r.owner === 'us' && r.type === 'armory') || g.rooms.find((r) => r.owner === 'us');
+    // anyone can pick it up and fire it; when it's empty it falls apart into 1 scrap
+    dropPickup(g, armory.station.x + 30, armory.station.y + 40, 'gun', 1, c.upgrades[2]);
+    g.log('ship', `${c.name} mashed broken parts into a makeshift gun. Anyone can grab it from the ${armory.name}.`);
   },
   spin(g, c) { if (c.cls === 'slots' && c.cd.f <= 0) { if (spinSlots(g, c) !== false) c.cd.f = 1.2; } },
   buyIntel(g, c) { if (c.cls === 'agent' && g.phase === 'port' && c.wallet >= 40) { c.wallet -= 40; c.missionRank = (c.missionRank || 0) + 1; g.log('loot', `${c.name} swapped "knowledge" with a contact at the bar. More targets next fight.`); g.markedBonus = (g.markedBonus || 0) + 1; } },

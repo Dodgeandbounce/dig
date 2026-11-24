@@ -2,7 +2,7 @@
 // the port, station panels, upgrades, pause and the end screens.
 import {
   CLASSES, ABILITIES, WEAPONS, CLASS_UPGRADES, UPGRADE_BASE_COST, SHIP_UPGRADES, BUYABLE_ROOMS, ROOMS, RECIPES, RESEARCH,
-  NODE_TYPES, KM_PER_LEVEL, LEVELS, FOODS,
+  NODE_TYPES, KM_PER_LEVEL, LEVELS, FOODS, SHIP_UP_MAX, CLASS_UP_MAX,
 } from '../shared/sim/data.js';
 import { interactTarget } from '../shared/sim/classes.js';
 import { speedFactor } from '../shared/sim/pilot.js';
@@ -33,6 +33,7 @@ export function createUI(root, api) {
     <div class="g-modal hidden"><div class="g-card"></div></div>
     <div class="g-toast hidden"></div>
     <div class="g-hold hidden"></div>
+    <div class="g-actions"><button class="g-undock hidden"></button><button class="g-seal hidden"></button><button class="g-flee hidden"></button></div>
     <form class="g-chat hidden"><input maxlength="200" placeholder="Say something to the crew… (Enter)"></form>
   `;
   const $ = (s) => root.querySelector(s);
@@ -44,6 +45,8 @@ export function createUI(root, api) {
   let portTab = 'market';
   let roomPick = null; // { type } while choosing where to build
   let typed = '';
+  let endSince = 0;            // when (client clock) the run ended: the end screen shows shortly after
+  let aftermathSeen = null;    // which aftermath the player already closed ("stay and loot")
 
   // ---- click handling (delegated)
   card.addEventListener('click', (e) => {
@@ -52,6 +55,9 @@ export function createUI(root, api) {
     const act = JSON.parse(b.dataset.act);
     api.sfx?.ui();
     if (act.close) { closeModal(); return; }
+    const g0 = api.game();
+    if (act.ui === 'stay' || act.t === 'continue') aftermathSeen = g0 ? aftermathKey(g0) : null;
+    if (act.ui === 'stay') { closeModal(); return; }
     if (act.tab) { portTab = act.tab; roomPick = null; render(true); return; }
     if (act.pick) { roomPick = act.pick; render(true); return; }
     if (act.ui) { api.ui(act.ui, act); return; }
@@ -61,12 +67,16 @@ export function createUI(root, api) {
     if (act.t === 'buyRoom') roomPick = null;
     setTimeout(() => render(true), 30);
   });
+  $('.g-undock').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'continue' }); });
+  $('.g-seal').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'seal' }); });
+  $('.g-flee').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'flee' }); });
   card.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = e.target;
     if (f.dataset.form === 'transponder') { api.cmd({ t: 'transponder', code: f.code.value }); f.code.value = ''; setTimeout(() => render(true), 60); }
   });
 
+  const aftermathKey = (g) => `${g.level}:${Math.round(g.time - g.phaseT)}`;
   function openModal(kind, data) { modalKind = kind; modalData = data; lastHtml = ''; modal.classList.remove('hidden'); modal.dataset.kind = kind; render(true); }
   function closeModal() { modalKind = null; modalData = null; modal.classList.add('hidden'); api.onClose?.(); }
   const isOpen = () => !!modalKind;
@@ -91,31 +101,33 @@ export function createUI(root, api) {
     const ph = $('.g-phase');
     const P = {
       briefing: 'Briefing', descent: g.descent?.stranded ? '⚠ STRANDED — out of fuel' : `Descending · ${Math.round(g.descent.progress * 100)}% to the next stop`,
-      route: 'Choose the route', encounter: g.enemyShip ? (g.enemyShip.done ? 'Enemy ship beaten — clear the boarders' : `DOCKED: ${g.enemyShip.name}`) : g.nest ? 'Creatures burrowing in!' : 'Encounter',
+      route: 'Choose the route', encounter: encounterLine(g),
       aftermath: 'Aftermath', port: g.port ? `Docked at ${g.port.name}` : 'Port', discovery: 'Discovery', gameover: 'Lost', ending: 'The center of the world',
     }[g.phase] || g.phase;
     ph.textContent = P;
     ph.className = 'g-phase ' + g.phase;
 
-    // duel
+    // duel: us vs every ship that's docked (or on its way)
     const duel = $('.g-duel');
-    const es = g.enemyShip;
-    if (g.phase === 'encounter' && es && !es.gone && es.kind !== 'derelict' && es.kind !== 'pod') {
+    const ships = (g.enemyShips || []).filter((x) => !x.gone && x.kind !== 'derelict' && x.kind !== 'pod');
+    if (g.phase === 'encounter' && ships.length) {
       duel.classList.remove('hidden');
       const gp = 5 / (1 + 0.15 * s.up.dgun), mp = 9 / (1 + 0.1 * s.up.dmissile);
+      const tgt = g.rooms[s.missileTarget];
       duel.innerHTML = `
         <div class="side us"><b>${esc(s.name)}</b>
           <div class="dbar"><label>D-Gun</label><div><i style="width:${pct(s.dgunT, gp)}"></i></div></div>
           <div class="dbar ${s.missileReady ? 'ready' : ''}"><label>D-Missile ${s.missiles ? '' : '(empty)'}</label><div><i style="width:${s.missileReady ? '100%' : pct(s.missileT, mp)}"></i></div></div>
-          ${s.evasiveT > 0 ? '<em class="good">EVASIVE!</em>' : ''}
+          ${tgt && !tgt.gone ? `<small>⌖ ${esc(tgt.name)}</small>` : ''}
+          ${s.evasiveT > 0 ? '<em class="good">EVASIVE!</em>' : ''}${g.fleeT > 0 ? `<em class="bad">ESCAPING ${Math.ceil(g.fleeT)}s</em>` : ''}
         </div>
         <div class="vs">VS</div>
-        <div class="side them"><b>${esc(es.name)}</b>
+        <div class="ships">${ships.map((es) => es.docked ? `
+        <div class="side them ${es.done ? 'beaten' : ''}"><b>${esc(es.name)}${es.surrendered ? ' 🏳' : es.destroyed ? ' 💥' : es.fled ? ' (fled)' : ''}</b>
           <div class="dbar hullb"><label>Hull</label><div><i style="width:${pct(es.hull, es.hullMax)}"></i></div></div>
-          <div class="dbar"><label>Gun</label><div><i style="width:${pct(es.gunT, es.gunPeriod)}"></i></div></div>
-          <div class="dbar"><label>Missile</label><div><i style="width:${pct(es.missileT, es.missilePeriod)}"></i></div></div>
-          <small>bubble ${'●'.repeat(es.bubble)}${'○'.repeat(Math.max(0, es.bubbleMax - es.bubble))} · ${es.crewLeft} more boarders</small>
-        </div>`;
+          ${es.done ? '' : `<div class="dbar"><label>Gun</label><div><i style="width:${pct(es.gunT, es.gunPeriod)}"></i></div></div>
+          <small>bubble ${'●'.repeat(es.bubble)}${'○'.repeat(Math.max(0, es.bubbleMax - es.bubble))} · ${es.crewLeft} more boarders${es.fleeT > 6 ? ' · <b class="bad">fleeing!</b>' : ''}</small>`}
+        </div>` : `<div class="side them incoming"><b>☠ ${esc(es.name)}</b><small>docking in ${Math.max(0, Math.ceil(es.approachT))}s</small></div>`).join('')}</div>`;
     } else if (g.phase === 'encounter' && g.boss && g.boss.alive) {
       duel.classList.remove('hidden');
       duel.innerHTML = `<div class="side them wide"><b>☀ ${esc(g.boss.name)}</b><div class="dbar hullb"><label>HP</label><div><i style="width:${pct(g.boss.hp, g.boss.maxHp)}"></i></div></div></div>`;
@@ -150,20 +162,47 @@ export function createUI(root, api) {
     if (g.phase === 'descent' && g.descent.stranded && modalKind !== 'stranded') openModal('stranded');
 
     // auto modals by phase
-    if (g.storyOpen && modalKind !== 'story') openModal('story', g.storyOpen);
-    else if (!g.storyOpen && modalKind === 'story') closeModal();
-    if (!g.storyOpen) {
+    const over = g.phase === 'gameover' || g.phase === 'ending';
+    if (!over) endSince = 0; else if (!endSince) endSince = performance.now();
+    if (g.storyOpen && modalKind !== 'story' && !over) openModal('story', g.storyOpen);
+    else if ((!g.storyOpen || over) && modalKind === 'story') closeModal();
+    // the end screen always comes up (online the server stops the clock, so go by ours)
+    if (over && modalKind !== 'end' && performance.now() - endSince > 1500) openModal('end');
+    if (!g.storyOpen && !over) {
       if (g.phase === 'route' && modalKind !== 'route') openModal('route');
       if (g.phase === 'port' && modalKind !== 'port' && modalKind !== 'upgrades') openModal('port');
-      if (g.phase === 'aftermath' && modalKind !== 'aftermath') openModal('aftermath');
-      if ((g.phase === 'gameover' || g.phase === 'ending') && modalKind !== 'end' && g.phaseT > 1.5) openModal('end');
+      if (g.phase === 'aftermath' && modalKind !== 'aftermath' && aftermathSeen !== aftermathKey(g) && (!modalKind || modalKind === 'stranded')) openModal('aftermath');
       if (modalKind === 'route' && g.phase !== 'route') closeModal();
       if (modalKind === 'port' && g.phase !== 'port') closeModal();
       if (modalKind === 'aftermath' && g.phase !== 'aftermath') closeModal();
       if (modalKind === 'stranded' && !(g.phase === 'descent' && g.descent.stranded)) closeModal();
-      if (modalKind === 'end' && g.phase !== 'gameover' && g.phase !== 'ending') closeModal(); // host started a new run
     }
+    if (modalKind === 'end' && !over) closeModal(); // host started a new run
+    // floating action buttons: undock (aftermath), seal doors and escape (docked)
+    const undock = $('.g-undock'), seal = $('.g-seal'), flee = $('.g-flee');
+    const pilot = g.crew.find((c) => c.cls === 'pilot');
+    const showUndock = g.phase === 'aftermath' && modalKind !== 'aftermath';
+    undock.classList.toggle('hidden', !showUndock);
+    if (showUndock) undock.textContent = !pilot || me === pilot || !pilot.human ? (g.departWarnT > 0 ? '⏏ Undock anyway (they get yanked back)' : '⏏ Undock & keep digging') : `⏏ Ask ${pilot.name} to undock`;
+    const docked = g.phase === 'encounter' && (g.enemyShips || []).some((es) => !es.gone);
+    seal.classList.toggle('hidden', !docked);
+    if (docked) seal.textContent = g.doorsSealed ? '🔓 Unseal doors (L)' : '🔒 Seal all doors (L)';
+    const canFlee = docked && me === pilot && g.fightingShips?.some((es) => es.kind === 'ship');
+    flee.classList.toggle('hidden', !canFlee);
+    if (canFlee) flee.textContent = g.fleeT > 0 ? `Escaping in ${Math.ceil(g.fleeT)}s…` : '🏃 Escape: cut the tunnels';
     render(false);
+  }
+
+  function encounterLine(g) {
+    const ships = (g.enemyShips || []).filter((x) => !x.gone);
+    if (g.nest && !ships.length) return 'Creatures burrowing in!';
+    if (!ships.length) return 'Encounter';
+    const incoming = ships.filter((x) => !x.docked), fighting = ships.filter((x) => x.docked && !x.done);
+    if (!fighting.length && !incoming.length) return 'Enemy ships beaten — clear the boarders';
+    const parts = [];
+    if (fighting.length) parts.push(`DOCKED: ${fighting.map((x) => x.name).join(', ')}`);
+    if (incoming.length) parts.push(`incoming: ${incoming.length} (${Math.ceil(Math.min(...incoming.map((x) => x.approachT)))}s)`);
+    return parts.join(' · ');
   }
 
   function setMeter(sel, v, max, cls) {
@@ -199,7 +238,7 @@ export function createUI(root, api) {
     if (me.cls === 'trainer') extra.push(`Monsters: ${me.monsters.map((m) => `${esc(m.name)}${m.out ? ' (out)' : m.reviveT > 0 ? ` (${Math.ceil(m.reviveT)}s)` : ''}`).join(', ') || 'none yet — weaken an enemy, then Q'}`);
     if (me.cls === 'agent') extra.push(`Mission rank ${me.missionRank || 0}`);
     if (me.cls === 'slots' && me.coinWinT > 0) extra.push(`<b class="good">WINNING STREAK ×${me.coinWinMul} (${Math.ceil(me.coinWinT)}s)</b>`);
-    if (me.makeshift > 0) extra.push(`Makeshift gun ${Math.ceil(me.makeshift)}s`);
+    if (me.makeshift?.ammo > 0) extra.push(`<b class="good">Makeshift gun: ${me.makeshift.ammo} shots (LMB)</b>`);
     if (me.cls === 'urchid') extra.push('Contributes nothing. Cannot die. Living the dream.');
     el.innerHTML = `
       <div class="who"><canvas class="portrait" width="56" height="56"></canvas>
@@ -294,13 +333,20 @@ export function createUI(root, api) {
 
   function aftermathHtml(g) {
     const l = g.lastLoot;
+    const me = api.me();
     const crates = g.objs.filter((o) => o.kind === 'crate').length;
-    return `<h2>${g.enemyShip?.kind === 'ship' || g.lastLoot ? 'Victory!' : 'All clear'}</h2>
+    const pilot = g.crew.find((c) => c.cls === 'pilot');
+    const iAmPilot = !pilot || pilot === me || !pilot.human;
+    const bridge = g.rooms.find((r) => r.owner === 'us' && r.type === 'bridge');
+    const fires = g.objs.filter((o) => o.kind === 'fire').length;
+    return `<h2>${l?.fled ? 'We got away' : 'Victory!'}</h2>
       ${l ? `<p>+${Math.round(l.scrap)} scrap · +${l.gems} gems · +${Math.round(l.money)} money for everyone</p>` : ''}
-      ${crates ? `<p class="muted">${crates} loot crate${crates > 1 ? 's' : ''} left on their ship. Grab them (E) or the crew strips them when you go.</p>` : ''}
-      ${g.breaches ? `<p class="bad">${g.breaches} hull breach${g.breaches > 1 ? 'es' : ''} still open. They'll keep leaking.</p>` : ''}
-      <p class="muted">Take a moment: repair (hold E), clean up, cook, research. Then undock.</p>
-      <div class="row"><button data-act='{"t":"continue"}'>${g.resume ? 'Back to the descent' : 'Undock & keep digging'}</button><button class="ghost" data-act='{"close":1}'>Stay a bit</button></div>`;
+      ${crates ? `<p class="good">${crates} loot crate${crates > 1 ? 's' : ''} on their ship. Walk over and press E on them. (Whatever's left gets stripped when we undock.)</p>` : ''}
+      ${g.breaches ? `<p class="bad">${g.breaches} hull breach${g.breaches > 1 ? 'es' : ''} still open. They leak dirt, drain the hull, and things crawl in through them.</p>` : ''}
+      ${fires ? `<p class="bad">🔥 ${fires} fire${fires > 1 ? 's' : ''} still burning. Hold E next to them.</p>` : ''}
+      ${bridge && bridge.sys.hp <= 0 ? '<p class="bad">The bridge is wrecked: we can\'t undock until it\'s repaired.</p>' : ''}
+      <p class="muted">Take a moment: loot, repair (hold E), put out fires, clean up, cook, research. ${iAmPilot ? 'You give the signal to undock once everyone is back aboard.' : `Only ${esc(pilot.name)} (the pilot) can undock.`}${!pilot?.human && pilot ? ` ${esc(pilot.name)} undocks on their own in about a minute.` : ''}</p>
+      <div class="row"><button data-act='{"t":"continue"}'>${iAmPilot ? (g.resume ? 'Back to the descent' : 'Undock & keep digging') : `Ask ${esc(pilot.name)} to undock`}</button><button class="ghost" data-act='{"ui":"stay"}'>Stay & loot</button></div>`;
   }
 
   function portHtml(g, me) {
@@ -325,7 +371,7 @@ export function createUI(root, api) {
       </div>`;
     } else if (portTab === 'ship') {
       body = `<div class="grid2">${Object.entries(SHIP_UPGRADES).map(([id, u]) => { const lvl = s.up[id]; const cost = u.cost * (lvl + 1);
-        return `<div class="item"><b>${u.name} <small>Lv ${lvl}/5</small></b><span>${u.desc}</span>${lvl >= 5 ? '<em>MAX</em>' : btn(`Upgrade (${cost})`, { t: 'buyUpgrade', id }, me.wallet >= cost)}</div>`; }).join('')}</div>`;
+        return `<div class="item"><b>${u.name} <small>Lv ${lvl}/${SHIP_UP_MAX}</small></b><span>${u.desc}</span>${lvl >= SHIP_UP_MAX ? '<em>MAX</em>' : btn(`Upgrade (${cost})`, { t: 'buyUpgrade', id }, me.wallet >= cost)}</div>`; }).join('')}</div>`;
     } else if (portTab === 'rooms') {
       if (roomPick) {
         body = `<p>Where should the new <b>${ROOMS[roomPick].name}</b> go? Click a free slot.</p>${shipMapHtml(g, roomPick)}<div class="row"><button class="ghost" data-act='{"pick":null}'>Cancel</button></div>`;
@@ -368,7 +414,7 @@ export function createUI(root, api) {
       <ul class="abil"><li><kbd>LMB</kbd> <b>${weaponName(me)}</b></li>${abil}</ul>
       <div class="wallet-line">💰 ${Math.floor(me.wallet)}</div>
       <div class="grid2">${ups.map(([name, desc], k) => { const lvl = me.upgrades[k]; const cost = UPGRADE_BASE_COST * (lvl + 1);
-        return `<div class="item"><b>${name} <small>${'★'.repeat(lvl)}${'☆'.repeat(5 - lvl)}</small></b><span>${desc}</span>${lvl >= 5 ? '<em>MAX</em>' : `<button ${me.wallet >= cost ? '' : 'disabled'} data-act='${JSON.stringify({ t: 'classUpgrade', track: k })}'>Buy (${cost})</button>`}</div>`; }).join('')}</div>
+        return `<div class="item"><b>${name} <small>${'★'.repeat(lvl)}${'☆'.repeat(CLASS_UP_MAX - lvl)}</small></b><span>${desc}</span>${lvl >= CLASS_UP_MAX ? '<em>MAX</em>' : `<button ${me.wallet >= cost ? '' : 'disabled'} data-act='${JSON.stringify({ t: 'classUpgrade', track: k })}'>Buy (${cost})</button>`}</div>`; }).join('')}</div>
       <div class="row end"><button data-act='{"close":1}'>Done</button></div>`;
   }
 
@@ -400,11 +446,12 @@ export function createUI(root, api) {
   function helpHtml() {
     return `<h2>How to dig</h2><div class="help">
       <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>LMB</kbd> attack · <kbd>RMB</kbd> <kbd>Q</kbd> <kbd>F</kbd> <kbd>Space</kbd> abilities · <kbd>Shift</kbd> sprint</p>
-      <p><kbd>E</kbd> use a station, open/hold doors, unseal doors (clearance). <b>Hold E</b> to repair breaches, walls, doors and systems.</p>
+      <p><kbd>E</kbd> use a station, shut a door or prop it open, unseal doors (clearance). <b>Hold E</b> to repair breaches, walls, doors, wreckage and systems, and to spray your fire extinguisher.</p>
+      <p><kbd>L</kbd> seal / unseal every door during a docking. A walkway runs around the whole ship with 4 blast doors (open until someone shuts them).</p>
       <p><kbd>Tab</kbd> class upgrades · <kbd>M</kbd> whole-ship view · <kbd>Mouse wheel</kbd> zoom · <kbd>Esc</kbd> menu</p>
       <p><b>The loop:</b> “Sea Level” → enemy mix → <b>DIG!</b> → the pilot steers the descent (rocks hurt, gem veins pay) → pick a stop → fight, shop, or find Joe's notes.</p>
-      <p><b>Dockings:</b> doors seal, boarders blow a hole and pour in. Both ships trade D-gun and D-missile fire; bubbles block guns, not missiles. Wreck their bridge + engine or kill their crew and they surrender. You can board them, too.</p>
-      <p><b>Everything breaks, everything can be fixed:</b> breaches leak dirt and drain the hull. Engineers whack engines with a wrench. Somebody fix the doors.</p>
+      <p><b>Dockings:</b> you see them coming. Deeper down, up to four ships dock at once and blow holes in the hull. The weapons bay (or the pilot) picks which of their rooms our D-guns and missiles hit; bubbles block guns, not missiles. Wreck their bridge + engine or kill their crew and they surrender: then loot them, and the pilot undocks when everyone's back. Lose our weapons bay and we can't shoot; lose the bridge and we can't escape; lose an engine and the ship catches fire.</p>
+      <p><b>Everything breaks, everything can be fixed:</b> breaches leak dirt and creatures crawl through them. Smashed doorways sometimes cave in and block the way. Fires spread unless you put them out (MrClean is fastest). Somebody fix the doors.</p>
       </div><div class="row end"><button data-act='{"close":1}'>Got it</button></div>`;
   }
 
@@ -436,19 +483,25 @@ export function createUI(root, api) {
     switch (d.panel) {
       case 'helm':
         if (g.phase === 'descent' && me.cls === 'pilot') return head('The Helm', 'Steer through the tunnel toward the light. Rocks and creatures hurt; gem veins and fuel pockets pay.') + sysLine + `<div class="row">${btn('Take the helm', { t: 'helm', on: true })}</div>` + close;
-        return head('The Helm', g.phase === 'encounter' ? 'Docked. Press <kbd>Q</kbd> here (pilot) for evasive maneuvers: enemy D-fire misses for 4s.' : 'The pilot steers during the descent.') + sysLine + `<p>Speed ×${speedFactor(g).toFixed(2)} · Fuel ${Math.ceil(s.fuel)}/${s.fuelMax}</p>` + close;
+      {
+        const noTech = !g.crew.some((c) => c.cls === 'missiletech');
+        const fighting = g.phase === 'encounter' && g.fightingShips.some((es) => es.kind === 'ship' || es.kind === 'boss');
+        return head('The Helm', g.phase === 'encounter' ? 'Docked. Press <kbd>Q</kbd> here (pilot) for evasive maneuvers: enemy D-fire misses for 4s.' : 'The pilot steers during the descent.') + sysLine
+          + `<p>Speed ×${speedFactor(g).toFixed(2)} · Fuel ${Math.ceil(s.fuel)}/${s.fuelMax}</p>`
+          + (fighting && me.cls === 'pilot' ? `<div class="row">${btn(g.fleeT > 0 ? `Escaping in ${Math.ceil(g.fleeT)}s…` : '🏃 Escape: cut the tunnels and run (10s)', { t: 'flee' }, !(g.fleeT > 0) && room?.sys.hp > 0)}</div>` : '')
+          + (fighting && noTech ? `<p class="muted">No missile technician aboard: you pick what our D-guns and missiles hit.</p>${targetsHtml(g)}` : '') + close;
+      }
       case 'engine': {
         const engines = g.rooms.filter((r) => r.owner === 'us' && r.type === 'engine');
         return head('Engines', 'More engines = faster descent, more fuel, more to fix. Only engineers fix engines properly (hit them with the wrench).') + engines.map((r, k) => `<div class="sysline">Engine ${k + 1}: ${Math.ceil(r.sys.hp)}/${r.sys.max}</div>`).join('') + `<p>Speed ×${speedFactor(g).toFixed(2)}</p>` + close;
       }
       case 'weapons': {
-        const theirs = g.rooms.map((r, i) => ({ r, i })).filter((x) => x.r.owner === 'them');
-        const live = g.phase === 'encounter' && g.enemyShip && !g.enemyShip.done;
-        return head('D-Weapons Bay', 'D-Gun fires itself. D-Missiles go through bubbles — pick the room to hit.') + sysLine +
+        const live = g.phase === 'encounter' && g.fightingShips.length > 0;
+        return head('D-Weapons Bay', 'Pick the enemy room our D-gun and D-missiles hit. Bubbles stop the gun, not missiles. Lose this room and we can\'t fire at all.') + sysLine +
           `<p>Missiles ${s.missiles}/${s.missilesMax} ${s.buildT > 0 ? `· building (${s.buildT.toFixed(1)}s)` : ''}</p>
           <div class="row">${btn('Build a missile (12 scrap)', { t: 'buildMissile' }, s.scrap >= 12 && s.buildT <= 0 && s.missiles < s.missilesMax)}
           ${live ? btn(s.missileReady ? '🚀 FIRE D-MISSILE' : 'Loading…', { t: 'fireMissile' }, s.missileReady) : ''}</div>
-          ${live ? `<h3>Target</h3><div class="targets">${theirs.map(({ r, i }) => `<button class="${s.missileTarget === i ? 'on' : ''}" ${r.sys.hp > 0 ? '' : 'disabled'} data-act='${JSON.stringify({ t: 'target', room: i })}'>${esc(r.name)}<small>${Math.ceil(r.sys.hp)}/${r.sys.max}</small></button>`).join('')}</div>` : '<p class="muted">No enemy docked.</p>'}` + close;
+          ${live ? targetsHtml(g) : '<p class="muted">No enemy docked.</p>'}` + close;
       }
       case 'shield': return head('Bubble Generator', 'Bubbles block D-gun shots (not missiles). They recharge while this is online.') + sysLine + `<p>Bubbles ${s.bubble}/${s.bubbleMax}</p>` + close;
       case 'vault': return head('The Vault', 'Gems from the feeders land here. Thieves will come for them. Sell at ports.') + sysLine + `<p>💎 ${s.gems}/${s.gemCap}</p>${me.cls === 'guard' ? '<p class="muted">Upgrade Vault Mastery (Tab) for more space and bigger payouts. Q lunge, F lockdown.</p>' : ''}` + close;
@@ -506,6 +559,13 @@ export function createUI(root, api) {
       case 'unlock': toast('📡 Signal locked!'); break;
       case 'switch': if (!api.online || (me && (e.to === me.id || e.from === me.id))) toast('You switched class.'); break;
     }
+  }
+
+  /** Room picker for our D-weapons, one row per docked enemy ship. */
+  function targetsHtml(g) {
+    const s = g.ship;
+    return g.fightingShips.map((es) => `<h3>${esc(es.name)}</h3><div class="targets">${es.rooms.map((i) => { const r = g.rooms[i];
+      return `<button class="${s.missileTarget === i ? 'on' : ''}" ${r.sys.hp > 0 ? '' : 'disabled'} data-act='${JSON.stringify({ t: 'target', room: i })}'>${esc(r.name)}<small>${Math.ceil(r.sys.hp)}/${r.sys.max}</small></button>`; }).join('')}</div>`).join('');
   }
 
   function panelTarget(t) { if (modalData) modalData.target = t; render(true); }

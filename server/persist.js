@@ -1,6 +1,6 @@
 // Saving and restoring a running Game (node:v8 keeps Maps, Sets, typed arrays and shared references).
 import v8 from 'node:v8';
-import { Game } from '../shared/sim/game.js';
+import { Game, GAME_VERSION } from '../shared/sim/game.js';
 import { Grid } from '../shared/sim/grid.js';
 import { makeRng } from '../shared/sim/rng.js';
 import { setUidBase } from '../shared/sim/util.js';
@@ -21,6 +21,8 @@ export function serializeGame(g) {
 
 export function deserializeGame(buf) {
   const g = v8.deserialize(buf);
+  // saves from before the big ship rework (different map size and layout) can't be continued
+  if (g.v !== GAME_VERSION) throw new Error(`saved with game version ${g.v ?? 1}, this is version ${GAME_VERSION}`);
   Object.setPrototypeOf(g, Game.prototype);
   Object.setPrototypeOf(g.grid, Grid.prototype);
   g.rng = makeRng(g.rngState);
