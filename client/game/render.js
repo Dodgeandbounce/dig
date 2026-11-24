@@ -4,6 +4,7 @@ import { T, TILE, MAP_W, MAP_H, ROOMS, SLOT_W, SLOT_H, CLASSES, GEMS, TILE_HP } 
 import { idx, rw, rh } from '../shared/sim/grid.js';
 import { isBehind } from '../shared/sim/combat.js';
 import { drawCrew, drawMob, drawStation, shade, roundRect } from './sprites.js';
+// (T.SAND is the island's beach)
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
@@ -85,7 +86,7 @@ export function createRenderer(canvas) {
       case 'fixed': texts.push(txt(e.x, e.y - 10, 'fixed!', '#7cc46a', 1, 11)); break;
       case 'sweep': parts.push(p(e.x, e.y, (R() - .5) * 60, -40, 0.4, '#b0a080', 3)); break;
       case 'impact': flash = 0.5; flashColor = '255,80,40'; cam.shake = Math.min(16, cam.shake + 8); break;
-      case 'dfire': tracers.push({ who: e.who, w: e.w, blocked: e.blocked, miss: e.miss, room: e.room, life: 0.8, max: 0.8 }); if (e.who === 'them' && !e.blocked && !e.miss) { flash = 0.25; cam.shake += 4; } break;
+      case 'dfire': tracers.push({ who: e.who, w: e.w, gun: e.gun, from: e.from, blocked: e.blocked, miss: e.miss, room: e.room, delay: e.delay || 0, life: e.w === 'missile' ? 1.2 : 0.8, max: e.w === 'missile' ? 1.2 : 0.8 }); if (e.who === 'them' && !e.blocked && !e.miss) { flash = 0.25; cam.shake += 4; } break;
       case 'shipdie': cam.shake = 20; flash = 0.6; flashColor = '255,200,120'; break;
       case 'bossdie': cam.shake = 30; flash = 1; flashColor = '255,240,180'; break;
       case 'gameover': flash = 1; flashColor = '0,0,0'; break;
@@ -103,6 +104,26 @@ export function createRenderer(canvas) {
       case 'caw': for (let k = 0; k < 3; k++) parts.push(p(e.x + (R() - .5) * 10, e.y - 16, (R() - .5) * 60, -30 - R() * 40, 0.5, '#222', 2)); break;
       case 'slots': slotsShow(e); break;
       case 'meal': if (e.heal) texts.push(txt(e.x, e.y - 34, `+${e.heal} HP`, '#7cc46a', 1.3, 12)); break;
+      case 'dust': for (let k = 0; k < 8; k++) { const a = R() * 7, s = 30 + R() * 90; parts.push({ ...p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, 0.9 + R() * 0.6, R() < .5 ? 'rgba(150,140,125,.7)' : 'rgba(110,100,90,.6)', 8 + R() * 8), smoke: true }); } for (let k = 0; k < 5; k++) parts.push(p(e.x, e.y, (R() - .5) * 200, (R() - .5) * 200, 0.8, '#6a625a', 4, true)); break;
+      case 'crunch': cam.shake = Math.min(12, cam.shake + 3); break;
+      case 'stomp': cam.shake = Math.min(14, cam.shake + 5); parts.push({ ring: true, x: e.x, y: e.y, r: 20, R: 90, life: 0.4, max: 0.4, color: '200,180,150' }); break;
+      case 'chomp': cam.shake = Math.min(10, cam.shake + 3); for (let k = 0; k < 6; k++) parts.push(p(e.x + (R() - .5) * 40, e.y + (R() - .5) * 30, (R() - .5) * 160, -R() * 140, 0.6, R() < .5 ? '#8a8a90' : '#5a4a3a', 4, true)); texts.push(txt(e.x + (R() - .5) * 30, e.y - 20, R() < .5 ? 'CHOMP' : 'CRUNCH', '#ff9070', 0.7, 13)); break;
+      case 'gulp': texts.push(txt(e.x, e.y - 40, '*GULP*', '#ffb080', 1.4, 18)); cam.shake = Math.min(18, cam.shake + 8); break;
+      case 'burrow': for (let k = 0; k < 14; k++) { const a = R() * 7, s = 60 + R() * 160; parts.push(p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, 0.7, R() < .5 ? '#5a4030' : '#7a5a40', 4 + R() * 3, true)); } cam.shake = Math.min(10, cam.shake + 4); break;
+      case 'splat': for (let k = 0; k < (e.small ? 6 : 16); k++) { const a = R() * 7, s = 40 + R() * 160; parts.push(p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, 0.6, R() < .7 ? '#e02840' : '#f0e8a0', 4)); } break;
+      case 'virus': parts.push({ ring: true, x: e.x, y: e.y, r: 6, R: 40, life: 0.3, max: 0.3, color: '150,240,60' }); break;
+      case 'candy': for (let k = 0; k < 16; k++) { const a = R() * 7; parts.push({ confetti: true, x: e.x, y: e.y - 6, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120 - 80, life: 0.9, max: 0.9, color: `hsl(${(R() * 360) | 0},90%,65%)`, size: 3, rot: R() * 6, spin: (R() - .5) * 18 }); } break;
+      case 'chain': { // a jagged bolt of lightning
+        const n = 7, pts = [];
+        for (let k = 0; k <= n; k++) { const f = k / n; pts.push([e.x + (e.x2 - e.x) * f + (k && k < n ? (R() - .5) * 18 : 0), e.y + (e.y2 - e.y) * f + (k && k < n ? (R() - .5) * 18 : 0)]); }
+        parts.push({ bolt: true, pts, life: 0.12, max: 0.12 });
+        light(e.x2, e.y2, 110, 0.9, '160,200,255', 0.1);
+        break;
+      }
+      case 'elem': { const col = { grass: '#60d050', fire: '#ff7020', water: '#40a0ff', electric: '#ffe040' }[e.elem] || '#fff'; for (let k = 0; k < 7; k++) parts.push(p(e.x, e.y, (R() - .5) * 140, (R() - .5) * 140, 0.45, col, 3)); break; }
+      case 'fuse': parts.push(p(e.x + 9, e.y - 12, (R() - .5) * 60, -R() * 60, 0.3, R() < .5 ? '#ffe060' : '#ff8020', 2)); break;
+      case 'mainevent': flash = 0.8; flashColor = '255,60,40'; cam.shake = 20; break;
+      case 'event': flash = 0.3; flashColor = e.good ? '120,255,160' : '255,120,60'; break;
     }
   }
   /** The slot machine wins: flashing lights and confetti. The bigger the win, the crazier it gets. */
@@ -175,14 +196,17 @@ export function createRenderer(canvas) {
     const spd = moving ? 300 * (g.descent?.boost ? 1.8 : 1) : 0;
     const dirX = Math.cos(heading), dirY = Math.sin(heading);
     scroll.x += dirX * spd * dt; scroll.y += dirY * spd * dt;
-    const dirt = dirts[Math.min(4, g.tier || 0)];
-    ctxs.save();
-    ctxs.fillStyle = dirt.pattern;
-    ctxs.translate(-scroll.x, -scroll.y);
-    ctxs.fillRect(vx0 + scroll.x, vy0 + scroll.y, vx1 - vx0, vy1 - vy0);
-    ctxs.restore();
-    const layerTint = ['rgba(0,0,0,0)', 'rgba(120,40,10,.12)', 'rgba(160,30,10,.2)', 'rgba(220,90,10,.22)', 'rgba(255,200,60,.2)'][Math.min(4, g.tier)];
-    ctxs.fillStyle = layerTint; ctxs.fillRect(vx0, vy0, vx1 - vx0, vy1 - vy0);
+    if (g.island) drawSea(ctxs, vx0, vy0, vx1, vy1);
+    else {
+      const dirt = dirts[Math.min(4, g.tier || 0)];
+      ctxs.save();
+      ctxs.fillStyle = dirt.pattern;
+      ctxs.translate(-scroll.x, -scroll.y);
+      ctxs.fillRect(vx0 + scroll.x, vy0 + scroll.y, vx1 - vx0, vy1 - vy0);
+      ctxs.restore();
+      const layerTint = ['rgba(0,0,0,0)', 'rgba(120,40,10,.12)', 'rgba(160,30,10,.2)', 'rgba(220,90,10,.22)', 'rgba(255,200,60,.2)'][Math.min(4, g.tier)];
+      ctxs.fillStyle = layerTint; ctxs.fillRect(vx0, vy0, vx1 - vx0, vy1 - vy0);
+    }
     if (moving) { // speed streaks along the direction of travel (the world rushes up and back past us)
       ctxs.strokeStyle = `rgba(255,220,180,${g.descent?.boost ? 0.1 : 0.06})`; ctxs.lineWidth = 2;
       const w = vx1 - vx0 + 600, h = vy1 - vy0 + 600, L = 70 + spd * 0.15;
@@ -262,6 +286,17 @@ export function createRenderer(canvas) {
         case T.RUBBLE: { const room = g.rooms[ri]; ctxs.fillStyle = room ? shade(ROOMS[room.type]?.color || '#333', -10) : '#2a2622'; ctxs.fillRect(px, py, TILE, TILE);
           ctxs.fillStyle = '#6a625a'; for (let k = 0; k < 5; k++) ctxs.fillRect(px + ((k * 13 + x * 7) % 26), py + ((k * 17 + y * 5) % 26), 5, 4);
           const prog = g.rebuild?.get(i); if (prog) { ctxs.fillStyle = '#7cc46a'; ctxs.fillRect(px + 2, py + TILE - 5, (TILE - 4) * Math.min(1, prog / 60), 3); } break; }
+        case T.SAND: { // the beach: warm sand, a few shells, foam where it meets the sea
+          ctxs.fillStyle = (x * 7 + y * 3) % 5 ? '#e8d09a' : '#e2c88e'; ctxs.fillRect(px, py, TILE, TILE);
+          ctxs.fillStyle = 'rgba(190,150,90,.35)'; ctxs.fillRect(px + ((x * 13 + y * 7) % 24) + 2, py + ((x * 5 + y * 11) % 24) + 2, 3, 2);
+          if ((x * 31 + y * 17) % 23 === 0) { ctxs.fillStyle = '#fff4e8'; ctxs.beginPath(); ctxs.arc(px + 16, py + 16, 3, 0, Math.PI); ctxs.fill(); }
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (G.get(x + dx, y + dy) === T.VOID) {
+            const w = 3 + Math.sin(t * 2 + x * 0.7 + y * 0.5) * 2;
+            ctxs.fillStyle = 'rgba(255,255,255,.55)';
+            if (dx) ctxs.fillRect(dx > 0 ? px + TILE - w : px, py, w, TILE); else ctxs.fillRect(px, dy > 0 ? py + TILE - w : py, TILE, w);
+          }
+          break;
+        }
         case T.ICE: ctxs.fillStyle = '#bfefff'; ctxs.fillRect(px + 1, py + 1, TILE - 2, TILE - 2); ctxs.fillStyle = 'rgba(255,255,255,.7)'; ctxs.fillRect(px + 4, py + 4, 8, 4); break;
         case T.DEBRIS: { // wreckage: twisted plating and beams, blocks the way until cleared
           const room = g.rooms[ri]; ctxs.fillStyle = room ? shade(ROOMS[room.type]?.color || '#333', -14) : '#2a2622'; ctxs.fillRect(px, py, TILE, TILE);
@@ -300,7 +335,7 @@ export function createRenderer(canvas) {
       else if (rh(room) >= 5 && !room.sys) { ctxs.save(); ctxs.translate(x + TILE * 1.3, y + TILE * 1.2); ctxs.rotate(Math.PI / 2); ctxs.fillText(room.name.toUpperCase(), 0, 0); ctxs.restore(); }
       if (room.sys || room.type === 'core' || room.type === 'pod') {
         const active = me && Math.hypot(me.x - room.station.x, me.y - room.station.y) < 46;
-        drawStation(ctxs, room, t, active);
+        drawStation(ctxs, room, t, active, room.type === 'lounge' ? g.crew.find((c) => c.cls === 'urchid')?.upgrades : null);
         if (room.sys && room.sys.hp < room.sys.max) bar(ctxs, room.station.x - 22, room.station.y + 15, 44, 4, room.sys.hp / room.sys.max, room.sys.hp <= 0 ? '#802020' : '#e0533a');
         if (room.sys && room.sys.hp <= 0 && Math.sin(t * 8) > 0) { ctxs.fillStyle = '#ff5040'; ctxs.font = 'bold 9px system-ui'; ctxs.textAlign = 'center'; ctxs.fillText('OFFLINE', room.station.x, room.station.y + 20); ctxs.textAlign = 'left'; }
         if (room.sys && room.sys.hp > 0 && room.sys.hp < room.sys.max * 0.5 && Math.random() < 0.15) onFx({ t: 'spark', x: room.station.x + (Math.random() - .5) * 30, y: room.station.y }, g);
@@ -322,8 +357,8 @@ export function createRenderer(canvas) {
       });
     }
 
-    // the air currents: streaks of moving air you can see (and ride)
-    drawAir(ctxs, g, me, vx0, vy0, vx1, vy1);
+    // the air currents (only the jorbal sees them)
+    drawAir(ctxs, g, me, tx0, ty0, tx1, ty1);
 
     // objects
     for (const o of g.objs) {
@@ -344,6 +379,12 @@ export function createRenderer(canvas) {
     actors.sort((a, b) => a.y - b.y);
     for (const a of actors) {
       if (a.x < vx0 - 60 || a.x > vx1 + 60 || a.y < vy0 - 60 || a.y > vy1 + 60) continue;
+      if (a.team === 'crew' && a.cls && a.disguise != null && a.alive && g.roster[a.disguise]) {
+        // 013 in their uniform: looks just like one of them (you see a faint outline round yourself)
+        drawMob(ctxs, { ...a, trapped: null, marked: false, team: 'enemy', angryT: 0 }, g.roster[a.disguise], t);
+        if (a === me) { ctxs.strokeStyle = 'rgba(220,220,220,.5)'; ctxs.setLineDash([3, 3]); ctxs.beginPath(); ctxs.arc(a.x, a.y, a.r + 7, 0, 7); ctxs.stroke(); ctxs.setLineDash([]); }
+        continue;
+      }
       if (a.team === 'crew' && a.cls) {
         const rk = recoil.get(a.id) || 0;
         if (rk > 0) { // gun kick: pushed back a couple of pixels for a moment
@@ -382,8 +423,9 @@ export function createRenderer(canvas) {
     for (const [id, v] of recoil) { if (v - dt <= 0) recoil.delete(id); else recoil.set(id, v - dt); }
 
     // lighting: dark beyond what you can see
-    if (!cam.overview && me) applyLighting(g, view.focus || me, z, W / 2 - (cam.x + sx) * z, H / 2 - (cam.y + sy) * z, dt);
-    else lights.length = 0;
+    // (phased, you see everything from the empty dimension, walls or no walls)
+    if (!cam.overview && me && !g.island && !me.phased) applyLighting(g, view.focus || me, z, W / 2 - (cam.x + sx) * z, H / 2 - (cam.y + sy) * z, dt);
+    else lights.length = 0;   // (the island is in broad daylight)
 
     // things that need fixing glow softly (even in the dark), and the janitor sees the grime
     drawHighlights(ctxs, g, me, tx0, ty0, tx1, ty1);
@@ -420,8 +462,36 @@ export function createRenderer(canvas) {
       if (c.sayT > 0 && c.say) speech(ctxs, c.x, c.y - c.r - 18, c.say, c.sayT);
     }
     for (const m of g.mobs) if (m.alive && m.sayT > 0 && m.say) speech(ctxs, m.x, m.y - m.r - 16, m.say, m.sayT, !m.isJoe);
-    // the Hoarder lugging our scrap home
-    for (const m of g.mobs) if (m.alive && m.hoarder && m.loot) { ctxs.font = 'bold 11px system-ui'; ctxs.textAlign = 'center'; ctxs.fillStyle = '#ff8060'; ctxs.fillText(`⚙ ${m.loot} OUR SCRAP!`, m.x, m.y - m.r - 30); }
+    // the Ship-Eater, and the scrap in its belly
+    for (const m of g.mobs) if (m.alive && m.hoarder) {
+      ctxs.font = 'bold 12px system-ui'; ctxs.textAlign = 'center'; ctxs.fillStyle = '#ff8060';
+      ctxs.fillText(`☠ ${m.name}${m.loot ? ` · ⚙ ${m.loot} of our scrap inside` : ''}`, m.x, m.y - m.r - 18);
+      bar(ctxs, m.x - 40, m.y - m.r - 12, 80, 5, m.hp / m.maxHp, '#ff5030');
+    }
+    // the phase clock over a vaelift's head: be out of the wall before it hits zero
+    for (const c of g.crew) if (c === me && c.alive && c.phased) {
+      const ctx_ = Math.floor(c.x / TILE), cty = Math.floor(c.y / TILE);
+      const left = Math.max(0, c.phaseT), inWall = g.grid.get(ctx_, cty) !== T.DOOR && g.grid.solidAt(ctx_, cty, g.doors);
+      ctxs.font = `bold ${left < 1.5 ? 16 : 13}px system-ui`; ctxs.textAlign = 'center';
+      ctxs.fillStyle = '#000'; ctxs.fillText(left.toFixed(1), c.x + c.r + 13, c.y - c.r - 3);
+      ctxs.fillStyle = inWall && left < 1.5 ? (Math.sin(t * 20) > 0 ? '#ff3030' : '#ffffff') : '#c0c0ff';
+      ctxs.fillText(left.toFixed(1), c.x + c.r + 12, c.y - c.r - 4);
+      if (inWall) { ctxs.font = 'bold 9px system-ui'; ctxs.fillStyle = '#ffb0b0'; ctxs.fillText('IN A WALL', c.x, c.y + c.r + 16); }
+    }
+    // 013: an arrow pointing the way to the mark
+    if (me?.cls === 'agent' && me.alive) {
+      const mark = g.mobs.find((m) => m.alive && m.marked);
+      if (mark) {
+        const a = Math.atan2(mark.y - me.y, mark.x - me.x), d = Math.hypot(mark.x - me.x, mark.y - me.y);
+        const rr = Math.min(70, d - mark.r - 10);
+        if (rr > 26) {
+          ctxs.save(); ctxs.translate(me.x + Math.cos(a) * rr, me.y + Math.sin(a) * rr); ctxs.rotate(a);
+          ctxs.fillStyle = `rgba(244,197,66,${0.6 + 0.3 * Math.sin(t * 6)})`; ctxs.beginPath(); ctxs.moveTo(12, 0); ctxs.lineTo(-6, -8); ctxs.lineTo(-2, 0); ctxs.lineTo(-6, 8); ctxs.closePath(); ctxs.fill();
+          ctxs.restore();
+          ctxs.font = '9px system-ui'; ctxs.textAlign = 'center'; ctxs.fillStyle = '#f4c542'; ctxs.fillText(`MARK ${Math.round(d / TILE)}m`, me.x + Math.cos(a) * (rr + 18), me.y + Math.sin(a) * (rr + 18));
+        }
+      }
+    }
 
     // floating texts
     ctxs.textAlign = 'center'; ctxs.textBaseline = 'middle';
@@ -507,43 +577,48 @@ export function createRenderer(canvas) {
   }
 
   // ---------------------------------------------------------------------
-  // air currents: pale streaks flowing along each stream (brighter for the jorbal, who rides them)
-  function drawAir(c, g, me, vx0, vy0, vx1, vy1) {
-    const paths = g.air?.paths; if (!paths) return;
-    const strong = me?.cls === 'jorbal';
+  // air currents: their own layer, and only the jorbal can see it. Every open tile gets a little arrow
+  // (drifting the way the air pushes), and the spots it all flows to swirl.
+  const AIR_V = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  function drawAir(c, g, me, tx0, ty0, tx1, ty1) {
+    const dir = g.air?.dir;
+    if (!dir || me?.cls !== 'jorbal') return;
     c.save();
-    c.lineCap = 'round';
-    for (const path of paths) {
-      const P = path.pts, n = P.length / 2;
-      // a faint channel along the whole stream
-      c.strokeStyle = `rgba(170,230,255,${strong ? 0.1 : 0.05})`; c.lineWidth = 26;
-      c.beginPath(); c.moveTo(P[0], P[1]); for (let k = 1; k < n; k++) c.lineTo(P[k * 2], P[k * 2 + 1]); if (path.loop) c.closePath(); c.stroke();
-      // dashes running along it, the way the wind blows
-      c.strokeStyle = `rgba(210,245,255,${strong ? 0.5 : 0.26})`; c.lineWidth = 2;
-      c.setLineDash([14, 30]); c.lineDashOffset = -t * 90;
-      for (const off of [-8, 7]) {
-        c.beginPath();
-        for (let k = 0; k < n; k++) {
-          const j = (k + 1) % n, ax = P[k * 2], ay = P[k * 2 + 1], bx = P[j * 2], by = P[j * 2 + 1];
-          const L = Math.hypot(bx - ax, by - ay) || 1, nx = -(by - ay) / L * off, ny = (bx - ax) / L * off;
-          if (k === 0) c.moveTo(ax + nx, ay + ny); else c.lineTo(ax + nx, ay + ny);
-          if (k === n - 1 && !path.loop) c.lineTo(bx + nx, by + ny);
-        }
-        if (path.loop) c.closePath();
-        c.stroke();
+    c.lineCap = 'round'; c.lineWidth = 1.6;
+    for (let y = ty0; y <= ty1; y++) for (let x = tx0; x <= tx1; x++) {
+      const ch = dir.charCodeAt(y * MAP_W + x);
+      if (ch === 115) { // a sink: everything ends up here
+        const cx = (x + 0.5) * TILE, cy = (y + 0.5) * TILE;
+        c.strokeStyle = 'rgba(160,235,255,.55)';
+        for (let k = 0; k < 3; k++) { const a0 = t * 3 + k * 2.1; c.beginPath(); c.arc(cx, cy, 6 + k * 4, a0, a0 + 1.6); c.stroke(); }
+        continue;
       }
-      c.setLineDash([]);
-      // little chevrons showing which way it flows
-      for (let k = 0; k < n - (path.loop ? 0 : 1); k += 3) {
-        const j = (k + 1) % n, ax = P[k * 2], ay = P[k * 2 + 1], bx = P[j * 2], by = P[j * 2 + 1];
-        const ph = (t * 0.9 + k * 0.17) % 1, x = ax + (bx - ax) * ph, y = ay + (by - ay) * ph;
-        if (x < vx0 || x > vx1 || y < vy0 || y > vy1) continue;
-        const a = Math.atan2(by - ay, bx - ax);
-        c.save(); c.translate(x, y); c.rotate(a); c.strokeStyle = `rgba(220,250,255,${strong ? 0.6 : 0.3})`; c.lineWidth = 2;
-        c.beginPath(); c.moveTo(-5, -5); c.lineTo(1, 0); c.lineTo(-5, 5); c.stroke(); c.restore();
-      }
+      const k = ch - 97;
+      if (k < 0 || k > 7) continue;
+      const [dx, dy] = AIR_V[k], L = Math.hypot(dx, dy);
+      const ux = dx / L, uy = dy / L;
+      // the arrow slides along with the wind and fades in and out
+      const ph = (t * 0.9 + (x * 0.37 + y * 0.61)) % 1;
+      const cx = (x + 0.5) * TILE + ux * (ph - 0.5) * 14, cy = (y + 0.5) * TILE + uy * (ph - 0.5) * 14;
+      c.strokeStyle = `rgba(200,245,255,${0.42 * Math.sin(ph * Math.PI)})`;
+      const P = (lx, ly) => [cx + ux * lx - uy * ly, cy + uy * lx + ux * ly];
+      c.beginPath(); c.moveTo(...P(-6, 0)); c.lineTo(...P(5, 0)); c.moveTo(...P(1, -3.5)); c.lineTo(...P(5, 0)); c.lineTo(...P(1, 3.5)); c.stroke();
     }
     c.restore();
+  }
+
+  // the sea around the island at the center of the world: deep blue, glittering, rolling
+  function drawSea(c, x0, y0, x1, y1) {
+    const gr = c.createLinearGradient(0, y0, 0, y1);
+    gr.addColorStop(0, '#1a6aa0'); gr.addColorStop(1, '#0e4a7a');
+    c.fillStyle = gr; c.fillRect(x0, y0, x1 - x0, y1 - y0);
+    c.strokeStyle = 'rgba(255,255,255,.18)'; c.lineWidth = 2;
+    const step = 46;
+    for (let y = Math.floor(y0 / step) * step; y < y1; y += step) for (let x = Math.floor(x0 / step) * step; x < x1; x += step) {
+      const ph = Math.sin(t * 1.4 + x * 0.05 + y * 0.03);
+      c.beginPath(); c.moveTo(x + ph * 6, y + 10); c.quadraticCurveTo(x + 10 + ph * 6, y + 4, x + 20 + ph * 6, y + 10); c.stroke();
+      if ((x * 7 + y * 3) % 5 === 0 && Math.sin(t * 3 + x + y) > 0.85) { c.fillStyle = 'rgba(255,255,230,.8)'; c.fillRect(x + 30, y + 26, 2, 2); }
+    }
   }
 
   // repairs needed: a soft pulsing glow on damaged walls, doors, breaches, wreckage and consoles.
@@ -646,6 +721,13 @@ export function createRenderer(canvas) {
     const open = d.open;
     const col = d.sealed ? '#b03a2a' : d.reinforced > 0 ? '#5a6ad0' : d.hold === 'closed' ? '#a08030' : d.hold === 'open' && !d.blast ? '#5a8a5a' : d.blast ? '#6a6458' : '#7a8088';
     c.fillStyle = col;
+    if (d.armored) { // a vault door: thick steel, rivets, a wheel. C4 only.
+      c.fillStyle = '#4a4e56'; c.fillRect(px + 1, py + 1, TILE - 2, TILE - 2);
+      c.fillStyle = '#7a808a'; for (const [x, y] of [[5, 5], [TILE - 7, 5], [5, TILE - 7], [TILE - 7, TILE - 7]]) c.fillRect(px + x, py + y, 3, 3);
+      c.strokeStyle = '#c0c4cc'; c.lineWidth = 2; c.beginPath(); c.arc(px + TILE / 2, py + TILE / 2, 7, 0, 7); c.stroke();
+      for (let k = 0; k < 3; k++) { const a = k * 2.1; c.beginPath(); c.moveTo(px + TILE / 2, py + TILE / 2); c.lineTo(px + TILE / 2 + Math.cos(a) * 7, py + TILE / 2 + Math.sin(a) * 7); c.stroke(); }
+      return;
+    }
     if (d.blast) {
       // heavy blast door: slides into the wall, hazard stripes on the leading edge
       const len = (1 - open) * TILE;
@@ -705,10 +787,76 @@ export function createRenderer(canvas) {
         break;
       }
       case 'trap': c.strokeStyle = o.armT > 0 ? '#666' : '#60d0ff'; c.lineWidth = 2; c.beginPath(); for (let k = 0; k < 6; k++) { const a = k / 6 * 7; c.lineTo(o.x + Math.cos(a) * 9, o.y + Math.sin(a) * 9); } c.closePath(); c.stroke(); if (o.armT <= 0 && Math.sin(t * 10 + o.id) > .6) { c.fillStyle = '#80e0ff'; c.fillRect(o.x - 1, o.y - 1, 3, 3); } break;
-      case 'mine': c.fillStyle = o.sub === 'c4' ? '#c8b080' : '#333'; c.beginPath(); c.arc(o.x, o.y, o.sub === 'c4' ? 8 : 6, 0, 7); c.fill(); c.fillStyle = Math.sin(t * (o.sub === 'timed' ? 20 : 6)) > 0 ? '#ff3030' : '#601010'; c.beginPath(); c.arc(o.x, o.y, 2, 0, 7); c.fill(); break;
+      case 'mine': {
+        if (o.sub === 'c4') { // a brick of C4 with a burning fuse and a countdown
+          c.fillStyle = '#d8c898'; c.fillRect(o.x - 9, o.y - 6, 18, 12); c.strokeStyle = '#6a5a3a'; c.lineWidth = 1; c.strokeRect(o.x - 9, o.y - 6, 18, 12);
+          c.fillStyle = '#202020'; c.fillRect(o.x - 9, o.y - 1, 18, 2);
+          const fl = Math.max(0, o.t / 4) * 12;
+          c.strokeStyle = '#3a3020'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(o.x + 9, o.y - 4); c.quadraticCurveTo(o.x + 12 + fl * 0.4, o.y - 10, o.x + 9 + fl, o.y - 12); c.stroke();
+          c.fillStyle = Math.sin(t * 40) > 0 ? '#ffe060' : '#ff6020'; c.beginPath(); c.arc(o.x + 9 + fl, o.y - 12, 2.5 + Math.random() * 1.5, 0, 7); c.fill();
+          c.fillStyle = '#fff'; c.font = 'bold 10px system-ui'; c.textAlign = 'center'; c.fillText(Math.ceil(Math.max(0, o.t)), o.x, o.y - 16);
+          break;
+        }
+        c.fillStyle = o.sub === 'remote' ? '#3a4a3a' : o.sub === 'timed' ? '#4a3a2a' : '#333'; c.beginPath(); c.arc(o.x, o.y, 6.5, 0, 7); c.fill();
+        c.strokeStyle = '#111'; c.lineWidth = 1; c.stroke();
+        c.fillStyle = Math.sin(t * (o.sub === 'timed' ? 20 : o.sub === 'remote' ? 3 : 8)) > 0 ? (o.sub === 'remote' ? '#40ff60' : '#ff3030') : '#401010'; c.beginPath(); c.arc(o.x, o.y, 2, 0, 7); c.fill();
+        if (o.sub === 'timed') { c.fillStyle = '#ffb0a0'; c.font = '9px system-ui'; c.textAlign = 'center'; c.fillText(Math.ceil(Math.max(0, o.t)), o.x, o.y - 10); }
+        break;
+      }
+      case 'tank': { // 013's tiny remote tank: treads, turret, a little antenna
+        c.save(); c.translate(o.x, o.y);
+        c.fillStyle = 'rgba(0,0,0,.35)'; c.fillRect(-12, -8, 26, 20);
+        c.fillStyle = '#3a4030'; c.fillRect(-13, -11, 26, 6); c.fillRect(-13, 5, 26, 6);
+        c.fillStyle = '#5a6a40'; c.fillRect(-11, -6, 22, 12);
+        c.rotate(o.a || 0); c.fillStyle = '#4a5a34'; c.beginPath(); c.arc(0, 0, 6, 0, 7); c.fill(); c.fillStyle = '#2a2a24'; c.fillRect(4, -1.5, 13, 3);
+        c.restore();
+        c.strokeStyle = '#999'; c.lineWidth = 1; c.beginPath(); c.moveTo(o.x - 6, o.y - 6); c.lineTo(o.x - 10, o.y - 18); c.stroke();
+        c.fillStyle = Math.sin(t * 8) > 0 ? '#ff4040' : '#601010'; c.beginPath(); c.arc(o.x - 10, o.y - 18, 2, 0, 7); c.fill();
+        bar(c, o.x - 12, o.y - 24, 24, 3, o.hp / (120 + 20 * 6), '#90c060');
+        break;
+      }
+      case 'wallbones': { // what's left of a vaelift who came back inside a wall: the bits that stuck out
+        c.save(); c.translate(o.x, o.y); c.rotate(o.a || 0);
+        c.fillStyle = '#e8e0cc'; c.strokeStyle = '#8a8070'; c.lineWidth = 1;
+        const parts = o.parts || [];
+        if (parts.includes('head')) { c.beginPath(); c.arc(11, 0, 6, 0, 7); c.fill(); c.stroke(); c.fillStyle = '#222'; c.fillRect(12, -3, 2, 2); c.fillRect(12, 1, 2, 2); c.fillStyle = '#e8e0cc'; }
+        if (parts.includes('hands')) for (const s of [-1, 1]) { c.fillRect(-2, s * 10 - 1.5, 9, 3); c.beginPath(); c.arc(8, s * 10, 3, 0, 7); c.fill(); }
+        if (parts.includes('feet')) for (const s of [-1, 1]) { c.fillRect(-14, s * 4 - 1.5, 8, 3); c.fillRect(-16, s * 4 - 2, 3, 5); }
+        if (parts.includes('body') || !parts.length) { c.fillRect(-6, -1.5, 14, 3); for (let k = 0; k < 3; k++) c.fillRect(-4 + k * 4, -6, 1.5, 12); }
+        c.restore();
+        // and the vest's tails, flapping out of the wall
+        if (parts.includes('feet') || parts.includes('body')) { c.strokeStyle = '#141018'; c.lineWidth = 3; c.beginPath(); c.moveTo(o.x - 10 * Math.cos(o.a), o.y - 10 * Math.sin(o.a)); c.lineTo(o.x - 22 * Math.cos(o.a) + Math.sin(t * 3) * 3, o.y - 22 * Math.sin(o.a)); c.stroke(); }
+        break;
+      }
+      case 'palm': { // a palm tree: trunk, coconuts, fronds swaying
+        c.save(); c.translate(o.x, o.y); c.scale(o.s || 1, o.s || 1);
+        c.fillStyle = 'rgba(0,0,0,.25)'; c.beginPath(); c.ellipse(10, 6, 24, 9, 0.3, 0, 7); c.fill();
+        c.fillStyle = '#8a6a40'; for (let k = 0; k < 4; k++) { c.beginPath(); c.ellipse(-k * 2, -k * 6, 4, 3.5, 0, 0, 7); c.fill(); }
+        c.fillStyle = '#5a3a1a'; for (const [x, y] of [[-3, -24], [2, -23], [-1, -27]]) { c.beginPath(); c.arc(x, y, 2.5, 0, 7); c.fill(); }
+        c.fillStyle = '#3a9a40';
+        for (let k = 0; k < 6; k++) { const a = (o.a || 0) + k * 1.05 + Math.sin(t * 1.3 + k) * 0.06; c.save(); c.translate(-2, -25); c.rotate(a); c.beginPath(); c.moveTo(0, 0); c.quadraticCurveTo(12, -6, 24, 2); c.quadraticCurveTo(12, 2, 0, 0); c.fill(); c.restore(); }
+        c.restore();
+        break;
+      }
+      case 'hut': { // a beach hut with a straw roof (the island makes everything for you)
+        c.save(); c.translate(o.x, o.y);
+        c.fillStyle = '#a07a4a'; c.fillRect(-18, -10, 36, 22);
+        c.fillStyle = '#d8b860'; c.beginPath(); c.moveTo(-24, -8); c.lineTo(0, -26); c.lineTo(24, -8); c.closePath(); c.fill();
+        c.fillStyle = '#5a3a1a'; c.fillRect(-5, 0, 10, 12);
+        c.restore();
+        break;
+      }
       case 'tnt': c.fillStyle = '#c02020'; for (let k = -1; k <= 1; k++) c.fillRect(o.x + k * 5 - 2, o.y - 8, 4, 16); c.fillStyle = '#fff'; c.font = 'bold 10px system-ui'; c.textAlign = 'center'; c.fillText(Math.ceil(o.t), o.x, o.y - 14); break;
       case 'cloud': { const col = o.sub === 'poison' ? '160,80,230' : o.sub === 'acid' ? '190,240,60' : o.sub === 'buff' ? '255,210,80' : '180,180,180'; for (let k = 0; k < 5; k++) { c.fillStyle = `rgba(${col},${0.12 * Math.min(1, o.t)})`; c.beginPath(); c.arc(o.x + Math.sin(t + k * 1.3) * 20, o.y + Math.cos(t * 0.8 + k) * 16, o.r * 0.6, 0, 7); c.fill(); } break; }
-      case 'crate': c.fillStyle = '#9a7a3a'; c.fillRect(o.x - 10, o.y - 8, 20, 16); c.strokeStyle = '#5a4020'; c.lineWidth = 1.5; c.strokeRect(o.x - 10, o.y - 8, 20, 16); c.beginPath(); c.moveTo(o.x - 10, o.y - 8); c.lineTo(o.x + 10, o.y + 8); c.stroke(); if (Math.sin(t * 4) > 0) { c.fillStyle = '#f4c542'; c.font = '9px system-ui'; c.textAlign = 'center'; c.fillText('E', o.x, o.y - 12); } break;
+      case 'crate':
+        if (o.island || o.heavy) { // a treasure chest (island) or a heavy strongbox (their vault)
+          c.fillStyle = o.island ? '#8a5a2a' : '#5a5a60'; c.fillRect(o.x - 12, o.y - 8, 24, 16);
+          c.fillStyle = o.island ? '#a06a30' : '#6a6a72'; c.fillRect(o.x - 12, o.y - 10, 24, 6);
+          c.fillStyle = '#e0b030'; c.fillRect(o.x - 12, o.y - 4, 24, 2); c.fillRect(o.x - 2, o.y - 6, 4, 6);
+          if (Math.sin(t * 3 + o.x) > 0.6) { c.fillStyle = '#fff6a0'; c.fillRect(o.x + 6, o.y - 12, 2, 2); }
+        } else { c.fillStyle = '#9a7a3a'; c.fillRect(o.x - 10, o.y - 8, 20, 16); c.strokeStyle = '#5a4020'; c.lineWidth = 1.5; c.strokeRect(o.x - 10, o.y - 8, 20, 16); c.beginPath(); c.moveTo(o.x - 10, o.y - 8); c.lineTo(o.x + 10, o.y + 8); c.stroke(); }
+        if (Math.sin(t * 4) > 0) { c.fillStyle = '#f4c542'; c.font = '9px system-ui'; c.textAlign = 'center'; c.fillText('E', o.x, o.y - 14); }
+        break;
       case 'skeleton': c.save(); c.translate(o.x, o.y); c.rotate(o.a); c.fillStyle = '#ddd5c0'; c.beginPath(); c.arc(0, -8, 6, 0, 7); c.fill(); c.fillRect(-1.5, -2, 3, 14); for (let k = 0; k < 3; k++) c.fillRect(-6, 1 + k * 4, 12, 1.5); c.fillStyle = '#222'; c.fillRect(-3, -10, 2, 2); c.fillRect(1, -10, 2, 2); c.restore(); break;
       case 'journal': c.fillStyle = '#7a3a2a'; c.fillRect(o.x - 7, o.y - 9, 14, 18); c.fillStyle = '#f0e0c0'; c.fillRect(o.x - 5, o.y - 7, 10, 2); if (!o.read && Math.sin(t * 4) > 0) { c.strokeStyle = '#f4c542'; c.lineWidth = 2; c.beginPath(); c.arc(o.x, o.y, 16, 0, 7); c.stroke(); } break;
     }
@@ -725,12 +873,30 @@ export function createRenderer(canvas) {
       case 'coin': c.fillStyle = '#f4c542'; c.beginPath(); c.arc(pk.x, y, 4.5, 0, 7); c.fill(); c.strokeStyle = '#a07a10'; c.lineWidth = 1; c.stroke(); break;
       case 'crop': c.fillStyle = '#e0c040'; c.beginPath(); c.arc(pk.x, y, 5, 0, 7); c.fill(); break;
       case 'gun': c.strokeStyle = '#90a050'; c.lineWidth = 4; c.beginPath(); c.moveTo(pk.x - 8, y); c.lineTo(pk.x + 8, y); c.stroke(); break;
+      case 'candy': { // a wrapped sweet, twisted at both ends (the rainbow one cycles through every colour)
+        const col = pk.sub === 'rainbow' ? `hsl(${(t * 240 + pk.id * 40) % 360},90%,60%)` : (CANDY_COL[pk.sub] || '#fff');
+        c.save(); c.translate(pk.x, y); c.rotate(Math.sin(t * 2 + pk.id) * 0.3);
+        c.fillStyle = col;
+        for (const s of [-1, 1]) { c.beginPath(); c.moveTo(s * 5, 0); c.lineTo(s * 11, -5); c.lineTo(s * 11, 5); c.closePath(); c.fill(); }
+        c.beginPath(); c.ellipse(0, 0, 6.5, 5, 0, 0, 7); c.fill();
+        c.strokeStyle = 'rgba(0,0,0,.35)'; c.lineWidth = 1; c.stroke();
+        c.fillStyle = 'rgba(255,255,255,.7)'; c.fillRect(-3, -3, 3, 2);
+        c.restore();
+        if (Math.sin(t * 5 + pk.id) > 0.7) { c.fillStyle = '#ffffff'; c.fillRect(pk.x + 7, y - 9, 2, 2); }
+        break;
+      }
     }
   }
+  const CANDY_COL = { green: '#50e060', red: '#ff4040', blue: '#4080ff', white: '#f4f4ff', yellow: '#f4d030' };
 
   function drawProj(c, q, t) {
     switch (q.kind) {
-      case 'bullet': case 'ppk': case 'knife': {
+      case 'ppk': if (q.laser) { // 013's laser: a long red beam
+        c.strokeStyle = 'rgba(255,40,40,.35)'; c.lineWidth = 7; c.lineCap = 'round'; c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(q.x - q.vx * 0.06, q.y - q.vy * 0.06); c.stroke();
+        c.strokeStyle = '#ffd0d0'; c.lineWidth = 2; c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(q.x - q.vx * 0.06, q.y - q.vy * 0.06); c.stroke(); c.lineCap = 'butt';
+        break;
+      } // falls through
+      case 'bullet': case 'knife': {
         // glowing tracer: a soft wide streak with a hot core
         const crew = q.team === 'crew', tail = q.kind === 'knife' ? 0.02 : 0.035;
         if (q.kind !== 'knife') {
@@ -774,6 +940,7 @@ export function createRenderer(canvas) {
         c.fillStyle = '#ffffff'; c.beginPath(); c.arc(0, 0, s * 0.3, 0, 7); c.fill();
         c.restore(); continue;
       }
+      if (q.bolt) { c.strokeStyle = `rgba(200,230,255,${q.life / q.max})`; c.lineWidth = 3; c.beginPath(); c.moveTo(...q.pts[0]); for (const pt of q.pts) c.lineTo(...pt); c.stroke(); c.strokeStyle = '#ffffff'; c.lineWidth = 1; c.stroke(); continue; }
       if (q.fling) { const k = 1 - q.life / q.max; c.fillStyle = q.color; c.beginPath(); c.arc(q.x + (q.x2 - q.x) * k, q.y + (q.y2 - q.y) * k - Math.sin(k * Math.PI) * 40, 7, 0, 7); c.fill(); continue; }
       if (q.confetti) { // flutters down, spinning
         q.vy += 260 * dt; q.vx *= 0.97; q.vy *= 0.96; q.x += q.vx * dt + Math.sin(q.rot * 2) * 0.6; q.y += q.vy * dt; q.rot += q.spin * dt;
@@ -822,26 +989,120 @@ export function createRenderer(canvas) {
     }
   }
 
+  // Ship-to-ship fire through the dirt. D-missiles look like missiles (fins, a flame, a smoke trail); the
+  // D-gun fires a big brass shell with a glowing laser tip. Each ship sits inside its bubble (a faint dome
+  // while it has layers): a shell that's stopped by it dissolves in a flash and sends a ripple across the
+  // bubble, like a drop hitting water. Missiles go straight through.
+  const ripples2 = [];   // { x, y, cx, cy, rx, ry, life, max }
+  function domeOf(g, who, es) {
+    if (who === 'us') { const B = g.box; if (!B) return null; return { cx: (B.x0 + B.x1 + 1) / 2 * TILE, cy: (B.y0 + B.y1 + 1) / 2 * TILE, rx: (B.x1 - B.x0) / 2 * TILE + 70, ry: (B.y1 - B.y0) / 2 * TILE + 70 }; }
+    const R = es?.rect; if (!R) return null;
+    return { cx: (R.x0 + R.w / 2) * TILE, cy: (R.y0 + R.h / 2) * TILE, rx: R.w / 2 * TILE + 60, ry: R.h / 2 * TILE + 60 };
+  }
+  /** Where a straight line from a to b first enters an ellipse. */
+  function enterDome(a, b, d) {
+    const inside = (x, y) => ((x - d.cx) / d.rx) ** 2 + ((y - d.cy) / d.ry) ** 2 <= 1;
+    if (inside(a.x, a.y)) return b;
+    for (let s = 0; s <= 1; s += 0.02) { const x = a.x + (b.x - a.x) * s, y = a.y + (b.y - a.y) * s; if (inside(x, y)) return { x, y, s }; }
+    return b;
+  }
+  function drawDomes(c, g) {
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2);
+    const dome = (d, layers) => {
+      if (!d || layers <= 0) return;
+      c.save();
+      for (let k = 0; k < Math.min(layers, 5); k++) {
+        c.strokeStyle = `rgba(140,220,255,${0.06 + 0.03 * pulse})`; c.lineWidth = 2;
+        c.beginPath(); c.ellipse(d.cx, d.cy, d.rx + k * 8, d.ry + k * 8, 0, 0, 7); c.stroke();
+      }
+      c.restore();
+    };
+    if (g.phase === 'encounter') {
+      dome(domeOf(g, 'us'), g.ship.bubble);
+      for (const es of g.enemyShips || []) if (es.docked && !es.gone) dome(domeOf(g, 'them', es), es.bubble);
+    }
+    // ripples where something hit a bubble
+    for (const r of ripples2) {
+      r.life -= 1 / 60;
+      const k = 1 - r.life / r.max;
+      c.save();
+      c.beginPath(); c.ellipse(r.cx, r.cy, r.rx + 30, r.ry + 30, 0, 0, 7); c.ellipse(r.cx, r.cy, Math.max(1, r.rx - 30), Math.max(1, r.ry - 30), 0, 0, 7); c.clip('evenodd');
+      for (let n = 0; n < 3; n++) {
+        const rr = 8 + (k * 110) - n * 24; if (rr <= 0) continue;
+        c.strokeStyle = `rgba(170,235,255,${Math.max(0, 0.75 - k) * (1 - n * 0.25)})`; c.lineWidth = 3 - n * 0.6;
+        c.beginPath(); c.arc(r.x, r.y, rr, 0, 7); c.stroke();
+      }
+      // the patch of bubble that took the hit lights up, then that layer fades away
+      c.strokeStyle = `rgba(200,245,255,${Math.max(0, 0.6 - k)})`; c.lineWidth = 5;
+      const a0 = Math.atan2((r.y - r.cy) / r.ry, (r.x - r.cx) / r.rx);
+      c.beginPath(); c.ellipse(r.cx, r.cy, r.rx, r.ry, 0, a0 - 0.35, a0 + 0.35); c.stroke();
+      c.restore();
+    }
+    for (let k = ripples2.length - 1; k >= 0; k--) if (ripples2[k].life <= 0) ripples2.splice(k, 1);
+  }
+  function drawMissileBody(c, x, y, a, s = 1, enemy = false) {
+    c.save(); c.translate(x, y); c.rotate(a); c.scale(s, s);
+    c.fillStyle = enemy ? '#8a3a2a' : '#c8ccd4'; c.fillRect(-16, -4.5, 26, 9);           // body
+    c.fillStyle = enemy ? '#5a1a10' : '#e04020'; c.beginPath(); c.moveTo(10, -4.5); c.lineTo(20, 0); c.lineTo(10, 4.5); c.closePath(); c.fill();   // nose
+    c.fillStyle = enemy ? '#3a1a10' : '#606870';
+    for (const sgn of [-1, 1]) { c.beginPath(); c.moveTo(-16, sgn * 4.5); c.lineTo(-22, sgn * 10); c.lineTo(-10, sgn * 4.5); c.fill(); }   // fins
+    c.fillStyle = '#202020'; c.fillRect(-4, -4.5, 2, 9);
+    const fl = 8 + Math.random() * 8;   // exhaust flame
+    c.fillStyle = '#ffb030'; c.beginPath(); c.moveTo(-16, -3); c.lineTo(-16 - fl, 0); c.lineTo(-16, 3); c.fill();
+    c.fillStyle = '#fff4c0'; c.beginPath(); c.moveTo(-16, -1.5); c.lineTo(-16 - fl * 0.5, 0); c.lineTo(-16, 1.5); c.fill();
+    c.restore();
+  }
+  function drawShell(c, x, y, a, s = 1) {
+    c.save(); c.translate(x, y); c.rotate(a); c.scale(s, s);
+    const gr = c.createLinearGradient(0, -5, 0, 5); gr.addColorStop(0, '#f0d080'); gr.addColorStop(0.5, '#c8952a'); gr.addColorStop(1, '#7a5418');
+    c.fillStyle = gr; c.fillRect(-12, -5, 16, 10);                                         // brass casing
+    c.fillStyle = '#a07a2a'; c.fillRect(-12, -5, 2, 10);
+    c.beginPath(); c.moveTo(4, -5); c.quadraticCurveTo(14, -4, 16, 0); c.quadraticCurveTo(14, 4, 4, 5); c.closePath(); c.fill();
+    // the laser tip, lit up
+    c.fillStyle = `rgba(255,60,60,${0.35 + 0.3 * Math.sin(t * 40)})`; c.beginPath(); c.arc(16, 0, 7, 0, 7); c.fill();
+    c.fillStyle = '#ffe0e0'; c.beginPath(); c.arc(16, 0, 2.5, 0, 7); c.fill();
+    c.restore();
+  }
   function drawTracers(c, g, dt) {
+    drawDomes(c, g);
     const ourW = g.rooms.find((r) => r.owner === 'us' && r.type === 'weapons');
     for (const tr of tracers) {
+      if (tr.delay > 0) { tr.delay -= dt; continue; }
       tr.life -= dt;
       const es = tr.who === 'them' ? (g.enemyShips || []).find((s) => s.id === tr.from) : (tr.room != null && g.rooms[tr.room] ? (g.enemyShips || []).find((s) => s.id === g.rooms[tr.room].esId) : g.enemyShip);
       if (!es || es.gone || !es.docked) continue;
       const theirW = es.rooms.map((i) => g.rooms[i]).find((r) => r && r.type === 'weapons') || g.rooms[es.rooms?.[0]];
       if (!ourW || !theirW) continue;
       const k = 1 - tr.life / tr.max;
-      let a = tr.who === 'us' ? ourW.station : theirW.station;
+      const a = tr.who === 'us' ? ourW.station : theirW.station;
       let b = tr.who === 'us' ? (tr.room != null && g.rooms[tr.room] ? g.rooms[tr.room].station : theirW.station) : (tr.room != null && g.rooms[tr.room] ? g.rooms[tr.room].station : ourW.station);
-      // D-weapons fire straight through the dirt
-      const x = a.x + (b.x - a.x) * Math.min(1, k * 1.4), y = a.y + (b.y - a.y) * Math.min(1, k * 1.4);
+      // a shell the bubble stops never gets inside it
+      const dome = domeOf(g, tr.who === 'us' ? 'them' : 'us', es);
+      if (tr.blocked && dome) b = enterDome(a, b, dome);
+      if (tr.miss) b = { x: b.x + (tr.who === 'us' ? 0 : 160), y: b.y + 220 * (tr.who === 'us' ? -1 : 1) };
+      const f = Math.min(1, k / 0.72), ang = Math.atan2(b.y - a.y, b.x - a.x);
+      const x = a.x + (b.x - a.x) * f, y = a.y + (b.y - a.y) * f;
       if (k < 0.72) {
-        c.strokeStyle = tr.w === 'missile' ? 'rgba(255,120,60,.9)' : 'rgba(255,240,160,.9)';
-        c.lineWidth = tr.w === 'missile' ? 5 : 3;
-        c.beginPath(); c.moveTo(x - (b.x - a.x) * 0.05, y - (b.y - a.y) * 0.05); c.lineTo(x, y); c.stroke();
-      } else if (tr.blocked && !tr.done) { tr.done = true; parts.push({ ring: true, x: b.x, y: b.y + 30, r: 20, R: 80, life: 0.5, max: 0.5, color: '120,220,255' }); texts.push(txt(b.x, b.y, 'BLOCKED', '#80e0ff', 1.2, 13)); }
-      else if (tr.miss && !tr.done) { tr.done = true; texts.push(txt(b.x, b.y, 'MISS', '#fff', 1.2, 13)); }
-      else if (!tr.done) { tr.done = true; onFx({ t: 'boom', x: b.x, y: b.y + 40, r: tr.w === 'missile' ? 60 : 30 }, g); }
+        if (tr.w === 'missile') {
+          drawMissileBody(c, x, y, ang, 1.2, tr.who === 'them');
+          if (Math.random() < 0.9) parts.push({ ...p(x - Math.cos(ang) * 22, y - Math.sin(ang) * 22, (Math.random() - .5) * 30, (Math.random() - .5) * 30, 0.7, 'rgba(170,160,150,.55)', 8), smoke: true });
+          light(x, y, 90, 0.7, '255,160,60', 0.05);
+        } else {
+          c.strokeStyle = 'rgba(255,90,80,.25)'; c.lineWidth = 3; c.beginPath(); c.moveTo(x - Math.cos(ang) * 50, y - Math.sin(ang) * 50); c.lineTo(x, y); c.stroke();
+          drawShell(c, x, y, ang, tr.gun === 'rail' ? 1.4 : tr.gun === 'flak' ? 0.7 : 1);
+          light(x, y, 60, 0.6, '255,80,80', 0.05);
+        }
+      } else if (!tr.done) {
+        tr.done = true;
+        if (tr.blocked && dome) {
+          // the shell dissolves in a flash, and the bubble ripples out from where it struck
+          ripples2.push({ x: b.x, y: b.y, cx: dome.cx, cy: dome.cy, rx: dome.rx, ry: dome.ry, life: 0.9, max: 0.9 });
+          light(b.x, b.y, 120, 1, '160,230,255', 0.25);
+          for (let n = 0; n < 16; n++) { const aa = Math.random() * 7, sp = 40 + Math.random() * 140; parts.push(p(b.x, b.y, Math.cos(aa) * sp, Math.sin(aa) * sp, 0.5, n % 2 ? '#e8c060' : '#bff0ff', 2.5)); }
+          texts.push(txt(b.x, b.y - 14, 'BLOCKED', '#80e0ff', 1.1, 12));
+        } else if (tr.miss) texts.push(txt(b.x, b.y, 'MISS', '#fff', 1.2, 13));
+        else onFx({ t: 'boom', x: b.x, y: b.y + 40, r: tr.w === 'missile' ? 60 : 30 }, g);
+      }
     }
     for (let k = tracers.length - 1; k >= 0; k--) if (tracers[k].life <= 0) tracers.splice(k, 1);
   }

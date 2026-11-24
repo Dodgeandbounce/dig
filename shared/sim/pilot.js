@@ -28,7 +28,8 @@ export function descentTick(g, dt, pilotInput) {
   const afterburner = pilot ? pilot.upgrades[1] : 0;
   d.boost = !!pilotInput?.shift && s.fuel > 0;
   // fuel
-  const burn = 0.42 * (1 + 0.3 * (engines - 1)) * (d.boost ? 2 - 0.15 * afterburner : 1);
+  // (deeper rock is harder going: it drinks more fuel the further down we are)
+  const burn = 0.6 * (1 + 0.3 * (engines - 1)) * (1 + 0.012 * g.level) * (d.boost ? 2 - 0.15 * afterburner : 1);
   s.fuel = Math.max(0, s.fuel - burn * dt);
   if (s.fuel <= 0) {
     if (!d.stranded) { d.stranded = true; g.log('alert', 'Out of fuel! We\'re stranded. Call for a fuel drop (60 money) — every ship nearby will hear it.'); g.fx({ t: 'alarm' }); }

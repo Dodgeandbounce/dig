@@ -357,7 +357,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
       if (k === 'KeyL' && !ui.isOpen()) { session.cmd({ t: 'seal' }); return; }
       if (k === 'KeyE' && view.pilot) { session.cmd({ t: 'helm', on: false }); return; }
       if (k === 'KeyE' && ui.kind() === 'panel') { ui.closeModal(); return; }
-      if (['KeyQ', 'KeyF', 'KeyE', 'Space'].includes(k)) pressed[{ KeyQ: 'q', KeyF: 'f', KeyE: 'e', Space: 'space' }[k]] = true;
+      if (['KeyQ', 'KeyF', 'KeyE', 'KeyR', 'KeyG', 'Space'].includes(k)) pressed[{ KeyQ: 'q', KeyF: 'f', KeyE: 'e', KeyR: 'r', KeyG: 'g', Space: 'space' }[k]] = true;
     }
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(k)) e.preventDefault();
     if (down) keys.add(k); else keys.delete(k);
@@ -485,14 +485,29 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
       case 'slots': if (e.crew === me.id) sfx.slots(e.win); break;
       case 'victory': sfx.victory(); break;
       case 'gameover': sfx.defeat(); break;
-      case 'dfire': sfx.dfire(e.who, e.w); break;
+      case 'dfire': sfx.dfire(e.who, e.w); if (e.blocked) setTimeout(() => sfx.bubbleHit(), 560 + (e.delay || 0) * 1000); break;
       case 'impact': sfx.impact(); break;
-      case 'down': sfx.down(); break;
+      case 'down': sfx.deathYell(e.cls); break;
+      case 'die': sfx.creatureDie(e.voice, e.big); break;
+      case 'chomp': sfx.chomp(); break;
+      case 'gulp': sfx.gulp(); break;
+      case 'crunch': sfx.crunch(); break;
+      case 'stomp': sfx.stomp(); break;
+      case 'burrow': sfx.burrow(); break;
+      case 'splat': sfx.splat(); break;
+      case 'virus': sfx.virus(); break;
+      case 'candy': if (e.crew === me.id) sfx.candy(); break;
+      case 'event': sfx.event(e.good); break;
+      case 'mainevent': sfx.mainevent(); break;
+      case 'mission': if (e.crew === me.id) sfx.mission(); break;
+      case 'fuse': sfx.fuse(); break;
+      case 'chain': sfx.zap(); break;
+      case 'elem': sfx.elem(e.elem); break;
       case 'ability': if (e.id === 'pounce' || e.id === 'howl') sfx.bark(); if (e.id === 'insult') sfx.insult(); break;
       case 'say': {
         const a = g.crew.find((c) => c.id === e.id) || g.mobs.find((m) => m.id === e.id);
         if (a && !a.cls) { a.say = e.text; a.sayT = 3.2; }
-        if (a && Math.hypot(a.x - me.x, a.y - me.y) < 500) { at(a.x, a.y); if (a.cls) sfx.chirp(a.cls); else if (!a.isJoe) sfx.grunt(); at(null); }
+        if (a && Math.hypot(a.x - me.x, a.y - me.y) < 500 && (a.alive !== false)) { at(a.x, a.y); if (a.cls) sfx.chirp(a.cls); else if (!a.isJoe) sfx.grunt(); at(null); }
         break;
       }
       case 'switch': me = session.me() || me; break;

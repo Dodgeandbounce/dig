@@ -33,6 +33,15 @@ test('freezes when everyone leaves', () => {
   assert.equal(w.game.time, t);
 });
 
+test('the host can start online as the Urchid (a troll among real people, not story mode)', () => {
+  const w = mk({ playerClass: 'urchid' });
+  w.board('h', 'Host'); w.board('g', 'Guest');
+  assert.equal(w.crewOf('h').cls, 'urchid');
+  assert.notEqual(w.crewOf('g').cls, 'urchid');
+  assert.equal(w.game.storyMode, false);
+  assert.ok(w.game.rooms.some((r) => r.type === 'lounge'), 'with a lounge');
+});
+
 test('each player controls one crew member; bots take over when they leave', () => {
   const w = mk({ playerClass: 'engineer' });
   w.board('h', 'Host');

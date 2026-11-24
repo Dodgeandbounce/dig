@@ -1,22 +1,28 @@
 // Every class's kit: primary fire, abilities, passives, and E-interactions.
-import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES, LINES, CLASS_UP_MAX, xpCost, CREW_HP_MUL } from './data.js';
+import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES, LINES, CLASS_UP_MAX, xpCost, CREW_HP_MUL, LIGHTNING } from './data.js';
 import { idx, inMap } from './grid.js';
 import {
   moveActor, melee, fireBullet, spawnProj, explode, damage, stat, addBuff, healActor, roomAt,
-  hostiles, popBubble, airAt, addMess, dropPickup, damageSystem, hitTile, tileOwner, extinguish, gainXp, unstick, collides,
+  hostiles, popBubble, airAt, addMess, dropPickup, damageSystem, hitTile, tileOwner, extinguish, gainXp, unstick, collides, downCrew,
 } from './combat.js';
 import { clamp, norm, dist, dist2, angTo, uid } from './util.js';
 
 const MELEE_CLASSES = new Set(['engineer', 'chef', 'mrclean', 'dog', 'chameleon', 'trainer', 'vaelift']);
 export const DASH_COST = 34;
 
-/** Max HP from the class, the upgrades that add to it, and the base multiplier. */
+/**
+ * Max HP and stamina from the class and the stars spent. Every star makes you a bit tougher (+4% health)
+ * and gives you more puff (+6 stamina), whatever track it went into. (Sturdy Step adds more health on top.)
+ */
 export function recalcCrewHp(c) {
   const base = c.baseHp || c.maxHp;
   const was = c.maxHp;
-  c.maxHp = Math.round(base * (1 + (c.cls === 'chameleon' ? 0.12 * c.upgrades[1] : 0)));
+  const stars = c.upgrades.reduce((a, b) => a + b, 0);
+  c.maxHp = Math.round(base * (1 + 0.04 * stars + (c.cls === 'chameleon' ? 0.12 * c.upgrades[1] : 0)));
   if (c.maxHp > was) c.hp += c.maxHp - was;
+  c.stamMax = 100 + 6 * stars;
 }
+export const stamMax = (c) => c.stamMax || 100;
 /** Bots put their XP into their weakest track as soon as they can afford a star. */
 export function autoSpendXp(g, c) {
   if (c.cls === 'urchid' && !c.human) { /* the urchid upgrades its chair, obviously */ }
@@ -59,6 +65,7 @@ export const MINE_TYPES = ['proximity', 'timed', 'remote', 'c4'];
 const JARS = ['poison', 'acid', 'explosive', 'buff'];
 
 export function weaponOf(c) {
+  if (c.lightning > 0) return LIGHTNING;   // white candy: a lightning chain gun until it runs dry
   if (c.makeshift?.ammo > 0) return MAKESHIFT;
   if (c.cls === 'vaelift') return STAFF_W[c.form || 'staff'];
   return WEAPONS[CLASSES[c.cls].weapon];
@@ -95,10 +102,12 @@ export function crewTick(g, c, inp, dt) {
   // regen buffs, poison
   const regen = stat(c, 'regen');
   if (regen) healActor(c, regen * dt);
+  // phase: the clock is ticking (a number counts down over your head)
+  if (c.phased) { c.phaseT -= dt; if (c.phaseT <= 0) unphase(g, c); if (!c.alive) return; }
   // stamina comes back after a short breather
-  if (c.stamT > 0) c.stamT -= dt; else c.stam = Math.min(100, (c.stam ?? 100) + dt * 26);
-  // never stuck inside a wall (somebody rebuilt it on top of you)
-  unstick(g, c);
+  if (c.stamT > 0) c.stamT -= dt; else c.stam = Math.min(stamMax(c), (c.stam ?? 100) + dt * 26);
+  // never stuck inside a wall (somebody rebuilt it on top of you). Phased, you're meant to be in it.
+  if (!c.phased) unstick(g, c);
   // knocked back by something big
   if (c.kx || c.ky) { moveActor(g, c, c.kx * dt, c.ky * dt); c.kx *= 0.85; c.ky *= 0.85; if (Math.abs(c.kx) + Math.abs(c.ky) < 5) c.kx = c.ky = 0; }
   if (c.stunT > 0) { c.stunT -= dt; return; }
@@ -145,7 +154,6 @@ export function crewTick(g, c, inp, dt) {
     c.jitter = c.moving ? (inp.shift ? 1 : 0.35) : 0;
     if (c.cloakBreak) { c.cloaked = false; c.cloakBreak = 0; g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'spotted!', color: '#ff8080' }); }
   }
-  if (c.phased) { c.phaseT -= dt; if (c.phaseT <= 0) unphase(g, c); }
 
   // ---- primary fire
   const w = weaponOf(c);
@@ -157,10 +165,11 @@ export function crewTick(g, c, inp, dt) {
   const P = inp.pressed || {};
   if (P.q && def.abilities.q) useAbility(g, c, def.abilities.q, inp, 'q');
   if (P.f && def.abilities.f) useAbility(g, c, def.abilities.f, inp, 'f');
+  if (P.r && def.abilities.r) useAbility(g, c, def.abilities.r, inp, 'r');
+  if (P.g && def.abilities.g) useAbility(g, c, def.abilities.g, inp, 'g');
   if (def.abilities.rmb === 'chainsaw') chainsaw(g, c, inp.rmb, dt);
   else if (def.abilities.rmb === 'pitchfork') { if ((inp.rmb || P.rmb) && c.cd.rmb <= 0 && !c.phased) useAbility(g, c, 'pitchfork', inp, 'rmb'); }
   else if (P.rmb && def.abilities.rmb) useAbility(g, c, def.abilities.rmb, inp, 'rmb');
-  else if (P.rmb && c.cls === 'agent') detonateRemotes(g, c);
   else if (P.rmb && c.cls === 'chef') useAbility(g, c, 'fish', inp, 'f');
   if (P.space && def.abilities.space) useAbility(g, c, def.abilities.space, inp, 'space');
 
@@ -180,6 +189,9 @@ function primary(g, c, w, inp) {
   const up = c.upgrades;
   c.cd.fire = w.rate / Math.max(0.3, rateMul);
   if (c.cloaked && w.kind !== 'heckle') c.cloakBreak = 1;
+  // shooting from inside a disguise gives the game away
+  if (c.disguise != null && w.kind !== 'heckle') { c.disguise = null; g.fx({ t: 'text', x: c.x, y: c.y - 22, text: 'cover blown!', color: '#ff8080' }); }
+  if (w === LIGHTNING) { chainLightning(g, c, ang, mul); return; }
   if (w === MAKESHIFT) {
     const lvl = c.makeshift.lvl || 0;
     fireBullet(g, c, ang, w, 'crew', { mul: mul * (1 + 0.2 * lvl), kind: 'scrap', pierce: true });
@@ -222,8 +234,11 @@ function primary(g, c, w, inp) {
       if (c.cls === 'farmer') ww = { ...w, pellets: w.pellets + 2 * up[1] };
       if (c.cls === 'slots') { if (c.wallet < 1) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'no coins!', color: '#ccc' }); c.cd.fire = 0.5; return; } c.wallet -= 1; }
       const kind = c.cls === 'slots' ? 'coin' : c.cls === 'agent' ? 'ppk' : 'bullet';
-      fireBullet(g, c, ang, ww, 'crew', { mul, kind, pierce: !!w.pierce });
-      g.fx({ t: 'shot', crew: c.id, x: c.x, y: c.y, a: ang, w: c.cls === 'agent' && up[0] ? 'silenced' : kind });
+      // 013 with enough missions under his belt gets the laser: straight through everything in a line
+      const laser = c.cls === 'agent' && (c.missionRank || 0) >= 4;
+      if (laser) ww = { ...ww, speed: 1400, range: 760 };
+      fireBullet(g, c, ang, ww, 'crew', { mul: mul * (laser ? 1.25 : 1), kind, pierce: !!w.pierce || laser, laser });
+      g.fx({ t: 'shot', crew: c.id, x: c.x, y: c.y, a: ang, w: laser ? 'laser' : c.cls === 'agent' && up[0] ? 'silenced' : kind });
       break;
     }
     case 'rocket':
@@ -239,6 +254,31 @@ function primary(g, c, w, inp) {
       g.fx({ t: 'blow', x: c.x, y: c.y });
       break;
     }
+  }
+}
+
+/** The white candy's lightning chain gun: an instant bolt that jumps between enemies. */
+function chainLightning(g, c, ang, mul) {
+  c.lightning = Math.max(0, (c.lightning || 0) - 1);
+  let from = { x: c.x, y: c.y }, hit = new Set();
+  // first target: the nearest enemy roughly where you're aiming
+  let t = null, bd = LIGHTNING.range ** 2;
+  for (const m of g.mobs) {
+    if (!m.alive || m.team !== 'enemy') continue;
+    const d = dist2(m, c); if (d > bd) continue;
+    const da = Math.abs(((Math.atan2(m.y - c.y, m.x - c.x) - ang + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    if (da > 0.5 || !g.grid.los(c.x, c.y, m.x, m.y, g.doors)) continue;
+    bd = d; t = m;
+  }
+  if (!t) { g.fx({ t: 'chain', x: c.x, y: c.y, x2: c.x + Math.cos(ang) * 120, y2: c.y + Math.sin(ang) * 120, miss: true }); return; }
+  for (let k = 0; k < LIGHTNING.chain && t; k++) {
+    hit.add(t);
+    damage(g, t, LIGHTNING.dmg * mul * (1 - k * 0.15), { owner: c, team: 'crew', kind: 'zap' });
+    g.fx({ t: 'chain', x: from.x, y: from.y, x2: t.x, y2: t.y });
+    from = t;
+    let nx = null, nd = 150 ** 2;
+    for (const m of g.mobs) if (m.alive && m.team === 'enemy' && !hit.has(m)) { const d = dist2(m, from); if (d < nd) { nd = d; nx = m; } }
+    t = nx;
   }
 }
 
@@ -327,7 +367,7 @@ const ABILITY_FNS = {
     const target = nearestCrew(g, c);
     say(g, c, pickInsult(g, c, true), target);
     g.stats.insults++;
-    gainXp(g, c, 0.6);
+    gainXp(g, c, 2);   // (insulting people is the urchid's whole career)
   },
   ghost(g, c) {
     const living = g.crew.filter((o) => o.alive && o !== c);
@@ -458,25 +498,63 @@ const ABILITY_FNS = {
     g.grid.set(tx, ty, T.ICE);
     g.objs.push({ id: uid(), kind: 'ice', i, tx, ty, t: 6 + 1.5 * c.upgrades[2] });
   },
-  mine(g, c) {
-    const type = c.mineType || 'proximity';
-    if (type === 'c4' && (c.missionRank || 0) < 3) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'C4 needs mission rank 3', color: '#ccc' }); return false; }
-    const p = inFront(c, 14);
-    g.objs.push({ id: uid(), kind: 'mine', sub: type, owner: c.id, x: p.x, y: p.y, t: type === 'timed' ? 3 : 0, armT: 0.8,
-      dmg: type === 'c4' ? 140 : 60, r: type === 'c4' ? 120 : 75 });
+  // 013's four kinds of mine: Q proximity, R timed, F remote (RMB sets them off), G C4 on a lit fuse
+  proxmine(g, c) { placeMine(g, c, 'proximity'); },
+  timedmine(g, c) { placeMine(g, c, 'timed'); },
+  remotemine(g, c) { placeMine(g, c, 'remote'); },
+  c4(g, c) {
+    // aimed at a door close by? it goes right on the door
+    let door = null, bd = 80 * 80;
+    for (let k = 0; k < g.doors.length; k++) { const d = g.doors[k]; if (d.broken || d.gone) continue; const dx = (d.x + .5) * TILE - (c.aim?.x ?? c.x), dy = (d.y + .5) * TILE - (c.aim?.y ?? c.y); const dd = dx * dx + dy * dy; if (dd < bd && Math.hypot((d.x + .5) * TILE - c.x, (d.y + .5) * TILE - c.y) < 90) { bd = dd; door = k; } }
+    const p = door != null ? { x: (g.doors[door].x + .5) * TILE, y: (g.doors[door].y + .5) * TILE } : inFront(c, 14);
+    g.objs.push({ id: uid(), kind: 'mine', sub: 'c4', owner: c.id, x: p.x, y: p.y, t: 4, armT: 0, dmg: 140, r: 110, door });
+    say(g, c, door != null ? 'Fuse is lit. Stand back from the door.' : 'Fuse is lit.');
   },
-  minetype(g, c) { c.mineType = MINE_TYPES[(MINE_TYPES.indexOf(c.mineType || 'proximity') + 1) % MINE_TYPES.length]; g.fx({ t: 'text', x: c.x, y: c.y - 20, text: `${c.mineType} mine`, color: '#d0d0d0' }); },
+  detonate(g, c) { if (!detonateRemotes(g, c)) return false; },
+  tank(g, c) {
+    if ((c.missionRank || 0) < 2) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'tank: mission rank 2', color: '#ccc' }); return false; }
+    const p = inFront(c, 26);
+    g.objs.push({ id: uid(), kind: 'tank', owner: c.id, x: p.x, y: p.y, r: 11, hp: 120 + 20 * c.missionRank, t: 25, atkT: 0.5, a: c.facing });
+    say(g, c, 'Q branch, you\'ve outdone yourselves.');
+  },
   roll(g, c) { startDash(g, c, 190, 0.38, 38 * (1 + 0.25 * c.upgrades[1]), 'crush'); },
   spin(g, c) { return spinSlots(g, c); },
 };
 
-function unphase(g, c) { c.phased = false; c.phaseT = 0; c.cd.q = Math.max(c.cd.q, ABILITIES.phase.cd); g.fx({ t: 'phase', x: c.x, y: c.y }); }
+/**
+ * Back from the empty dimension. Come back inside a wall and that's it: you die there, with whatever
+ * bit of you was still in the wall sticking out of it (head, hands, feet...).
+ */
+function unphase(g, c) {
+  c.phased = false; c.phaseT = 0; c.cd.q = Math.max(c.cd.q, ABILITIES.phase.cd);
+  g.fx({ t: 'phase', x: c.x, y: c.y });
+  const solid = (x, y) => g.grid.solidAt(Math.floor(x / TILE), Math.floor(y / TILE), g.doors) && g.grid.get(Math.floor(x / TILE), Math.floor(y / TILE)) !== T.DOOR;
+  if (!solid(c.x, c.y) && !collides(g, { x: c.x, y: c.y, r: c.r * 0.6 })) { unstick(g, c); return; }
+  // which bits are stuck: sample around the body (facing = where the head is)
+  const f = c.facing || 0, r = c.r;
+  const at = (a, d) => ({ x: c.x + Math.cos(f + a) * d, y: c.y + Math.sin(f + a) * d });
+  const parts = [];
+  if (solid(at(0, r * 0.9).x, at(0, r * 0.9).y)) parts.push('head');
+  if (solid(at(Math.PI / 2, r * 0.9).x, at(Math.PI / 2, r * 0.9).y) || solid(at(-Math.PI / 2, r * 0.9).x, at(-Math.PI / 2, r * 0.9).y)) parts.push('hands');
+  if (solid(at(Math.PI, r * 0.9).x, at(Math.PI, r * 0.9).y)) parts.push('feet');
+  if (solid(c.x, c.y)) parts.push('body');
+  const what = parts.length >= 3 || parts.includes('body') && parts.length >= 2 ? 'everything' : parts.join(' and ') || 'a toe';
+  g.objs.push({ id: uid(), kind: 'wallbones', x: c.x, y: c.y, a: f, parts, owner: 'us', t: 60 });
+  c.hp = 0;
+  downCrew(g, c, g.rng.pick(['The wall! I\'m IN the wall!', 'Wrong dimension! WRONG DIMENSION!', 'Oh no. Oh no no no. Wall.']));
+  g.log('alert', `💀 ${c.name} came back out of phase INSIDE a wall. ${what === 'everything' ? `All of ${c.name} is in there.` : `${c.name}'s ${what} ${parts.length === 1 && parts[0] !== 'hands' && parts[0] !== 'feet' ? 'is' : 'are'} still sticking out.`}`);
+}
 function inFront(c, d) { return { x: c.x + Math.cos(c.facing) * d, y: c.y + Math.sin(c.facing) * d }; }
 
+function placeMine(g, c, type) {
+  const p = inFront(c, 14);
+  g.objs.push({ id: uid(), kind: 'mine', sub: type, owner: c.id, x: p.x, y: p.y, t: type === 'timed' ? 3 : 0, armT: 0.8, dmg: 60 * (1 + 0.1 * (c.missionRank || 0)), r: 75 });
+}
 function detonateRemotes(g, c) {
   let n = 0;
-  for (const o of g.objs) if (o.kind === 'mine' && o.owner === c.id && (o.sub === 'remote' || o.sub === 'c4')) { o.boom = true; n++; }
+  for (const o of g.objs) if (o.kind === 'mine' && o.owner === c.id && o.sub === 'remote') { o.boom = true; o.armT = 0; n++; }
   if (n) say(g, c, 'Boom.');
+  return n;
 }
 
 function chainsaw(g, c, held, dt) {
@@ -527,7 +605,10 @@ export function interactTarget(g, c) {
   const r = g.rooms[roomAt(g, c)];
   // journal / Joe / crates
   for (const o of g.objs) {
-    if ((o.kind === 'journal' || o.kind === 'crate') && dist(o, c) < 40) return { kind: o.kind, obj: o, label: o.kind === 'journal' ? 'Read the journal' : 'Loot crate' };
+    if ((o.kind === 'journal' || o.kind === 'crate') && dist(o, c) < 40) {
+      if (o.heavy && c.cls === 'chameleon') return { kind: 'none', obj: o, label: 'Way too heavy for you. Get someone through the vault door (C4).' };
+      return { kind: o.kind, obj: o, label: o.kind === 'journal' ? 'Read the journal' : o.island ? 'Open the treasure chest' : o.heavy ? 'Haul out the vault loot' : 'Loot crate' };
+    }
   }
   if (c.cls === 'chameleon') {
     for (const o of g.objs) if (o.kind === 'vent' && !o.broken && dist(o, c) < 30) return { kind: 'vent', obj: o, label: 'Crawl into the vent (pick where to come out)' };
@@ -623,7 +704,11 @@ function interactPress(g, c) {
         // toggle: shut it (boarders have to smash through) or prop it open (anyone can pass, them too).
         // A blast door is several tiles across the walkway; they all go together.
         const hold = d.hold === 'closed' ? 'open' : 'closed';
-        for (const o of d.group != null ? g.doors.filter((x) => x.blast && x.group === d.group && !x.broken) : [d]) o.hold = hold;
+        // (a blast door's tiles, and both halves of a double door, go together)
+        const set = d.group != null ? g.doors.filter((x) => x.blast && x.group === d.group && !x.broken)
+          : d.pair != null ? g.doors.filter((x) => x.pair === d.pair && !x.broken) : [d];
+        for (const o of set) o.hold = hold;
+        g.grid.version++;   // (paths change)
         g.fx({ t: 'door', x: d.x, y: d.y, blast: !!d.blast, open: hold === 'open' });
       }
       break;
@@ -653,7 +738,7 @@ function interactHold(g, c, dt) {
 }
 
 export function repairRate(c) {
-  let rate = 14;
+  let rate = 15.4;   // (everyone's base repair: +10%)
   if (c.cls === 'engineer') rate *= 2.2 * (1 + 0.25 * c.upgrades[0]);
   if (c.isJoe) rate *= 4;
   if (c.cls === 'guard') rate *= 1.3;

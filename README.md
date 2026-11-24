@@ -90,7 +90,7 @@ test/              node:test unit + end-to-end tests
 
 ## Wire protocol (JSON over `/ws`) — online ships
 
-Client → server: `hello {name, playerId?, token?}`, `create {name, maxPlayers, allowPlayWithoutHost, playerClass}`, `join {worldId}`, `leave`, `in {i: {mx, my, ax, ay, fire, rmb, e, shift, pressed, seq}}` (controls), `cmd {c}` (any Game command except `pause`), `chat {text}`, `ping {c}` (heartbeat), `score {entry}` (a finished solo run, for the leaderboard), and host-only `restart`, `shelve`, `destroy`.
+Client → server: `hello {name, playerId?, token?}`, `create {name, maxPlayers, allowPlayWithoutHost, playerClass}` (pilot, engineer or urchid), `join {worldId}`, `leave`, `in {i: {mx, my, ax, ay, fire, rmb, e, shift, pressed, seq}}` (controls; `pressed` can hold q, f, e, r, g, space, rmb), `cmd {c}` (any Game command except `pause`), `chat {text}`, `ping {c}` (heartbeat), `score {entry}` (a finished solo run, for the leaderboard), and host-only `restart`, `shelve`, `destroy`.
 
 Server → client: `welcome {playerId, token, name}`, `lobby {worlds[]}`, `world {world}` (ship info, when it changes), `g {s, keep?, grid?, d?, dr?, dd?, v?, seats, fx, join?}` (game frames, 10×/s), `pong {c}`, `left {reason}`, `error {message}`.
 

@@ -152,6 +152,7 @@ net.on('lobby', ({ worlds }) => {
 
 const form = $('create-form');
 form.maxPlayers.addEventListener('input', () => { $('max-label').textContent = form.maxPlayers.value; });
+form.playerClass.addEventListener('change', () => $('urchid-warn').classList.toggle('hidden', form.playerClass.value !== 'urchid'));
 form.addEventListener('submit', (e) => {
   e.preventDefault();
   net.send({

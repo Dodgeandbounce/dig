@@ -180,19 +180,37 @@ export function buildRooms(grid, rooms, roomIndexBase, doorList, owner) {
     for (let d = 0; d <= hi - lo; d++) for (const p of [mid + d, mid - d]) if (p >= lo && p <= hi && at(p, rs)) return p;
     return mid;
   };
+  // Double doors (two tiles wide): on every door of a big room, and on the long side of the small ones
+  // (a 10x7 room's top and bottom walls).
+  const wide = (r) => !r.thin && (rw(r) > SLOT_W || rh(r) > SLOT_H);
   for (let a = 0; a < rooms.length; a++) for (let b = 0; b < rooms.length; b++) {
     if (a === b) continue;
     const A = rooms[a], B = rooms[b];
     if (A.x0 + rw(A) === B.x0) { // A left of B
       const y0 = Math.max(A.y0, B.y0) + 1, y1 = Math.min(A.y0 + rh(A), B.y0 + rh(B)) - 1;
-      if (y1 >= y0) addDoor(grid, doorList, B.x0, spot(y0, y1, (p) => clear(B.x0, p, A, B), A, B), roomIndexBase + a, roomIndexBase + b, owner, 'v');
+      if (y1 >= y0) {
+        const p = spot(y0, y1, (q) => clear(B.x0, q, A, B), A, B);
+        const pair = (wide(A) || wide(B) || (rh(A) > rw(A) && rh(B) > rw(B))) && y1 > y0 ? (p + 1 <= y1 && clear(B.x0, p + 1, A, B) ? p + 1 : p - 1) : null;
+        doubleDoor(grid, doorList, [[B.x0, p], pair != null && pair >= y0 ? [B.x0, pair] : null], roomIndexBase + a, roomIndexBase + b, owner, 'v');
+      }
     }
     if (A.y0 + rh(A) === B.y0) { // A above B
       const x0 = Math.max(A.x0, B.x0) + 1, x1 = Math.min(A.x0 + rw(A), B.x0 + rw(B)) - 1;
-      if (x1 >= x0) addDoor(grid, doorList, spot(x0, x1, (p) => clear(p, B.y0, A, B), A, B), B.y0, roomIndexBase + a, roomIndexBase + b, owner, 'h');
+      if (x1 >= x0) {
+        const p = spot(x0, x1, (q) => clear(q, B.y0, A, B), A, B);
+        const pair = !A.thin && !B.thin && x1 > x0 ? (p + 1 <= x1 && clear(p + 1, B.y0, A, B) ? p + 1 : p - 1) : null;
+        doubleDoor(grid, doorList, [[p, B.y0], pair != null && pair >= x0 ? [pair, B.y0] : null], roomIndexBase + a, roomIndexBase + b, owner, 'h');
+      }
     }
   }
   grid.version++;
+}
+let pairN = 0;
+/** One door, or two side by side that open and shut together. */
+export function doubleDoor(grid, doorList, tiles, a, b, owner, orient, hp) {
+  const list = tiles.filter(Boolean);
+  const pair = list.length > 1 ? ++pairN : null;
+  return list.map(([x, y]) => { const d = addDoor(grid, doorList, x, y, a, b, owner, orient, hp); if (pair) d.pair = pair; return d; });
 }
 
 export function addDoor(grid, doorList, x, y, a, b, owner, orient, hp = TILE_HP[T.DOOR]) {
@@ -243,7 +261,14 @@ export function buildRing(grid, rooms, doorList) {
     const sides = [];
     for (let sx = 0; sx < W; sx += SLOT_W) { const seg = Math.min(SLOT_W, W - sx); const mx = room.x0 + sx + Math.min(seg - 1, Math.max(4, seg >> 1)); sides.push([mx, room.y0, 0, -1, 'h'], [mx, room.y0 + H, 0, 1, 'h']); }
     for (let sy = 0; sy < H; sy += SLOT_H) { const my = room.y0 + sy + (Math.min(SLOT_H, H - sy) >> 1); sides.push([room.x0, my, -1, 0, 'v'], [room.x0 + W, my, 1, 0, 'v']); }
-    for (const [x, y, dx, dy, o] of sides) if (grid.tiles[idx(x, y)] === T.WALL && floorAt(x + dx, y + dy) && grid.room[idx(x - dx, y - dy)] === r) addDoor(grid, doorList, x, y, r, -1, 'us', o);
+    // (double doors: every door of a big room, and the long-side doors of a small one)
+    const big = W > SLOT_W || H > SLOT_H;
+    const ok = (x, y, dx, dy) => grid.tiles[idx(x, y)] === T.WALL && floorAt(x + dx, y + dy) && grid.room[idx(x - dx, y - dy)] === r;
+    for (const [x, y, dx, dy, o] of sides) {
+      if (!ok(x, y, dx, dy)) continue;
+      const twin = big || o === 'h' ? (o === 'h' ? [[x + 1, y], [x - 1, y]] : [[x, y + 1], [x, y - 1]]).find(([tx, ty]) => ok(tx, ty, dx, dy) && grid.tiles[idx(tx, ty)] !== T.DOOR) : null;
+      doubleDoor(grid, doorList, [[x, y], twin || null], r, -1, 'us', o);
+    }
   });
   grid.version++;
   return ring;

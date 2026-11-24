@@ -1,5 +1,5 @@
 // Movement, weapons, projectiles, explosions, destructible tiles and systems, pickups.
-import { T, TILE, TILE_HP, WEAPONS, ENEMY_WEAPONS, CLASSES, SLOT_W, SLOT_H, BULLET_SLOW, GEMS, GEM_ORDER, MAP_W, CLASS_UP_MAX, xpCost } from './data.js';
+import { T, TILE, TILE_HP, WEAPONS, ENEMY_WEAPONS, CLASSES, SLOT_W, SLOT_H, BULLET_SLOW, GEMS, GEM_ORDER, MAP_W, MAP_H, CLASS_UP_MAX, xpCost, CANDY, DEATH_LINES } from './data.js';
 import { idx, inMap, rw, rh, roomCenter } from './grid.js';
 import { clamp, norm, dist, dist2, angTo, angDiff, uid } from './util.js';
 
@@ -53,6 +53,9 @@ export function tickBuffs(a, dt) {
 // ---------------------------------------------------------------------------
 // movement with tile collision (circle vs solid tiles)
 export function moveActor(g, a, dx, dy) {
+  // phased (the vaelift in the empty dimension): walls don't exist. Coming back inside one does, though.
+  // (bots stay out of the walls: they'd never get the timing right)
+  if (a.phased && a.cls && a.human) { a.x = clamp(a.x + dx, TILE * 1.5, (MAP_W - 1.5) * TILE); a.y = clamp(a.y + dy, TILE * 1.5, (MAP_H - 1.5) * TILE); return; }
   if (dx) { a.x += dx; if (collides(g, a)) { a.x -= dx; slide(g, a, dx, 0); } }
   if (dy) { a.y += dy; if (collides(g, a)) { a.y -= dy; slide(g, a, 0, dy); } }
 }
@@ -108,6 +111,7 @@ export function nearestHostile(g, from, team, maxD = Infinity, needLos = false) 
   let best = null, bd = maxD * maxD;
   for (const h of hostiles(g, team)) {
     if (team !== 'crew' && h.cloaked && dist2(from, h) > 40 * 40) continue;
+    if (team === 'enemy' && h.disguise != null) continue;   // 013 in their uniform: one of them, obviously
     const d = dist2(from, h);
     if (d < bd && (!needLos || g.grid.los(from.x, from.y, h.x, h.y, g.doors))) { bd = d; best = h; }
   }
@@ -118,7 +122,14 @@ export function nearestHostile(g, from, team, maxD = Infinity, needLos = false) 
 // damage
 export function damage(g, t, amt, src = {}) {
   if (!t.alive || amt <= 0) return 0;
-  if (t.invuln || t.phased || t.trapped) return 0;
+  if (t.invuln || t.phased) return 0;
+  // hitting someone stuck in a bubble pops it: out they tumble, dazed, and the hit lands
+  if (t.trapped) {
+    if (src.team !== 'crew' && !(src.owner?.team === 'crew')) return 0;
+    const b = t.trapped;
+    popBubble(g, b, null);
+    t.stunT = Math.max(t.stunT || 0, 0.8);
+  }
   if (t.team === 'crew' && g.storyMode && !t.isMonster) return 0;
   let mul = 1;
   mul += stat(t, 'armor') < 0 ? -stat(t, 'armor') : 0;
@@ -139,13 +150,18 @@ export function damage(g, t, amt, src = {}) {
   return amt;
 }
 
-function downCrew(g, c) {
+export function downCrew(g, c, how) {
   if (c.cls === 'urchid') { c.hp = 1; return; }
   c.alive = false; c.hp = 0;
   c.downT = (g.ship.research.has('autodoc') ? 6 : 10) * (g.ship.rooms?.quarters ? 0.8 : 1);
-  c.riding = null; c.cloaked = false; c.phased = false;
-  g.fx({ t: 'down', x: c.x, y: c.y });
-  g.log('combat', `${c.name} is down!`);
+  c.riding = null; c.cloaked = false; c.phased = false; c.disguise = null;
+  // everybody goes out in character, flipping over with their tongue out, and nobody believes it
+  c.deadT = 0; c.dieSeed = g.rng.int(0, 999);
+  const line = how || g.rng.pick(DEATH_LINES[c.cls] || ['No way. NO WAY.']);
+  c.say = line; c.sayT = 3.2;
+  g.fx({ t: 'down', x: c.x, y: c.y, cls: c.cls, id: c.id });
+  g.fx({ t: 'say', id: c.id, text: line });
+  g.log('combat', `${c.name} is down! "${line}"`);
   // drop a little money
   const lost = Math.min(c.wallet, 5);
   c.wallet -= lost;
@@ -168,6 +184,7 @@ export function killMob(g, m, src = {}) {
   if (killer && !killer.isMonster) {
     if (src.kind === 'coin') money *= 2;
     if (killer.coinWinT > 0) money *= killer.coinWinMul || 2;
+    if (stat(killer, 'gold') > 0) money *= 2;   // yellow candy
     if (m.marked && src.kind === 'ppk') { // Agent mission complete
       const bonus = 30 + type.tier * 25 + (killer.missionRank || 0) * 10;
       money += bonus;
@@ -183,6 +200,10 @@ export function killMob(g, m, src = {}) {
     if (killer.cls === 'dog' && src.kind === 'bite') { killer.hp = Math.min(killer.maxHp, killer.hp + 12); g.fx({ t: 'text', x: killer.x, y: killer.y - 20, text: 'nom', color: '#f0a030' }); }
   }
   g.stats.score += type.bounty * 10;
+  // the mark is down (by the agent or not): a new secret report comes in with the next target
+  if (m.marked) { m.marked = false; g.nextMark?.(); }
+  // carrying our gems? they spill out
+  if (m.event === 'strawberry') { for (let k = 0; k < 3; k++) dropPickup(g, m.x + g.rng.range(-20, 20), m.y + g.rng.range(-20, 20), 'crop', 1); g.fx({ t: 'splat', x: m.x, y: m.y }); }
   // drops
   if (m.carryGems) { const p = dropPickup(g, m.x, m.y, 'gem', m.carryGems); p.val = m.carryVal; }
   if (m.loot) { g.ship.scrap += m.loot; g.log('loot', `The Hoarder drops our ${m.loot} scrap!`); g.fx({ t: 'text', x: m.x, y: m.y - 30, text: `+${m.loot} scrap back`, color: '#c0c0c0' }); }
@@ -192,9 +213,12 @@ export function killMob(g, m, src = {}) {
   else if (g.rng.chance(0.35)) { if (g.rng.chance(0.6)) dropPickup(g, m.x, m.y, 'gem', 1, gemType(g)); else dropPickup(g, m.x, m.y, 'ore', 1 + type.tier); }
   if (src.kind === 'jorbal') { dropPickup(g, m.x2 ?? m.x, m.y2 ?? m.y, 'food', 1, g.rng.pick(['grub', 'shroom', 'fish', 'spice'])); }
   addMess(g, m.x, m.y, 'gore', 1);
-  g.fx({ t: 'die', x: m.x, y: m.y, color: type.color, size: m.r });
+  // every species has its own strange death yell (voice: a number the sound engine turns into a cry)
+  g.fx({ t: 'die', x: m.x, y: m.y, color: type.color, size: m.r, voice: voiceOf(type), big: m.r > 22 });
   if (m.boss) g.bossDied();
 }
+/** A stable "voice" per species: same kind, same scream. */
+export function voiceOf(type) { let h = 7; for (const ch of String(type.name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h % 100000; }
 
 export function healActor(a, amt) { if (a.alive) a.hp = Math.min(a.maxHp * (1 + stat(a, 'maxhp')), a.hp + amt); }
 
@@ -207,6 +231,8 @@ export function hitTile(g, tx, ty, dmg, src = {}) {
   if (t === T.DOOR) {
     const d = g.doors[g.grid.doorAt[i]];
     if (!d || d.broken) return false;
+    // armoured vault doors shrug off everything but C4
+    if (d.armored && !src.c4) { if (g.rng.chance(0.2)) g.fx({ t: 'text', x: (tx + .5) * TILE, y: (ty + .5) * TILE - 14, text: 'ARMOURED: C4 only', color: '#c0c0c0' }); return true; }
     d.hp -= dmg * (d.reinforced > 0 ? 0.5 : 1);
     if (d.hp <= 0) {
       d.broken = true; d.hp = 0; d.open = 1; g.orig.set(i, T.DOOR);
@@ -265,7 +291,7 @@ export function fireBullet(g, a, ang, w, team, extra = {}) {
   for (let k = 0; k < pellets; k++) {
     const s = ang + (g.rng() - 0.5) * (w.spread || 0) * (pellets > 1 ? 1 : 2);
     spawnProj(g, { kind: extra.kind || 'bullet', x: a.x + Math.cos(s) * (a.r + 4), y: a.y + Math.sin(s) * (a.r + 4), vx: Math.cos(s) * w.speed, vy: Math.sin(s) * w.speed,
-      dmg: w.dmg * (extra.mul || 1), team, owner: a, life: (w.range || 500) / w.speed, ...extra });
+      dmg: w.dmg * (extra.mul || 1), team, owner: a, life: (w.range || 500) * (1 + stat(a, 'range')) / w.speed, ...extra });
   }
 }
 
@@ -312,12 +338,14 @@ export function inOurBox(g, x, y) { return tileOwner(g, Math.floor(x / TILE), Ma
 // fire: spreads tile to tile, burns people and systems, dies down only when put out
 const FIRE_MAX = 90;
 export function fireAt(g, i) { return g.objs.find((o) => o.kind === 'fire' && o.i === i); }
-export function ignite(g, tx, ty, f = 0.2) {
-  if (g.storyMode || !inMap(tx, ty)) return null;
+export function ignite(g, tx, ty, f = 0.2, theirsToo = false) {
+  if (!inMap(tx, ty)) return null;
   const i = idx(tx, ty);
   const t = g.grid.tiles[i];
   if (t !== T.FLOOR && t !== T.RUBBLE) return null;
-  if (tileOwner(g, tx, ty) !== 'us') return null;
+  const own = tileOwner(g, tx, ty);
+  if (own !== 'us' && !(theirsToo && own === 'them')) return null;
+  if (g.storyMode && own === 'us') return null;
   const have = fireAt(g, i);
   if (have) { have.f = Math.min(1, have.f + f * 0.5); return have; }
   if (g.objs.filter((o) => o.kind === 'fire').length >= FIRE_MAX) return null;
@@ -327,11 +355,12 @@ export function ignite(g, tx, ty, f = 0.2) {
 }
 /** Set a room on fire in a few places. */
 export function igniteRoom(g, room, n = 1) {
-  if (!room || g.storyMode) return;
-  const first = !g.objs.some((o) => o.kind === 'fire');
+  const theirs = room?.owner === 'them';
+  if (!room || (g.storyMode && !theirs)) return;
+  const first = !theirs && !g.objs.some((o) => o.kind === 'fire');
   for (let k = 0; k < n; k++) {
     const tx = room.x0 + 1 + Math.floor(g.rng() * (rw(room) - 1)), ty = room.y0 + 1 + Math.floor(g.rng() * (rh(room) - 1));
-    ignite(g, tx, ty, 0.35);
+    ignite(g, tx, ty, 0.35, theirs);
   }
   const at = roomCenter(room);
   g.fx({ t: 'fire', x: at.x, y: at.y });
@@ -354,13 +383,16 @@ export function updateFires(g, dt) {
     // and the system in the room
     const ri = g.grid.room[o.i];
     if (ri >= 0 && g.rooms[ri]?.sys && g.rng.chance(dt * 2)) damageSystem(g, g.rooms[ri], 1.2 * o.f);
+    // on their ship (our fire gun), their crew has to stop and put it out
+    const theirs = ri >= 0 && g.rooms[ri]?.owner === 'them';
+    if (theirs) for (const m of g.mobs) if (m.alive && m.team === 'enemy' && !m.wild && Math.abs(m.x - o.x) < 50 && Math.abs(m.y - o.y) < 50) { o.f -= 0.35 * dt; if (o.f <= 0) dead.add(o); }
     // spreads to the next tile (closed doors stop it)
     if (g.rng.chance(dt * 0.09 * o.f)) {
       const x = o.i % g.W, y = (o.i / g.W) | 0;
       const [dx, dy] = [[1, 0], [-1, 0], [0, 1], [0, -1]][g.rng.int(0, 3)];
       let nx = x + dx, ny = y + dy;
       if (g.grid.get(nx, ny) === T.DOOR) { const d = g.doors[g.grid.doorAt[idx(nx, ny)]]; if (d && d.open > 0.75) { nx += dx; ny += dy; } }
-      ignite(g, nx, ny, 0.15);
+      ignite(g, nx, ny, 0.15, theirs);
     }
     // on a broken tile or after a long time it smoulders out
     if (g.grid.tiles[o.i] !== T.FLOOR && g.grid.tiles[o.i] !== T.RUBBLE) dead.add(o);
@@ -444,7 +476,8 @@ export function updateProjectiles(g, dt) {
     if (dead || p.life <= 0) continue;
     keep.push(p);
   }
-  g.projs = keep;
+  // (a chain of pops can burst bubbles that were already kept this frame)
+  g.projs = keep.filter((p) => !p.dead);
 }
 
 function landLob(g, p) {
@@ -498,7 +531,7 @@ function tryCapture(g, p, t) {
   const owner = p.owner;
   const thr = (owner.upgrades[2] || 0) > 0 ? 0.5 : 0.35;
   const type = g.roster[t.type];
-  if (t.boss) { g.fx({ t: 'text', x: t.x, y: t.y - 20, text: 'too big!', color: '#fff' }); return; }
+  if (t.boss || t.hoarder) { g.fx({ t: 'text', x: t.x, y: t.y - 20, text: 'too big!', color: '#fff' }); return; }
   if (owner.monsters.find((m) => m.type === t.type)) { g.fx({ t: 'text', x: t.x, y: t.y - 20, text: 'already have one', color: '#ccc' }); return; }
   if (t.hp / t.maxHp > thr) { g.fx({ t: 'text', x: t.x, y: t.y - 20, text: 'too healthy', color: '#ccc' }); return; }
   t.alive = false;
@@ -513,81 +546,91 @@ function tryCapture(g, p, t) {
 // ---------------------------------------------------------------------------
 // Jorbal bubbles: ride the air currents, trap enemies, pop in chains.
 //
-// The air currents are real streams you can see: one runs all the way round the outer walkway, and a
-// couple more wind from room to room through the doors. Anything floating in one (a bubble, and the
-// jorbal riding it) gets carried along; outside them the air barely moves.
-const AIR_R = 46, AIR_SPEED = 135;
-export function buildAir(g, rng) {
-  const paths = [];
-  const px = (i) => [((i % MAP_W) + 0.5) * TILE, (((i / MAP_W) | 0) + 0.5) * TILE];
-  // 1) the loop round the walkway's outer lane
-  const lane = g.ringOuter || [];
-  if (lane.length > 8) {
-    const S = new Set(lane), seen = new Set();
-    let cur = lane[0], dir = [1, 0];
-    const trail = [cur]; seen.add(cur);
-    for (let n = 0; n < lane.length; n++) {
-      const x = cur % MAP_W, y = (cur / MAP_W) | 0;
-      const opts = [[dir[0], dir[1]], [dir[1], -dir[0]], [-dir[1], dir[0]], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-      let next = null;
-      for (const [dx, dy] of opts) { const j = (y + dy) * MAP_W + x + dx; if (S.has(j) && !seen.has(j)) { next = j; dir = [Math.sign(dx), Math.sign(dy)]; break; } }
-      if (next == null) break;
-      seen.add(next); trail.push(next); cur = next;
-    }
-    const pts = [];
-    for (let k = 0; k < trail.length; k += 3) pts.push(...px(trail[k]));
-    const [lx, ly] = px(trail[trail.length - 1]), [fx, fy] = px(trail[0]);
-    const loop = Math.hypot(lx - fx, ly - fy) < 4 * TILE;
-    if (pts.length >= 6) paths.push({ pts: rng.chance(0.5) ? pts : reversePts(pts), loop });
+// The air currents are their own layer, and only the jorbal can see it. They fill the whole ship:
+// every open tile has a little arrow saying which way the air pushes, and ALL of it flows, along random
+// winding paths, to one or two spots on the ship (picked fresh when the next dig starts). The paths
+// shuffle with every docking. Bubbles (and a jorbal riding one) drift along with it.
+//
+// g.air = { dir: string, one char per tile: 'a'..'h' = one of 8 directions, 's' = a sink, '.' = no air;
+//           sinks: [tile index] }
+export const AIR_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+const AIR_SPEED = 120;
+const airOpen = (t) => t === T.FLOOR || t === T.DOOR || t === T.RUBBLE || t === T.TUNNEL;
+export function buildAir(g, rng, newSinks = true) {
+  const N = MAP_W * MAP_H, G = g.grid, B = g.box;
+  // our open tiles (rooms, walkway, doorways)
+  const ours = [];
+  if (B) for (let y = B.y0; y <= B.y1; y++) for (let x = B.x0; x <= B.x1; x++) { const i = idx(x, y); if (airOpen(G.tiles[i]) && tileOwner(g, x, y) === 'us') ours.push(i); }
+  if (!ours.length) return { dir: '', sinks: [] };
+  // where it all goes: one or two spots, inside rooms (not the walkway), picked when the dig starts
+  let sinks = (g.air?.sinks || []).filter((i) => airOpen(G.tiles[i]));
+  if (newSinks || !sinks.length) {
+    const inRooms = ours.filter((i) => G.room[i] >= 0 && G.tiles[i] === T.FLOOR);
+    const pool = inRooms.length ? inRooms : ours;
+    sinks = [rng.pick(pool)];
+    if (rng.chance(0.5)) { const far = pool.filter((i) => Math.abs((i % MAP_W) - (sinks[0] % MAP_W)) + Math.abs(((i / MAP_W) | 0) - ((sinks[0] / MAP_W) | 0)) > 20); if (far.length) sinks.push(rng.pick(far)); }
   }
-  // 2) a couple of streams that wind through the rooms, door to door
-  const ours = g.rooms.map((r, i) => i).filter((i) => g.rooms[i].owner === 'us');
-  for (let s = 0; s < 2 && ours.length > 2; s++) {
-    let at = rng.pick(ours);
-    const visited = new Set([at]);
-    const c0 = roomCenter(g.rooms[at]);
-    const pts = [c0.x, c0.y];
-    for (let hop = 0; hop < 6; hop++) {
-      const exits = (g.doors || []).filter((d) => d.owner === 'us' && !d.blast && (d.a === at || d.b === at) && d.a >= 0 && d.b >= 0 && !visited.has(d.a === at ? d.b : d.a));
-      if (!exits.length) break;
-      const d = rng.pick(exits);
-      const nxt = d.a === at ? d.b : d.a;
-      // through the door, then on to the middle of the next room
-      pts.push((d.x + 0.5) * TILE, (d.y + 0.5) * TILE);
-      const c = roomCenter(g.rooms[nxt]);
-      pts.push(c.x, c.y);
-      visited.add(nxt); at = nxt;
+  // flood out from the sinks through every open tile (theirs too, through the tunnel, when docked), with
+  // random weights so the paths wind about instead of running in straight lines
+  const dist = new Float64Array(N).fill(Infinity);   // (64-bit: it's compared against the heap's own numbers)
+  const heap = [];   // simple binary heap of [d, i]
+  const push = (d, i) => { heap.push([d, i]); let k = heap.length - 1; while (k > 0) { const p = (k - 1) >> 1; if (heap[p][0] <= d) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let k = 0; for (;;) { let c = 2 * k + 1; if (c >= heap.length) break; if (c + 1 < heap.length && heap[c + 1][0] < heap[c][0]) c++; if (heap[c][0] >= heap[k][0]) break; [heap[c], heap[k]] = [heap[k], heap[c]]; k = c; } } return top; };
+  const wgt = new Float32Array(N); for (let i = 0; i < N; i++) wgt[i] = 1 + rng() * 2.2;
+  for (const s of sinks) { dist[s] = 0; push(0, s); }
+  while (heap.length) {
+    const [d, i] = pop();
+    if (d > dist[i]) continue;
+    const x = i % MAP_W, y = (i / MAP_W) | 0;
+    for (let k = 0; k < 4; k++) {
+      const nx = x + AIR_DIRS[k][0], ny = y + AIR_DIRS[k][1];
+      if (!inMap(nx, ny)) continue;
+      const j = ny * MAP_W + nx;
+      if (!airOpen(G.tiles[j])) continue;
+      const nd = d + wgt[j];
+      if (nd < dist[j]) { dist[j] = nd; push(nd, j); }
     }
-    if (pts.length >= 6) paths.push({ pts, loop: false });
   }
-  return { paths, drift: { x: rng.range(-8, 8), y: rng.range(-8, 8) } };
+  // every tile points downhill (to one of its lower neighbours, picked at random)
+  const out = new Array(N);
+  for (let i = 0; i < N; i++) {
+    if (dist[i] === Infinity) { out[i] = '.'; continue; }
+    if (dist[i] === 0) { out[i] = 's'; continue; }
+    const x = i % MAP_W, y = (i / MAP_W) | 0;
+    const down = [];
+    for (let k = 0; k < 8; k++) {
+      const nx = x + AIR_DIRS[k][0], ny = y + AIR_DIRS[k][1];
+      if (!inMap(nx, ny)) continue;
+      const j = ny * MAP_W + nx;
+      if (dist[j] >= dist[i]) continue;
+      if (k >= 4 && (dist[y * MAP_W + nx] === Infinity || dist[ny * MAP_W + x] === Infinity)) continue;   // no corner cutting
+      down.push(k);
+    }
+    out[i] = down.length ? String.fromCharCode(97 + down[(rng() * down.length) | 0]) : 's';
+  }
+  return { dir: out.join(''), sinks };
 }
-function reversePts(p) { const out = []; for (let k = p.length - 2; k >= 0; k -= 2) out.push(p[k], p[k + 1]); return out; }
 
-/** The wind at a point: strong along a current, a lazy drift anywhere else. */
+/** The wind at a point: the tile's arrow, plus a nudge toward the middle of the tile so you don't scrape walls. */
 export function airAt(g, x, y) {
-  const a = g.air; if (!a?.paths) return { x: 0, y: 0, on: false };
-  let best = null, bd = AIR_R * AIR_R;
-  for (const path of a.paths) {
-    const P = path.pts, n = P.length / 2;
-    for (let k = 0; k < n - (path.loop ? 0 : 1); k++) {
-      const ax = P[k * 2], ay = P[k * 2 + 1], j = (k + 1) % n, bx = P[j * 2], by = P[j * 2 + 1];
-      const sx = bx - ax, sy = by - ay, L2 = sx * sx + sy * sy || 1;
-      const f = Math.max(0, Math.min(1, ((x - ax) * sx + (y - ay) * sy) / L2));
-      const qx = ax + sx * f, qy = ay + sy * f, d2 = (x - qx) ** 2 + (y - qy) ** 2;
-      if (d2 < bd) { bd = d2; const L = Math.sqrt(L2); best = { dx: sx / L, dy: sy / L, qx, qy }; }
-    }
-  }
-  if (!best) return { x: a.drift.x, y: a.drift.y, on: false };
-  // along the stream, plus a gentle pull into the middle of it so you stay on
-  const d = Math.sqrt(bd) || 1;
-  const pull = Math.min(1, d / AIR_R) * 60;
-  return { x: best.dx * AIR_SPEED + (best.qx - x) / d * pull, y: best.dy * AIR_SPEED + (best.qy - y) / d * pull, on: true };
+  const a = g.air; if (!a?.dir) return { x: 0, y: 0, on: false };
+  const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+  if (!inMap(tx, ty)) return { x: 0, y: 0, on: false };
+  const ch = a.dir.charCodeAt(idx(tx, ty));
+  const cx = (tx + 0.5) * TILE, cy = (ty + 0.5) * TILE;
+  if (ch === 115) return { x: (cx - x) * 2 + Math.sin(g.time * 3) * 20, y: (cy - y) * 2 + Math.cos(g.time * 3) * 20, on: true, sink: true };   // 's': it all ends up here, swirling
+  const k = ch - 97;
+  if (k < 0 || k > 7) return { x: 0, y: 0, on: false };
+  const [dx, dy] = AIR_DIRS[k], L = k >= 4 ? Math.SQRT1_2 : 1;
+  // pull toward the line through the tile centre along the flow
+  return { x: dx * L * AIR_SPEED + (dx ? 0 : (cx - x) * 3), y: dy * L * AIR_SPEED + (dy ? 0 : (cy - y) * 3), on: true };
 }
 
 function updateBubble(g, p, dt) {
   const air = airAt(g, p.x, p.y);
-  p.vx += (air.x - p.vx) * dt * 1.5; p.vy += (air.y - p.vy) * dt * 1.5;
+  // fresh out of the jorbal's mouth it flies where it was blown; then the air takes it
+  const grip = p.t < 0.5 ? 0.6 : 2.4;
+  p.vx += (air.x - p.vx) * dt * grip; p.vy += (air.y - p.vy) * dt * grip;
   const nx = p.x + p.vx * dt, ny = p.y + p.vy * dt;
   const tx = Math.floor(nx / TILE), ty = Math.floor(ny / TILE);
   if (g.grid.blocksShot(tx, ty, g.doors)) {
@@ -611,18 +654,21 @@ function updateBubble(g, p, dt) {
       if ((m.x - p.x) ** 2 + (m.y - p.y) ** 2 < (m.r + p.r) ** 2) {
         if (m.r > p.r * 1.25 && !p.big) { popBubble(g, p, null); return; }
         p.trapped = m; m.trapped = p; m.angryT = 0;
-        p.hold = 4 + 1.2 * (p.owner?.upgrades?.[0] || 0);
+        p.hold = 3 + 0.8 * (p.owner?.upgrades?.[0] || 0);   // not for long: then they burst out, angry
         p.r = Math.max(p.r, m.r + 6);
         g.fx({ t: 'text', x: m.x, y: m.y - 20, text: 'blorp', color: '#a0f0ff' });
         break;
       }
     }
   }
-  // jorbal touch = pop with reward
+  // anybody bumping a bubble pops it. The jorbal turns what's inside into food (and money); anyone
+  // else just lets it out, dazed.
   for (const c of g.crew) {
-    if (c.cls !== 'jorbal' || !c.alive) continue;
-    if (c.riding === p) continue;
-    if ((c.x - p.x) ** 2 + (c.y - p.y) ** 2 < (c.r + p.r) ** 2 && p.trapped) { popBubble(g, p, c); return; }
+    if (!c.alive || c.riding === p || c.phased) continue;
+    if ((c.x - p.x) ** 2 + (c.y - p.y) ** 2 >= (c.r + p.r) ** 2) continue;
+    if (c.cls === 'jorbal') { if (p.trapped) { popBubble(g, p, c); return; } continue; }   // (empty ones: hop on and ride)
+    if (p.trapped) { const e = p.trapped; popBubble(g, p, null); if (e.alive) e.stunT = Math.max(e.stunT || 0, 1); return; }
+    if (p.t > 0.4) { popBubble(g, p, null); return; }
   }
 }
 
@@ -716,6 +762,15 @@ function collect(g, c, p) {
       if (c.makeshift?.ammo > 0 || c.cls === 'urchid') return false;
       c.makeshift = { ammo: 8 + 2 * (p.sub || 0), lvl: p.sub || 0 };
       g.fx({ t: 'text', x: p.x, y: p.y - 10, text: 'makeshift gun! (LMB)', color: '#90a050' }); break;
+    case 'candy': {
+      if (c.cls === 'urchid') return false;
+      const C = CANDY[p.sub] || CANDY.green;
+      if (C.buff) addBuff(c, C.buff, C.dur, `${p.sub} candy`);
+      if (C.lightning) c.lightning = Math.max(c.lightning || 0, C.lightning);
+      g.fx({ t: 'text', x: p.x, y: p.y - 14, text: C.text, color: C.color === 'rainbow' ? '#ff80ff' : C.color });
+      g.fx({ t: 'candy', x: p.x, y: p.y, sub: p.sub, crew: c.id });
+      break;
+    }
     default: return false;
   }
   g.fx({ t: 'pickup', x: p.x, y: p.y, kind: p.kind });

@@ -267,3 +267,26 @@
 .g-card .ventmap .vdot.sel circle { filter: drop-shadow(0 0 4px #fff); }
 .g-card .shipmap { grid-auto-rows: 34px; }
 .g-card .shipmap .cell { aspect-ratio: auto; }
+
+/* secret mission paper (013) */
+.g-card .paper { background: #f1e8d0; color: #2a2016; padding: 1rem 1.2rem; border-radius: 4px; position: relative; font-family: 'Courier New', monospace; box-shadow: 0 6px 20px rgba(0,0,0,.5); transform: rotate(-0.6deg); }
+.g-card .paper h2 { color: #2a2016; margin-top: 0; }
+.g-card .paper .muted { color: #6a5a40; }
+.g-card .paper .stamp { position: absolute; right: 1rem; top: .8rem; color: #b02020; border: 3px solid #b02020; padding: .1rem .5rem; font-weight: 800; transform: rotate(8deg); opacity: .8; letter-spacing: .1em; }
+.g-card .paper .paper-row { display: flex; gap: 1rem; align-items: center; }
+.g-card .paper canvas { background: #e4d8b8; border: 1px dashed #8a7a5a; flex: none; }
+.g-card .paper button { font-family: inherit; }
+.g-actions .g-mission { background: #2a2a2a; border-color: #d0d0d0; }
+.g-actions .g-trader { background: #2a3a4a; border-color: #6ab0e0; font-weight: 700; }
+.g-card .cls.troll { border-style: dashed; }
+.g-card .cls canvas { display: block; margin: 0 auto .3rem; }
+/* end credits over the island */
+.g-credits { position: absolute; right: 1.2rem; top: 13rem; bottom: 14rem; width: min(340px, 40vw); overflow: hidden; pointer-events: none; z-index: 4;
+  mask-image: linear-gradient(transparent, #000 12%, #000 88%, transparent); -webkit-mask-image: linear-gradient(transparent, #000 12%, #000 88%, transparent); }
+.g-credits.hidden { display: none; }
+.g-credits .roll { position: absolute; left: 0; right: 0; top: 100%; text-align: center; color: #fff8e8; text-shadow: 0 2px 6px #000, 0 0 2px #000; animation: credits 55s linear forwards; }
+.g-credits .roll h2 { font-size: 2rem; letter-spacing: .15em; margin: 0 0 .3rem; }
+.g-credits .roll h3 { margin: 1.6rem 0 .3rem; color: #f4c542; }
+.g-credits .roll p { margin: .2rem 0; }
+.g-credits .scores { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); pointer-events: auto; padding: .4rem .9rem; border-radius: 10px; background: rgba(36,24,15,.92); border: 1px solid #f4c542; color: #f4e2c4; cursor: pointer; }
+@keyframes credits { from { transform: translateY(0); } to { transform: translateY(-260%); } }

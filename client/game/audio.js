@@ -102,7 +102,72 @@ function explosion(r = 50) {
   for (let k = 0; k < 3 + Math.round(big * 3); k++) nz({ f: 1500 + R() * 3000, dur: 0.03, vol: 0.035, filter: 'bandpass', q: 4, delay: 0.15 + R() * 0.7 * big });
 }
 
+/**
+ * A cartoon voice yelling: a buzzy throat (sawtooth) with a wobble, shaped by two vowel formants, and a
+ * puff of breath. f0: pitch, slide: where the pitch ends up, vowel: 'a' 'e' 'i' 'o' 'u', vib: wobble.
+ */
+const VOWELS = { a: [800, 1200], e: [500, 1900], i: [320, 2400], o: [500, 900], u: [350, 700] };
+function yell({ f0 = 300, slide = 0.6, dur = 0.6, vowel = 'a', vib = 6, vibDepth = 0.04, vol = 0.16, delay = 0, wave = 'sawtooth', breath = 0.3 }) {
+  if (!ac || muted) return;
+  const t = ac.currentTime + delay, v = vol * (place ? place.vol : 1);
+  const osc = ac.createOscillator(); osc.type = wave;
+  osc.frequency.setValueAtTime(f0, t); osc.frequency.linearRampToValueAtTime(f0 * 1.15, t + dur * 0.15); osc.frequency.exponentialRampToValueAtTime(Math.max(40, f0 * slide), t + dur);
+  const lfo = ac.createOscillator(), lg = ac.createGain(); lfo.frequency.value = vib; lg.gain.value = f0 * vibDepth; lfo.connect(lg); lg.connect(osc.frequency);
+  const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + 0.03); g.gain.setValueAtTime(v, t + dur * 0.7); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  const [f1, f2] = VOWELS[vowel] || VOWELS.a;
+  const mix = ac.createGain(); mix.gain.value = 1;
+  for (const [f, q, k] of [[f1, 5, 1], [f2, 7, 0.6]]) { const bq = ac.createBiquadFilter(); bq.type = 'bandpass'; bq.frequency.value = f; bq.Q.value = q; const gg = ac.createGain(); gg.gain.value = k * 3; osc.connect(bq); bq.connect(gg); gg.connect(mix); }
+  mix.connect(g);
+  const p = place?.pan ?? 0;
+  if (p && ac.createStereoPanner) { const sp = ac.createStereoPanner(); sp.pan.value = p; g.connect(sp); sp.connect(sfxGain); } else g.connect(sfxGain);
+  osc.start(t); lfo.start(t); osc.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
+  if (breath) nz({ f: f2, dur: dur * 0.8, vol: vol * breath, filter: 'bandpass', q: 1.5, delay });
+}
+// each class dies in its own voice
+const DEATH_VOICE = {
+  pilot: { f0: 330, vowel: 'o', slide: 0.45 }, engineer: { f0: 380, vowel: 'a', slide: 0.5 }, guard: { f0: 260, vowel: 'a', slide: 0.4 },
+  chef: { f0: 420, vowel: 'e', slide: 0.5, vib: 9 }, mrclean: { f0: 150, vowel: 'o', slide: 0.6, vol: 0.2 }, missiletech: { f0: 400, vowel: 'a', slide: 0.35 },
+  commando: { f0: 170, vowel: 'a', slide: 0.5, vol: 0.2 }, farmer: { f0: 240, vowel: 'u', slide: 0.5, vib: 4 }, scientist: { f0: 520, vowel: 'i', slide: 0.4, vib: 11 },
+  dog: { f0: 600, vowel: 'u', slide: 0.4, dur: 0.9, vib: 7 }, chameleon: { f0: 300, vowel: 'e', slide: 0.5, vol: 0.1 }, trainer: { f0: 360, vowel: 'o', slide: 0.4 },
+  jorbal: { f0: 700, vowel: 'u', slide: 0.3, wave: 'sine', vib: 14, vibDepth: 0.1 }, vaelift: { f0: 280, vowel: 'o', slide: 0.55, vib: 5 },
+  agent: { f0: 210, vowel: 'o', slide: 0.6 }, slots: { f0: 880, vowel: 'i', slide: 0.25, wave: 'square', vib: 20 }, urchid: { f0: 300, vowel: 'a' },
+};
+
 export const sfx = {
+  /** Down! Every class yells in its own voice (with a thud as they flop over). */
+  deathYell(cls) {
+    if (!throttle('death', 150)) return;
+    const v = DEATH_VOICE[cls] || DEATH_VOICE.pilot;
+    yell({ dur: 0.75, vol: 0.17, ...v, f0: jit(v.f0, 0.06) });
+    if (cls === 'slots') for (let k = 0; k < 6; k++) metal(1800 - k * 200, 0.12, 0.03);
+    tone({ f: 120, f2: 50, type: 'sine', dur: 0.18, vol: 0.22, delay: 0.55 });   // flop
+    nz({ f: 500, f2: 120, dur: 0.15, vol: 0.08, filter: 'lowpass', delay: 0.55 });
+  },
+  /** Every species has its own strange death cry (worked out from its name, so the same kind always sounds the same). */
+  creatureDie(seed = 0, big = false) {
+    if (!throttle('cdie', 110)) return;
+    const s = (k) => ((seed * (k * 7919 + 13)) % 1000) / 1000;
+    const vowels = ['a', 'e', 'i', 'o', 'u'];
+    const f0 = (big ? 70 : 140) + s(1) * (big ? 160 : 700);
+    yell({ f0: jit(f0, 0.05), slide: 0.2 + s(2) * 1.6, dur: (big ? 0.7 : 0.35) + s(3) * 0.4, vowel: vowels[(s(4) * 5) | 0], vib: 3 + s(5) * 25, vibDepth: 0.02 + s(6) * 0.15,
+      wave: ['sawtooth', 'square', 'triangle'][(s(7) * 3) | 0], vol: big ? 0.15 : 0.08, breath: s(8) * 0.6 });
+    if (s(9) > 0.6) yell({ f0: f0 * (1.3 + s(10)), slide: 0.5, dur: 0.18, vowel: 'i', vol: 0.05, delay: 0.12 + s(11) * 0.2, wave: 'square' });
+  },
+  chomp() { if (!throttle('chomp', 120)) return; tone({ f: 90, f2: 40, type: 'sine', dur: 0.15, vol: 0.3 }); for (let k = 0; k < 4; k++) nz({ f: 1500 + R() * 2500, dur: 0.03, vol: 0.08, filter: 'bandpass', q: 3, delay: 0.03 + k * 0.04 }); metal(200, 0.3, 0.06); },
+  gulp() { yell({ f0: 90, slide: 0.4, dur: 0.6, vowel: 'u', vol: 0.25, wave: 'sine', vib: 3 }); tone({ f: 60, f2: 25, type: 'sine', dur: 0.8, vol: 0.4, delay: 0.3 }); },
+  crunch() { if (!throttle('crunch', 90)) return; for (let k = 0; k < 5; k++) nz({ f: 300 + R() * 2200, dur: 0.05, vol: 0.09, filter: 'bandpass', q: 2, delay: k * 0.03 }); tone({ f: 70, f2: 35, type: 'sine', dur: 0.2, vol: 0.2 }); },
+  stomp() { if (!throttle('stomp', 400)) return; tone({ f: 48, f2: 25, type: 'sine', dur: 0.5, vol: 0.45 }); nz({ f: 400, f2: 60, dur: 0.5, vol: 0.15, filter: 'lowpass' }); },
+  burrow() { if (!throttle('burrow', 200)) return; nz({ f: 200, f2: 1400, dur: 0.5, vol: 0.18, filter: 'bandpass', q: 0.8 }); tone({ f: 60, f2: 40, type: 'sawtooth', dur: 0.5, vol: 0.07 }); },
+  splat() { if (!throttle('splat', 80)) return; nz({ f: 900, f2: 200, dur: 0.18, vol: 0.18, filter: 'lowpass' }); tone({ f: 160, f2: 60, type: 'sine', dur: 0.12, vol: 0.15 }); },
+  virus() { if (!throttle('virus', 700)) return; for (let k = 0; k < 3; k++) yell({ f0: 900 + R() * 600, slide: 1.3, dur: 0.3, vowel: 'i', vol: 0.05, wave: 'square', vib: 30, vibDepth: 0.1, delay: k * 0.07 }); },
+  candy() { [880, 1108, 1318, 1760].forEach((f, k) => tone({ f, dur: 0.12, vol: 0.07, type: 'triangle', delay: k * 0.05, j: 0 })); },
+  event(good) { if (good) [660, 880, 990].forEach((f, k) => tone({ f, dur: 0.2, vol: 0.08, type: 'triangle', delay: k * 0.1, j: 0, pan: 0 })); else this.alarm(); },
+  mainevent() { for (let k = 0; k < 4; k++) tone({ f: 110, f2: 55, type: 'sawtooth', dur: 0.7, vol: 0.12, delay: k * 0.75, pan: 0 }); yell({ f0: 70, slide: 0.5, dur: 2.2, vowel: 'o', vol: 0.3, vib: 2, delay: 0.4 }); },
+  mission() { const was = place; place = null; nz({ f: 3000, f2: 1500, dur: 0.25, vol: 0.05, filter: 'highpass' }); for (let k = 0; k < 3; k++) tone({ f: 1400, dur: 0.05, vol: 0.05, type: 'square', delay: 0.3 + k * 0.12, j: 0 }); place = was; },   // paper slides in, beep beep beep
+  fuse() { if (throttle('fuse', 70)) nz({ f: 5000 + R() * 2000, dur: 0.03, vol: 0.03, filter: 'highpass' }); },
+  elem(e) { if (!throttle('elem', 120)) return; if (e === 'fire') nz({ f: 400, f2: 1800, dur: 0.25, vol: 0.08, filter: 'bandpass', q: 1 }); else if (e === 'water') nz({ f: 1200, f2: 400, dur: 0.3, vol: 0.08, filter: 'lowpass' }); else if (e === 'electric') this.zap(); else nz({ f: 600, f2: 900, dur: 0.15, vol: 0.05, filter: 'bandpass', q: 2 }); },
+  /** A D-shell hitting a bubble: a glassy shimmer and a wobbly bloop. */
+  bubbleHit() { tone({ f: 900, f2: 300, type: 'sine', dur: 0.4, vol: 0.12 }); tone({ f: 1800, f2: 700, type: 'sine', dur: 0.3, vol: 0.05, delay: 0.03 }); nz({ f: 6000, dur: 0.15, vol: 0.04, filter: 'highpass' }); },
   shot(kind) {
     if (!throttle('shot' + kind, 45)) return;
     switch (kind) {
@@ -183,7 +248,12 @@ export const sfx = {
   /** Hovering a button: a little scoop of dirt. */
   uiHover() { if (!throttle('hover', 70)) return; const was = place; place = null; nz({ f: pick([500, 650, 800]), f2: 200, dur: 0.07, vol: 0.035, filter: 'lowpass', j: 0.2 }); nz({ f: 2500, dur: 0.01, vol: 0.012, filter: 'bandpass', q: 3, delay: 0.03 }); place = was; },
   dfire(who, w) {
-    if (w === 'missile') { nz({ f: 300, f2: 1800, dur: 0.7, vol: 0.12, filter: 'bandpass', q: 1 }); tone({ f: who === 'us' ? 70 : 55, f2: 30, type: 'sine', dur: 0.6, vol: 0.25 }); }
+    if (w === 'missile') { // launch thump, then the rocket motor screaming away through the dirt
+      tone({ f: who === 'us' ? 70 : 55, f2: 30, type: 'sine', dur: 0.4, vol: 0.25 });
+      nz({ f: 300, f2: 2600, dur: 0.9, vol: 0.13, filter: 'bandpass', q: 1.2 });
+      tone({ f: 420, f2: 1400, type: 'sawtooth', dur: 0.85, vol: 0.025 });
+      nz({ f: 3000, f2: 800, dur: 1.0, vol: 0.05, filter: 'highpass', delay: 0.1 });
+    }
     else { tone({ f: who === 'us' ? 90 : 70, f2: 30, type: 'sine', dur: 0.35, vol: 0.28 }); nz({ f: 1400, f2: 200, dur: 0.3, vol: 0.14, filter: 'lowpass' }); }
   },
   impact() { tone({ f: 70, f2: 28, type: 'sine', dur: 0.4, vol: 0.4, pan: 0 }); nz({ f: 600, f2: 80, dur: 0.45, vol: 0.25, filter: 'lowpass', pan: 0 }); metal(180, 0.6, 0.05); },

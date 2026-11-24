@@ -13,7 +13,7 @@ export const SHIP_OX = 8;         // tile origin of our ship's slot (0,0)
 export const SHIP_OY = 25;
 export const ENEMY_OY = 2;        // highest row an enemy ship can sit at
 export const ENEMY_GAP = 5;       // dirt between a docked enemy ship and our hull (the boarding tunnel)
-export const MAX_DOCKED = 4;      // up to 4 enemy ships at once, deep down
+export const MAX_DOCKED = 6;      // up to 6 enemy ships at once, deep down (if our ship is big enough to hold them)
 export const SHIP_UP_MAX = 10;    // ship upgrade levels
 export const CLASS_UP_MAX = 8;    // personal upgrade levels
 
@@ -26,7 +26,8 @@ export const SPLASH = 'another insane game by commanderstitch, right, yeah that 
 // ---------------------------------------------------------------------------
 // Tiles
 // DEBRIS: wreckage that blocks the way until somebody clears (repairs) it.
-export const T = { VOID: 0, FLOOR: 1, WALL: 2, DOOR: 3, TUNNEL: 4, BREACH: 5, RUBBLE: 6, HULL: 7, ICE: 8, DEBRIS: 9 };
+// SAND: the beach of the island at the center of the world (walkable, only at the very end).
+export const T = { VOID: 0, FLOOR: 1, WALL: 2, DOOR: 3, TUNNEL: 4, BREACH: 5, RUBBLE: 6, HULL: 7, ICE: 8, DEBRIS: 9, SAND: 10 };
 export const TILE_HP = { [T.WALL]: 90, [T.HULL]: 140, [T.DOOR]: 60, [T.ICE]: 40, [T.DEBRIS]: 50 };
 export const BLAST_DOOR_HP = 220;
 
@@ -170,8 +171,8 @@ export const CLASSES = {
   agent: {
     name: 'Agent', def: '013', room: 'office', color: '#d0d0d0', hp: 105, speed: 155, clearance: true, unlock: 7,
     weapon: 'ppk',
-    abilities: { q: 'mine', f: 'minetype' },
-    blurb: 'Gets marked targets on his watch. Takes them out with a Walther PPK for big money. Mines, C4, a suit at all times.',
+    abilities: { q: 'proxmine', r: 'timedmine', f: 'remotemine', g: 'c4', rmb: 'detonate', space: 'tank' },
+    blurb: 'Secret missions come in as paper reports when ships dock: put on a disguise, follow the arrow, take out the mark with a Walther PPK. Four kinds of mines, C4 that blows armoured doors, a laser and a tank.',
   },
   slots: {
     name: 'Slot Machine', def: 'Slots', room: 'casino', color: '#f0d040', hp: 140, speed: 130, clearance: false, unlock: 8,
@@ -239,11 +240,15 @@ export const ABILITIES = {
   bigbubble: { name: 'Big Bubble',        cd: 7,  desc: 'A huge bubble that can trap big enemies.' },
   burst:     { name: 'Bubble Burst',      cd: 6,  desc: 'Pop every bubble near you. Chains!' },
   hop:       { name: 'Hop',               cd: 0.6, desc: 'Jump onto a bubble and ride the air currents.' },
-  phase:     { name: 'Phase Shift',       cd: 6,  desc: 'Slip into the empty dimension. Untouchable, unseen.' },
+  phase:     { name: 'Phase Shift',       cd: 6,  desc: 'Slip into the empty dimension. Untouchable, unseen, and you walk through walls. Be OUT of the wall when it runs out (watch the countdown) or you die stuck in it.' },
   staffform: { name: 'Vurfenstaff',       cd: 0.4, desc: 'Change the staff: staff / blade / rifle / shotgun.' },
   icecube:   { name: 'Ice Cube',          cd: 4,  desc: 'Summon a block of ice that stops bullets.' },
-  mine:      { name: 'Place Mine',        cd: 2.5, desc: 'Place the selected mine (remote mines: press again to detonate).' },
-  minetype:  { name: 'Mine Type',         cd: 0.3, desc: 'Cycle proximity / timed / remote / C4.' },
+  proxmine:  { name: 'Proximity Mine',    cd: 3,  desc: 'Goes off when an enemy walks over it.' },
+  timedmine: { name: 'Timed Mine',        cd: 4,  desc: 'Blows 3 seconds after you drop it.' },
+  remotemine:{ name: 'Remote Mine',       cd: 4,  desc: 'Sits there until you press RMB. Then everything you planted goes up.' },
+  c4:        { name: 'C4',                cd: 12, desc: 'Lit fuse (4s). Stick it on a door (aim at it): the only thing that blows open armoured doors.' },
+  detonate:  { name: 'Detonate',          cd: 0.3, desc: 'Set off every remote mine you have planted.' },
+  tank:      { name: 'Summon Tank',       cd: 60, desc: 'A little remote tank rolls in and shoots everything that isn\'t us for 25s (mission rank 2+).' },
   roll:      { name: 'Roll',              cd: 3,  desc: 'Roll forward, crushing enemies into coins.' },
   spin:      { name: 'Spin the Reels',    cd: 1.2, desc: 'Play yourself (5 money). Wins double your pickups.' },
 };
@@ -253,7 +258,7 @@ export const ABILITIES = {
 export const CLASS_UPGRADES = {
   pilot:       [['Steady Hands', 'Steering is smoother, obstacle hits hurt less'], ['Afterburner', 'Boost burns less fuel'], ['Blaster', '+20% pistol damage']],
   engineer:    [['Heavy Wrench', '+25% wrench repair and damage'], ['Turret Mk', 'Turrets: +1 max, +damage'], ['Tesla Traps', 'Traps stun longer, shock more']],
-  urchid:      [['Comfier Chair', 'The chair reclines further. Nothing else.'], ['Sharper Tongue', 'Unlocks meaner insults'], ['Coconut Refills', 'More coconut juice']],
+  urchid:      [['Lounge Chair', 'Unlocks the lounge chair in your lounge, then makes it ever more ridiculous (cushions, footrest, umbrella, massage). Nothing else.'], ['Sharper Tongue', 'Unlocks meaner insults'], ['Fancier Drink', 'The coconut juice gets bigger and fancier: a straw, an umbrella, a sparkler. Sipping it heals you, not that you can die.']],
   guard:       [['Vault Mastery', '+50% vault capacity per level'], ['Hollow Points', '+20% pistol damage'], ['Sprint', '+8% move speed']],
   chef:        [['Recipe Book', 'Meals last longer'], ['Sharper Knives', '+1 knife per volley, +damage'], ['Bigger Fridge', 'Cook two portions at once']],
   mrclean:     [['Biceps', '+20% axe damage'], ['Super Broom', 'Sweep 2x faster'], ['Squeaky Clean', 'Clean-ship buff is stronger']],
@@ -310,6 +315,7 @@ export const SHIP_GUNS = {
   burst: { name: 'Burst Cannon',   power: 2, period: 7,   dmg: 14, shots: 3, cost: 220, desc: 'Three heavy rounds in a row.' },
   ion:   { name: 'Ion Lance',      power: 2, period: 8,   dmg: 10, shots: 1, bubbleDmg: 3, sysMul: 2.5, cost: 240, desc: 'Drains 3 bubbles per hit and fries systems.' },
   rail:  { name: 'Rail Driver',    power: 3, period: 11,  dmg: 70, shots: 1, pierce: true, cost: 320, desc: 'Goes straight through bubbles. Huge hit, slow reload.' },
+  fire:  { name: 'Fire Gun',       power: 2, period: 9,   dmg: 8,  shots: 1, fire: true, cost: 260, trader: true, desc: 'Only from traders. Sets fires all over the room it hits: they have to put them out.' },
 };
 export const GUN_SLOTS = 3;           // guns the weapons bay can hold (+1 per extra weapons bay)
 
@@ -398,9 +404,95 @@ export const ENEMY_WEAPONS = [
   { id: 'spit',   kind: 'bullet', dmg: 6,  rate: 0.9, range: 300, speed: 340, pellets: 3, spread: 0.25, role: 'saboteur', acid: true },
   { id: 'laser',  kind: 'bullet', dmg: 9,  rate: 0.5, range: 520, speed: 900, role: 'saboteur' },
 ];
-// The Hoarder: once a run, a single huge thing comes aboard alone ("100%"). It smashes walls, grabs
-// your scrap and flies back to its ship with it unless you put it down.
-export const HOARDER = { name: 'The Hoarder', race: 'golem', body: 'hoarder', color: '#5a5048', eye: '#ffb020', size: 2.6, hp: 900, speed: 70, dmgMul: 2.4, weapon: 'maul' };
+// The Ship-Eater: once a run the enemy mix is a single thing, "100%", and it is the main event. Heavily
+// armoured, a mountain of health, hits hard, and it EATS SHIPS: it chews through walls, swallows whole
+// rooms (theirs too, if their ship is docked), grabs our scrap and gets bigger and nastier as it feeds.
+export const HOARDER = { name: 'The Ship-Eater', race: 'golem', body: 'hoarder', color: '#5a5048', eye: '#ffb020', size: 3.2, hp: 1500, speed: 50, dmgMul: 2.4, weapon: 'maul' };
+
+// Thieves: crews that came for the vault, not the fight. Pirates, thieves, robbers, bandits and hackers
+// go straight for our gems ("har har har"); kill one and it drops what it grabbed. Hackers pop our doors.
+export const THIEVES = [
+  { id: 'pirate', name: 'Pirates', color: '#7a3a2a', weapon: 'club',   hat: 'pirate', tier: 0, says: ['Har har har!', 'Arr, the vault! Har har!', 'Yo ho, yo ho, your gems are mine!', 'HAR HAR HAR!'] },
+  { id: 'thief',  name: 'Thieves', color: '#3a3a4a', weapon: 'sack',   hat: 'hood',   tier: 0, says: ['Shh. Gems.', 'Just borrowing these. Forever.', "Nobody saw nothing."] },
+  { id: 'robber', name: 'Robbers', color: '#2a2a2a', weapon: 'pistol', hat: 'mask',   tier: 1, says: ['Stick \'em up, fox!', 'Hand over the shinies!', 'This is a robbery! Obviously!'] },
+  { id: 'bandit', name: 'Bandits', color: '#8a6a3a', weapon: 'shotgun',hat: 'bandana',tier: 2, says: ['Yeehaw! Vault\'s this way!', 'Grab the gems and ride!', 'Bandits! BANDITS!'] },
+  { id: 'hacker', name: 'Hackers', color: '#2a5a3a', weapon: 'laser',  hat: 'visor',  tier: 2, says: ['Bypassing your doors. Lol.', 'Your firewall is a literal wall.', 'Downloading gems... 40%...'], hacker: true },
+];
+
+// Monsters that only turn up through random events (and the trainer's starter pets).
+export const EVENT_CREATURES = [
+  { id: 'stork',      name: 'Stork Army',     body: 'stork',   color: '#e8e8e0', eye: '#202020', size: 1.0, hp: 30,  speed: 260, dmg: 1.0, weapon: 'claws' },
+  { id: 'rockmon',    name: 'Rock Monster',   body: 'rock',    color: '#6a6460', eye: '#ffa040', size: 1.8, hp: 260, speed: 48,  dmg: 1.8, weapon: 'club', armor: 0.35 },
+  { id: 'tentacle',   name: 'Tentacle Thing', body: 'squid',   color: '#6a2a6a', eye: '#f0ff60', size: 1.5, hp: 120, speed: 90,  dmg: 1.4, weapon: 'harpoon' },
+  { id: 'burrower',   name: 'Burrowing Worm', body: 'worm',    color: '#c08070', eye: '#101010', size: 1.7, hp: 220, speed: 110, dmg: 1.6, weapon: 'drill' },
+  { id: 'strawberry', name: 'Giant Strawberry', body: 'berry', color: '#e02840', eye: '#fff0a0', size: 1.6, hp: 90,  speed: 210, dmg: 1.3, weapon: 'claws' },
+  { id: 'virus',      name: 'Screaming Virus', body: 'virus',  color: '#90e040', eye: '#ff2020', size: 0.7, hp: 14,  speed: 120, dmg: 0.6, weapon: 'claws' },
+];
+// The monster trainer never starts empty-handed: pick one of these when you sign on.
+export const STARTER_MONSTERS = [
+  { id: 'grass',    name: 'Sproutle', elem: 'grass',    color: '#58c048', eye: '#203010', body: 'round', icon: '🌿', desc: 'Grass. Tough, roots enemies in place and heals you a little when it bites.' },
+  { id: 'fire',     name: 'Emberpup', elem: 'fire',     color: '#f07028', eye: '#fff060', body: 'long',  icon: '🔥', desc: 'Fire. Sets what it bites burning (on their ship it starts real fires).' },
+  { id: 'water',    name: 'Drizzlet', elem: 'water',    color: '#3890e0', eye: '#e0f8ff', body: 'blob',  icon: '💧', desc: 'Water. Sprays from range and washes enemies back.' },
+  { id: 'electric', name: 'Zapkit',   elem: 'electric', color: '#f0d030', eye: '#202020', body: 'wing',  icon: '⚡', desc: 'Electric. Fast; its zaps chain to the next enemy over and stun.' },
+];
+
+// Candy: pops up now and then around the ship. Grab it for a short boost.
+export const CANDY = {
+  green:   { name: 'Green candy',   color: '#50e060', dur: 15, buff: { speed: 0.45 },        text: 'zoom! faster for 15s' },
+  red:     { name: 'Red candy',     color: '#ff4040', dur: 15, buff: { rate: 0.6 },          text: 'faster trigger for 15s' },
+  blue:    { name: 'Blue candy',    color: '#4080ff', dur: 15, buff: { range: 0.6 },         text: 'shots fly further for 15s' },
+  white:   { name: 'White candy',   color: '#ffffff', dur: 0,  lightning: 60,                text: 'LIGHTNING CHAIN GUN!' },
+  yellow:  { name: 'Yellow candy',  color: '#f4d030', dur: 20, buff: { gold: 1 },            text: 'double gold per kill for 20s' },
+  rainbow: { name: 'Rainbow candy', color: 'rainbow', dur: 15, buff: { speed: 0.45, rate: 0.6, range: 0.6, gold: 1 }, lightning: 40, text: 'EVERYTHING AT ONCE!' },
+};
+export const LIGHTNING = { kind: 'chain', dmg: 16, rate: 0.12, range: 300, chain: 4 };
+
+// Random events: every layer down, something might happen. The deeper you go, the likelier it's bad.
+export const EVENTS = {
+  // good-ish
+  trader:     { good: true,  name: 'A trader pulls alongside', text: 'A trader\'s dig-cart latches on for a minute. Missiles, scrap, money, and one weird gun.' },
+  cache:      { good: true,  name: 'Lucky seam',          text: 'The drill bites into a seam of gems. They rain down through the feeders!' },
+  candyrain:  { good: true,  name: 'Candy cave',          text: 'We drill through a cave full of... candy? Grab it!' },
+  strawberry: { good: true,  name: 'Giant strawberries',  text: 'GIANT STRAWBERRIES are rolling in through the hull! They squash, but they\'re delicious.' },
+  distress:   { good: true,  name: 'Signal: Do I Go?',    text: 'A distress beacon. It just says "DO I GO?" over and over.' },
+  // bad
+  fire:       { good: false, name: 'Fire!',               text: 'A fuel line bursts. FIRE breaks out!' },
+  engine:     { good: false, name: 'Engine failure',      text: 'An engine shakes itself to pieces! (This is why you buy more engines.)' },
+  storks:     { good: false, name: 'Stork army',          text: 'An ARMY OF STORKS bursts through the hull. They run really fast and they peck HARD.' },
+  virus:      { good: false, name: 'Virus outbreak',      text: 'Something in the storage hold is screaming. And multiplying. Kill it before it fills the room!' },
+  rocks:      { good: false, name: 'Rock monsters',       text: 'Rock monsters shoulder in through the hull. Slow, all health, all punch.' },
+  tentacles:  { good: false, name: 'Tentacles',           text: 'Tentacles. Through the walls. Why is it always tentacles.' },
+  worms:      { good: false, name: 'Burrowing worms',     text: 'Burrowing worms are tunnelling in and out of the ship, eating holes everywhere. Kill them before the dirt (and worse) pours in!' },
+};
+export const DISTRESS_LINES = ['Help them (could be a trap)', 'Leave them (keep digging)'];
+
+// Somebody's down: everybody dies in character, and nobody believes it.
+export const DEATH_LINES = {
+  pilot: ['No! I had the wheel! I HAD THE WHEEL!', 'This is NOT how the story goes!', 'Tell Joe... I drove better.'],
+  engineer: ['Who\'s gonna fix ME?!', 'I can patch this... I can... nope.', 'Not... the wrench...'],
+  guard: ['Impossible! I am the FASTEST!', 'The vault... guard... the...', 'I was on PATROL!'],
+  chef: ['My SOUFFLÉ!', 'Who\'s gonna feed you idiots now?!', 'Tell them... more salt...'],
+  mrclean: ['I... am... spotless... *thud*', 'Now look at this MESS I made.', 'NOT THE BICEPS!'],
+  missiletech: ['I didn\'t even get to fire the big one!', 'Boom is... my... love language...', 'Mis... fire...'],
+  commando: ['MEDIC! Wait, we don\'t have a medic!', 'I\'ve had worse! ...No I haven\'t!', 'Tell Sarge... I am Sarge.'],
+  farmer: ['My crops! Who\'ll water my crops?!', 'Shoulda stayed on the farm...', 'Plant me... somewhere nice...'],
+  scientist: ['This is statistically IMPOSSIBLE!', 'My hypothesis... was wrong...', 'Peer review... was... brutal...'],
+  dog: ['AWOOOooo...', '*sad whimper*', 'Bark? ...bark.'],
+  chameleon: ['You... SAW me?!', 'Nobody sees me! NOBODY!', 'Shhh... I\'m... hiding... forever...'],
+  trainer: ['I choose... the floor...', 'My monsters will avenge me! Probably!', 'Return... to... cube...'],
+  jorbal: ['Blooooop...', '*pop*', 'Bubble... burst...'],
+  vaelift: ['The other dimension... was right there!', 'The Vurfenstaff... disappointed...', 'Premium service... cancelled...'],
+  agent: ['The name\'s... 013... was...', 'This wasn\'t in the briefing!', 'Shaken... AND stirred...'],
+  slots: ['TILT! TILT! GAME OVER!', '*sad descending slot noises*', 'House... lost...'],
+};
+// Agent 013's secret missions, typed up on paper and slid under the door.
+export const MISSION_PAPERS = [
+  'EYES ONLY. The mark is smuggling our gems in their boots. Put on their crew\'s overalls and get close.',
+  'TOP SECRET. This one knows where Joe went. They don\'t get to tell anyone else.',
+  'CLASSIFIED. The mark cheated at cards in Rusty Gulch. We take cards very seriously.',
+  'URGENT. The mark keeps the keys to their vault. Blend in, walk up, end it quietly.',
+  'BURN AFTER READING. The mark has been insulting the urchid. Only WE get to insult the urchid.',
+];
 export const NAME_A = ['Rab', 'Bur', 'Qu', 'Grub', 'Skree', 'Mog', 'Snik', 'Dreg', 'Kob', 'Thrum', 'Glim', 'Vor', 'Nub', 'Krag', 'Slor', 'Pib', 'Zor', 'Wem', 'Fung', 'Druk'];
 export const NAME_B = ['bers', 'lys', 'es', 'blins', 'chers', 'gles', 'lings', 'rots', 'kins', 'mites', 'loks', 'pers', 'sies', 'rats', 'wums'];
 
@@ -415,7 +507,14 @@ export const CREATURES = [
   { id: 'rocklobster',name: 'Rock Lobster',race: 'crab',   build: 'hulking',weapon: 'maul',  tierMin: 3 },
   { id: 'molemother', name: 'Mole Mother', race: 'slime',  build: 'titan',  weapon: 'claws', tierMin: 4 },
 ];
-export const BOSS = { id: 'coreking', name: 'The Core Leviathan', race: 'magmite', build: 'burly', hp: 2000, size: 3.2 };
+// The thing at the core: one of these, picked at random each run.
+//   coreking:  sits in its lair, throws fire, spawns its brood.
+//   leviathan: climbs OUT of its ship and walks straight through our walls, crushing everything into dust.
+export const BOSS = { id: 'coreking', name: 'The Core King', race: 'magmite', build: 'burly', hp: 2000, size: 3.2 };
+export const BOSSES = [
+  BOSS,
+  { id: 'leviathan', name: 'The Leviathan', race: 'horror', build: 'titan', hp: 2600, size: 3.6, walker: true, color: '#3a5a6a', eye: '#a0ffe0' },
+];
 
 // ---------------------------------------------------------------------------
 // Route nodes the pilot picks between at the end of each descent.

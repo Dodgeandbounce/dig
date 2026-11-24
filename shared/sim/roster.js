@@ -1,6 +1,6 @@
 // The enemy roster: generated once per run. Random names, stats, builds, heights,
 // weapons, bodies and races. Each type belongs to a depth tier (0 = shallow, 4 = core).
-import { RACES, BUILDS, ENEMY_WEAPONS, NAME_A, NAME_B, CREATURES, BOSS, HOARDER } from './data.js';
+import { RACES, BUILDS, ENEMY_WEAPONS, NAME_A, NAME_B, CREATURES, BOSSES, HOARDER, THIEVES, EVENT_CREATURES, STARTER_MONSTERS } from './data.js';
 
 export function makeRoster(rng) {
   const roster = [];
@@ -66,15 +66,38 @@ export function makeRoster(rng) {
       armor: 0, bounty: 6 + c.tierMin * 5,
     });
   }
-  const b = BOSS; const race = RACES.find((r) => r.id === b.race);
-  roster.push({ idx: roster.length, name: b.name, tier: 5, boss: true, race: race.id, body: 'boss', color: '#c0401a', eye: '#fff07a',
-    build: 'burly', size: b.size, hp: b.hp, speed: 60, dmgMul: 3, weapon: 'club', role: 'boss', armor: 0.2, bounty: 400 });
-  // the Hoarder (one per run, comes alone)
+  // the things at the core (one of them turns up, picked per run)
+  for (const b of BOSSES) {
+    const race = RACES.find((r) => r.id === b.race);
+    roster.push({ idx: roster.length, name: b.name, tier: 5, boss: true, bossId: b.id, walker: !!b.walker, race: race.id, body: b.walker ? 'leviathan' : 'boss',
+      color: b.color || '#c0401a', eye: b.eye || '#fff07a', build: b.build, size: b.size, hp: b.hp, speed: b.walker ? 52 : 60, dmgMul: b.walker ? 3.4 : 3,
+      weapon: b.walker ? 'maul' : 'club', role: 'boss', armor: b.walker ? 0.35 : 0.2, bounty: 400 });
+  }
+  // the Ship-Eater (one per run, comes alone, the main event)
   const H = HOARDER;
   roster.push({ idx: roster.length, name: H.name, tier: 1, hoarder: true, race: H.race, body: H.body, color: H.color, eye: H.eye,
-    build: 'titan', size: H.size, hp: H.hp, speed: H.speed, dmgMul: H.dmgMul, weapon: H.weapon, role: 'hoarder', armor: 0.25, bounty: 150 });
+    build: 'titan', size: H.size, hp: H.hp, speed: H.speed, dmgMul: H.dmgMul, weapon: H.weapon, role: 'hoarder', armor: 0.4, bounty: 400 });
+  // thieving crews: they come for the vault ("har har har")
+  for (const t of THIEVES) {
+    const build = BUILDS[t.tier >= 2 ? 2 : 1];
+    roster.push({ idx: roster.length, name: t.name, tier: t.tier, thief: true, thiefId: t.id, hat: t.hat, hacker: !!t.hacker, race: 'raider', body: 'human',
+      color: t.color, eye: '#ffffff', build: build.id, size: 1, hp: Math.round(30 * (1 + t.tier * 0.7)), speed: Math.round(118 * (1 + t.tier * 0.05)),
+      dmgMul: 0.7 + 0.35 * t.tier, weapon: t.weapon, role: 'thief', armor: 0, bounty: 8 + t.tier * 5 });
+  }
+  // things that only random events bring (storks, rock monsters, worms, strawberries...)
+  for (const e of EVENT_CREATURES) {
+    roster.push({ idx: roster.length, name: e.name, tier: 0, event: e.id, special: true, race: e.id, body: e.body, color: e.color, eye: e.eye, build: 'squat',
+      size: e.size, hp: e.hp, speed: e.speed, dmgMul: e.dmg, weapon: e.weapon, role: 'brute', armor: e.armor || 0, bounty: 6 });
+  }
+  // the monster trainer's starter pets
+  for (const s of STARTER_MONSTERS) {
+    roster.push({ idx: roster.length, name: s.name, tier: 0, starter: s.id, elem: s.elem, special: true, race: s.id, body: s.body, color: s.color, eye: s.eye, build: 'squat',
+      size: 0.95, hp: 70, speed: s.elem === 'electric' ? 175 : 140, dmgMul: 1.1, weapon: s.elem === 'water' ? 'spit' : s.elem === 'electric' ? 'claws' : 'club', role: 'brute', armor: 0, bounty: 0 });
+  }
   return roster;
 }
+/** Regular boarders (the ones the level mix is made of). */
+export const isGrunt = (r) => !r.creature && !r.boss && !r.hoarder && !r.special && !r.thief;
 
 function jitterColor(hex, rng) {
   const n = parseInt(hex.slice(1), 16);
@@ -93,18 +116,21 @@ export function tierFor(level, path) {
  */
 export function levelMix(roster, level, path, rng) {
   const tier = tierFor(level, path);
-  const pool = roster.filter((r) => !r.creature && !r.boss && !r.hoarder && r.tier <= tier && r.tier >= tier - 1);
+  const pool = roster.filter((r) => isGrunt(r) && r.tier <= tier && r.tier >= tier - 1);
   const n = Math.min(pool.length, 3 + Math.floor(level / 6) + rng.int(0, 1));
   const picks = rng.shuffle([...pool]).slice(0, n);
   // the main ones get whole tens; the rest of the hundred is split up
   let w = picks.map(() => rng.int(1, 6));
   const sum = w.reduce((a, b) => a + b, 0);
   const mix = picks.map((p, i) => ({ type: p.idx, pct: Math.max(4, Math.round((w[i] / sum) * 100)) }));
-  const deeper = roster.filter((r) => !r.creature && !r.boss && !r.hoarder && r.tier === tier + 1);
+  const deeper = roster.filter((r) => isGrunt(r) && r.tier === tier + 1);
   const rare = [];
   if (deeper.length && rng.chance(0.35 + 0.05 * tier)) rare.push({ type: rng.pick(deeper).idx, pct: rng.int(1, 3), rare: true });
-  const oddball = roster.filter((r) => !r.creature && !r.boss && !r.hoarder && r.tier <= tier && !picks.includes(r));
+  const oddball = roster.filter((r) => isGrunt(r) && r.tier <= tier && !picks.includes(r));
   if (oddball.length && level > 3 && rng.chance(0.4)) rare.push({ type: rng.pick(oddball).idx, pct: rng.int(1, 2), rare: true });
+  // a thieving crew along for the ride: pirates, thieves, robbers, bandits, hackers (they want the vault)
+  const thieves = roster.filter((r) => r.thief && r.tier <= tier);
+  if (thieves.length && level >= 2 && rng.chance(0.3 + 0.04 * tier)) rare.push({ type: rng.pick(thieves).idx, pct: rng.int(6, 14), thief: true });
   const rareTotal = rare.reduce((a, m) => a + m.pct, 0);
   // squeeze the main ones down so it all adds up to 100
   let total = mix.reduce((a, m) => a + m.pct, 0);

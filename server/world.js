@@ -12,10 +12,10 @@ const LOG_LIMIT = 40;
 const HISTORY_LIMIT = 50;
 const STEP = 1 / 30;
 const FX_LIMIT = 400;
-const ONLINE_STARTERS = ['pilot', 'engineer'];
+const ONLINE_STARTERS = ['pilot', 'engineer', 'urchid'];
 // Commands a player may send. 'pause' is solo-only: one player can't freeze everyone.
 const BLOCKED = new Set(['pause']);
-const PRESS_KEYS = ['q', 'f', 'e', 'space', 'rmb'];
+const PRESS_KEYS = ['q', 'f', 'e', 'r', 'g', 'space', 'rmb'];
 
 function newRun(number) {
   return {
@@ -91,6 +91,7 @@ export class World {
     const seed = Math.floor(this.rng() * 2 ** 31);
     const g = new Game({ seed, playerClass: this.starter, shipName: this.name, speed: this.speed });
     for (const c of g.crew) c.human = false;
+    g.storyMode = false;   // an urchid host online is a troll among real people, not story mode
     this.seats = {};
     this.base = null;
     this.fx = [];
@@ -121,7 +122,9 @@ export class World {
   }
 
   get canTick() {
-    if (this.run.status !== RUN_STATUS.ACTIVE || this.online.size === 0) return false;
+    // (after a win the world keeps going: everyone gets to walk around the island while the credits roll)
+    const island = this.run.status === RUN_STATUS.WON && this.game?.phase === 'ending';
+    if ((this.run.status !== RUN_STATUS.ACTIVE && !island) || this.online.size === 0) return false;
     return this.hostOnline || this.allowPlayWithoutHost;
   }
 
@@ -158,7 +161,7 @@ export class World {
     const free = (c) => !c.human && c.cls !== 'urchid';
     let c = this.crewOf(playerId);
     if (!c || c.human) c = null;
-    if (!c && this.isHost(playerId)) c = g.crew.find((x) => free(x) && x.cls === this.starter && !reserved.has(x.id));
+    if (!c && this.isHost(playerId)) c = g.crew.find((x) => !x.human && x.cls === this.starter && !reserved.has(x.id));
     c ||= g.crew.find((x) => free(x) && !reserved.has(x.id)) || g.crew.find(free);
     if (!c) c = g.addCrew('engineer');
     c.human = true; c.bot = {}; c.player = name;

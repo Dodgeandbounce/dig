@@ -6,14 +6,14 @@ import {
   CLASS_UPGRADES, UPGRADE_BASE_COST, RECIPES, RESEARCH, NODE_TYPES, PORT_NAMES, PORT_FLAVOR, JOE_NOTES,
   TRANSPONDER_NOTE, JOURNAL_TEXT, BROTHER_NOTES, ENDINGS, AGENT_BRIEFS, CREW_HP_MUL, BLAST_DOOR_HP, RING,
   roomSize, BRIDGE_W, POWER_BASE, POWER_PER_CORE, POWER_SYS, POWER_DEFAULT, SHIP_GUNS, GUN_SLOTS, GEMS, xpCost, XP_JOIN_PER_LEVEL,
-  EARLY_WARNINGS, TRANSPONDER_PILOT, HOARDER,
+  EARLY_WARNINGS, TRANSPONDER_PILOT, HOARDER, BOSSES, EVENTS, CANDY, STARTER_MONSTERS, MISSION_PAPERS, THIEVES, DEATH_LINES, DISTRESS_LINES,
 } from './data.js';
 import { makeRng } from './rng.js';
 import { Grid, idx, inMap, buildRooms, buildRing, addDoor, slotRect, stationPos, roomTiles, wallTilesOf, roomCenter, roomPoint, rw, rh } from './grid.js';
-import { makeRoster, tierFor, levelMix } from './roster.js';
+import { makeRoster, tierFor, levelMix, isGrunt } from './roster.js';
 import {
   updateProjectiles, updatePickups, damage, hitTile, damageSystem, addMess, dropPickup, rainPickup, tickBuffs,
-  addBuff, roomAt, tileOwner, healActor, explode, igniteRoom, updateFires, inOurBox, gainXp, addGems, gemType, buildAir,
+  addBuff, roomAt, tileOwner, healActor, explode, igniteRoom, updateFires, inOurBox, gainXp, addGems, gemType, buildAir, unstick,
 } from './combat.js';
 import { crewTick, interactTarget, say, spinSlots, quip, recalcCrewHp, autoSpendXp, ventTo } from './classes.js';
 import { botInput, mobTick, rebuildFields, updateObjects, pickMissileTarget } from './ai.js';
@@ -28,7 +28,7 @@ const START_LAYOUT = [
   { type: 'shield', sx: 5, sy: 3 },
 ];
 
-export const GAME_VERSION = 3;   // bump when saved games can't be loaded any more (map size, layout)
+export const GAME_VERSION = 4;   // bump when saved games can't be loaded any more (map size, layout)
 
 export class Game {
   constructor({ seed, playerClass = 'pilot', playerName, shipName, speed = 1 } = {}) {
@@ -59,7 +59,10 @@ export class Game {
     this.brotherIdx = 0;
     this.lastNoteLevel = 0;
     this.joe = { state: 'missing' };
-    this.soloLevel = this.rng.int(7, 21);   // the level where the Hoarder comes aboard alone
+    this.soloLevel = this.rng.int(7, 21);   // the level where the Ship-Eater comes aboard alone
+    this.bossKind = this.rng.pick(BOSSES).id; // what's waiting at the core this run
+    this.candyT = 25;                        // next candy drop
+    this.trader = null;                      // a trader alongside (random event)
     this.storyMode = playerClass === 'urchid';
     this.box = { x0: 0, y0: SHIP_OY, x1: MAP_W - 1, y1: MAP_H - 1 };   // our ship's bounds (tiles, outer hull included)
     this.enemyShips = [];
@@ -78,6 +81,8 @@ export class Game {
       rooms: {}, buildT: 0,
     };
     this.ourRooms = START_LAYOUT.map((r) => ({ ...r }));
+    // the Urchid gets a lounge right in the middle of the ship (the laziest spot there is)
+    if (playerClass === 'urchid') this.ourRooms.push({ type: 'lounge', sx: 6, sy: 3 });
     this.layoutShip();
     this.ship.hull = this.ship.hullMax;
 
@@ -124,7 +129,7 @@ export class Game {
       id: uid(), cls, name: (name || '').trim().slice(0, 16) || def.def, team: 'crew', human: false,
       x: home.station.x + 40 + this.rng.range(-20, 40), y: home.station.y + 60, r: cls === 'slots' ? 13 : cls === 'dog' ? 10 : 11,
       hp, maxHp: hp, alive: true, downT: 0, wallet: 25, upgrades: [0, 0, 0],
-      cd: { fire: 0, q: 0, f: 0, rmb: 0, space: 0 }, buffs: [], facing: 0, aim: { x: 0, y: 0 },
+      cd: { fire: 0, q: 0, f: 0, r: 0, g: 0, rmb: 0, space: 0 }, buffs: [], facing: 0, aim: { x: 0, y: 0 },
       stunT: 0, slowT: 0, kills: 0, repairs: 0, monsters: [], summonIdx: 0, wiggle: [], bot: {},
       form: 'staff', jar: 'poison', mineType: 'proximity', missionRank: 0, carrying: 0,
       invuln: cls === 'urchid',
@@ -132,8 +137,21 @@ export class Game {
     };
     c.baseHp = hp;
     this.crew.push(c);
+    // the monster trainer never starts empty-handed (a player gets to pick: grass, fire, water or electric)
+    if (cls === 'trainer') this.giveStarter(c, this.rng.pick(STARTER_MONSTERS).id, true);
     if (!c.human) autoSpendXp(this, c);
     return c;
+  }
+  /** Swap the trainer's starter pet. `auto`: a bot chose, so a player who takes over can still pick. */
+  giveStarter(c, id, auto = false) {
+    const ti = this.roster.findIndex((x) => x.starter === id);
+    if (ti < 0) return;
+    const old = c.monsters.find((m) => m.starter);
+    if (old?.out) for (const m of this.mobs) if (m.alive && m.isMonster && m.ownerId === c.id && m.type === old.type) m.alive = false;
+    c.monsters = c.monsters.filter((m) => !m.starter);
+    const def = STARTER_MONSTERS.find((s) => s.id === id);
+    c.monsters.unshift({ type: ti, name: def.name, out: false, reviveT: 0, hpMul: 1.3 + 0.14 * this.level, dmgMul: 1.15 + 0.09 * this.level, starter: id, elem: def.elem });
+    c.starterAuto = auto;
   }
 
   ensureRoomFor(cls) {
@@ -256,8 +274,8 @@ export class Game {
     // vents for the chameleon
     this.objs = (this.objs || []).filter((o) => o.kind !== 'vent' || o.owner !== 'us');
     if (this.crew?.some((c) => c.cls === 'chameleon')) this.addVents(rooms, 'us');
-    // air currents (the jorbal rides them): one loop around the walkway, a few streams through the rooms
-    this.air = buildAir(this, this.rng);
+    // air currents (the jorbal rides them): the whole ship flows to one or two spots (kept until the next dig)
+    this.air = buildAir(this, this.rng, !this.air?.sinks?.length);
     this.recalcShip();
   }
 
@@ -364,14 +382,41 @@ export class Game {
       // a third of the boarders smash walls on their way to our systems
       breaker: ty.role === 'carver' || ty.role === 'hoarder' || (!ty.creature && this.rng.chance(0.3)),
     };
-    if (ty.hoarder) m.hoarder = true;
-    if (m.team === 'enemy' && !m.boss && opts.markable !== false) {
+    if (ty.hoarder) { m.hoarder = true; m.hp = m.maxHp = m.hp * (1 + 0.05 * this.level); m.fed = 0; }
+    if (ty.thief) { m.thief = ty.thiefId; m.hacker = !!ty.hacker; }
+    if (ty.event) m.event = ty.event;
+    if (ty.walker) m.walker = true;
+    if (m.team === 'enemy' && !m.boss && !m.wild && opts.markable !== false) {
       const agent = this.crew.find((c) => c.cls === 'agent');
-      if (agent && this.markedLeft > 0 && this.rng.chance(0.35)) { m.marked = true; this.markedLeft--; m.hp *= 1 + 0.1 * (agent.missionRank || 0); m.maxHp = m.hp;
-        this.fx({ t: 'watch', crew: agent.id, text: this.rng.pick(AGENT_BRIEFS), target: m.name }); }
+      if (agent && this.markedLeft > 0 && !this.mobs.some((x) => x.alive && x.marked) && this.rng.chance(0.35)) { this.markedLeft--; this.markTarget(m, agent); }
     }
     this.mobs.push(m);
     return m;
+  }
+  /**
+   * Agent 013's secret mission: a paper report slides in naming the mark. The agent can put on that
+   * crew's uniform (a disguise) and an arrow points the way.
+   */
+  markTarget(m, agent) {
+    agent ||= this.crew.find((c) => c.cls === 'agent');
+    if (!agent || !m) return;
+    m.marked = true; m.hp *= 1 + 0.1 * (agent.missionRank || 0); m.maxHp = m.hp;
+    this.missionN = (this.missionN || 0) + 1;
+    const ty = this.roster[m.type];
+    this.mission = { id: this.missionN, target: m.id, name: ty.name, type: m.type, text: this.rng.pick(MISSION_PAPERS), brief: this.rng.pick(AGENT_BRIEFS), rank: agent.missionRank || 0 };
+    this.fx({ t: 'mission', crew: agent.id, mission: this.mission });
+    this.fx({ t: 'watch', crew: agent.id, text: this.mission.brief, target: ty.name });
+    // a bot agent just suits up
+    if (!agent.human) agent.disguise = m.type;
+  }
+  /** The mark is down (whoever got it): if there's anyone left worth marking, a new report comes in. */
+  nextMark() {
+    if ((this.missionChain = (this.missionChain || 0) + 1) > 6) return;
+    const agent = this.crew.find((c) => c.cls === 'agent' && c.alive);
+    if (!agent) return;
+    const pool = this.mobs.filter((x) => x.alive && x.team === 'enemy' && !x.boss && !x.wild && !x.marked && !x.hoarder);
+    if (!pool.length) return;
+    this.markTarget(this.rng.pick(pool), agent);
   }
   humanCount() { return this.crew.filter((c) => c.human).length; }
 
@@ -395,7 +440,8 @@ export class Game {
   // -------------------------------------------------------------------------
   // the main tick
   update(dt) {
-    if (this.phase === 'gameover' || this.phase === 'ending') { this.time += dt; this.phaseT += dt; return; }
+    if (this.phase === 'ending') { this.time += dt; this.phaseT += dt; this.islandTick(dt); return; }
+    if (this.phase === 'gameover') { this.time += dt; this.phaseT += dt; return; }
     if (this.paused || this.storyOpen) return;
     this.time += dt;
     this.phaseT += dt;
@@ -439,7 +485,7 @@ export class Game {
     const pick = opts.includes(c.spawnPick) ? c.spawnPick : opts[0];
     const r = this.rooms[pick] || this.rooms[0];
     const p = roomCenter(r);
-    c.alive = true; c.hp = c.maxHp; c.x = p.x + this.rng.range(-20, 20); c.y = p.y + 16; c.stam = 100;
+    c.alive = true; c.hp = c.maxHp; c.x = p.x + this.rng.range(-20, 20); c.y = p.y + 16; c.stam = c.stamMax || 100; c.deadT = 0; c.dieLine = null;
     this.fx({ t: 'respawn', x: c.x, y: c.y });
   }
 
@@ -449,9 +495,13 @@ export class Game {
       if (d.reinforced > 0) d.reinforced -= dt;
       let want = 0;
       const cx = (d.x + .5) * TILE, cy = (d.y + .5) * TILE;
-      if (d.owner === 'them') {
-        // their doors open for them; we have to smash through
-        for (const m of this.mobs) if (m.alive && m.team === 'enemy' && Math.abs(m.x - cx) < 46 && Math.abs(m.y - cy) < 46) { want = 1; break; }
+      // hackers pop our doors open, sealed or not (blast doors are too old-school to hack)
+      if (d.owner === 'us' && !d.blast && this.mobs.some((m) => m.alive && m.hacker && Math.abs(m.x - cx) < 46 && Math.abs(m.y - cy) < 46)) {
+        if (d.sealed || d.hold === 'closed') { d.sealed = false; d.hold = null; this.grid.version++; this.fx({ t: 'text', x: cx, y: cy - 16, text: 'HACKED', color: '#60ff90' }); }
+        want = 1;
+      } else if (d.owner === 'them') {
+        // their doors open for them; we have to smash through. Armoured vault doors never open: C4 only.
+        if (!d.armored) for (const m of this.mobs) if (m.alive && m.team === 'enemy' && Math.abs(m.x - cx) < 46 && Math.abs(m.y - cy) < 46) { want = 1; break; }
       } else if (d.sealed) want = 0;
       else if (d.hold === 'open') want = 1;            // propped open: anyone can walk through, them too
       else if (d.hold !== 'closed') {
@@ -528,6 +578,7 @@ export class Game {
         if (p.t >= 20) { p.t = 0; p.stage++; p.wet = false; }
       }
     }
+    extrasTick(this, dt);   // candy, random events, the trader, the virus
   }
 
   researchTick(c, dt) {
@@ -579,6 +630,10 @@ export class Game {
       : levelMix(this.roster, this.level, this.path, this.rng);
     this.descent = newDescent();
     this.drops = 0;                           // feeder drops so far this level (there's a limit)
+    // something might happen on the way down this layer (likelier, and nastier, the deeper we go)
+    this.eventAt = this.level > 1 && this.rng.chance(0.45 + 0.012 * this.level) ? this.rng.range(0.2, 0.75) : null;
+    // the air currents settle into new paths for the dig
+    this.air = buildAir(this, this.rng);
     this.setPhase('briefing');
     this.log('story', `-${this.depthKm}km below Sea Level`);
     for (const c of this.crew) if (c.atHelm) c.atHelm = false;
@@ -670,6 +725,7 @@ export class Game {
 
   nextLevel() {
     this.cleanupEnemy();
+    this.clearEventMobs();
     this.afterFightRecruit();
     this.level++;
     for (const c of this.crew) gainXp(this, c, 24);   // made it another layer down
@@ -704,8 +760,16 @@ export class Game {
 
   // -------------------------------------------------------------------------
   // ports
+  /** Whatever the random events let in scurries back into the dirt when we dock somewhere safe. */
+  clearEventMobs() {
+    let n = 0;
+    for (const m of this.mobs) if (m.alive && m.team === 'enemy' && (m.event || m.wild)) { m.alive = false; n++; }
+    if (n) this.log('ship', `The last ${n} pests scurry back out into the dirt.`);
+    this.trader = null;
+  }
   startPort(kind) {
     this.cleanupEnemy();
+    this.clearEventMobs();
     this.lastPortLevel = this.level;
     this.setPhase('port');
     const name = this.rng.pick(PORT_NAMES);
@@ -714,7 +778,7 @@ export class Game {
       kind, name: kind === 'fuel' ? `${name} Fuel Depot` : kind === 'repair' ? `${name} Repair Dock` : kind === 'city' ? `Deep City of ${name}` : name,
       flavor: this.rng.pick(PORT_FLAVOR),
       gemPrice: Math.round((1.4 + 0.5 * this.tier + (kind === 'city' ? 0.6 : 0)) * 10) / 10,   // per point of gem value
-      guns: this.rng.shuffle(Object.keys(SHIP_GUNS).filter((k) => k !== 'dgun')).slice(0, 2),
+      guns: this.rng.shuffle(Object.keys(SHIP_GUNS).filter((k) => k !== 'dgun' && !SHIP_GUNS[k].trader)).slice(0, 2),
       fuelPrice: kind === 'fuel' ? 0.5 : 1,
       shop: full, rooms: full, upgrades: full || kind === 'repair',
       recruits: [],
@@ -790,18 +854,23 @@ export class Game {
     const tier = Math.min(4, this.tier + (opts.harder ? 1 : 0));
     const rng = this.rng;
     this.markedLeft = 1 + (this.crew.find((c) => c.cls === 'agent')?.upgrades[2] || 0) + (this.markedBonus || 0);
-    // the air currents shift with every docking
-    this.air = buildAir(this, rng);
+    this.mission = null; this.missionChain = 0;
+    for (const c of this.crew) c.disguise = null;
+    // the air currents shift with every docking (same spots they flow to, new paths)
+    this.air = buildAir(this, rng, false);
     this.weFled = false; this.fleeT = 0;
     const noHumans = !this.crew.some((c) => c.human);
-    // the Hoarder: one ship, one passenger
+    // (there's only ever one Ship-Eater: anything else that turns up on its layer is the normal crowd)
+    if (this.mix?.solo && this.hoarderSeen) this.mix = levelMix(this.roster, this.level, this.path, this.rng);
+    // the Ship-Eater: one ship, one passenger
     if (kind === 'ship' && this.mix?.solo && !this.hoarderSeen) {
       this.hoarderSeen = true;
       const layout = enemyLayout('ship', tier, rng, this.ship.name, 0);
-      layout.name = 'The Hoarder\'s Barge'; layout.boarders = 1; layout.wave = 1; layout.solo = true;
+      layout.name = 'The Ship-Eater\'s Shell'; layout.boarders = 1; layout.wave = 1; layout.solo = true;
       this.planEnemyShip(layout, 'ship', rng.range(6, 8));
       if (noHumans) this.sealDoors(true);
-      this.log('alert', '☠ One ship. One passenger. 100%. It is coming for our scrap. Kill it before it gets back to its ship!');
+      this.log('alert', '☠ One ship. One passenger. 100%. THE SHIP-EATER. It chews through walls and swallows whole rooms, ours or anybody\'s. Everybody on it!');
+      this.fx({ t: 'mainevent', name: HOARDER.name });
       return;
     }
 
@@ -817,7 +886,11 @@ export class Game {
       n = [1 + (this.level >= 4 && rng.chance(0.25) ? 1 : 0), 1 + (rng.chance(0.5) ? 1 : 0), 2 + (rng.chance(0.35) ? 1 : 0), 2 + (rng.chance(0.65) ? 1 : 0), 3 + (rng.chance(0.55) ? 1 : 0)][tier];
       if (this.path === 'brother' && rng.chance(0.4)) n++;
       if (opts.harder) n++;
-      n = Math.min(MAX_DOCKED, n);
+      // the closer to the core, the more of them; a big ship has room for more to latch on
+      if (this.level >= 18 && rng.chance(0.5)) n++;
+      if (this.level >= 25 && rng.chance(0.5)) n++;
+      const room = this.ourRooms.length >= 22 ? 6 : this.ourRooms.length >= 16 ? 5 : 4;
+      n = Math.min(MAX_DOCKED, room, n);
     }
     let delay = kind === 'ship' ? rng.range(6, 8) : 4;
     for (let k = 0; k < n; k++) {
@@ -871,7 +944,9 @@ export class Game {
     for (const side of ['top', 'bottom']) {
       const y0 = side === 'top' ? topY : botY;
       if (y0 < ENEMY_OY || y0 + h > MAP_H - 2) continue;
-      for (const x0 of [mid - (w >> 1), B.x0 - 4, B.x1 - w + 4, mid - w - 2, mid + 2, B.x0 + 6, B.x1 - w - 6]) {
+      const xs = [mid - (w >> 1), B.x0 - 4, B.x1 - w + 4, mid - w - 2, mid + 2, B.x0 + 6, B.x1 - w - 6];
+      for (let x = 2; x + w < MAP_W - 2; x += 5) xs.push(x);   // (deep down, six can crowd in)
+      for (const x0 of xs) {
         const r = { x0: clamp(x0, 2, MAP_W - w - 2), y0, w, h };
         if (!overlaps(r)) spots.push({ side, rect: r });
       }
@@ -950,6 +1025,20 @@ export class Game {
     this.rooms.forEach((r, k) => { if (r.owner !== 'us') return; const c = roomCenter(r); const d = Math.hypot(c.x / TILE - dockX, c.y / TILE - dockY); if (d < hd) { hd = d; home = k; } });
     Object.assign(es, { docked: true, rooms: rooms.map((r) => this.rooms.indexOf(r)), tunnel, dock: { x: dockX, y: dockY, room: home }, airlock: { x: ax, y: ay } });
 
+    // once there's an agent with C4 aboard, their ships start keeping a vault behind armoured doors that
+    // only C4 can open. The loot inside is heavy: the chameleon can vent in and out, but can't carry it.
+    if (kind === 'ship' && !layout.solo && this.crew.some((c) => c.cls === 'agent') && this.rng.chance(0.4 + 0.12 * tier)) {
+      const cand = rooms.filter((r) => !r.thin && r !== airRoom && !['bridge', 'weapons', 'engine', 'shield'].includes(r.type));
+      const v = cand.length ? this.rng.pick(cand) : null;
+      if (v) {
+        const vi = this.rooms.indexOf(v);
+        Object.assign(v, { type: 'vault', name: 'Their Vault', vault: true });
+        v.sys = { type: 'vault', max: Math.round(160 * (1 + 0.6 * tier)), hp: Math.round(160 * (1 + 0.6 * tier)) };
+        for (const d of this.doors) if (d.owner === 'them' && (d.a === vi || d.b === vi)) { d.armored = true; d.hp = d.maxHp = 700; }
+        for (let k = 0; k < 2 + (tier >= 2 ? 1 : 0); k++) { const q = roomPoint(v, this.rng); this.objs.push({ id: uid(), kind: 'crate', heavy: true, x: q.x, y: q.y, owner: 'them', gems: 10 + tier * 8, gemVal: Math.round((10 + tier * 8) * (2 + tier)), scrap: 15 + tier * 10 }); }
+        this.log('alert', `🔒 ${es.name} has a VAULT behind armoured doors. Only C4 gets through.`);
+      }
+    }
     // defenders, decorations, crates
     for (const r of rooms) {
       const p = roomCenter(r);
@@ -969,13 +1058,17 @@ export class Game {
         this.nest = { waves: 5 + tier, waveT: 4, left: 5 + tier, pod: r };
       }
       if (kind === 'boss' && r.type === 'core') {
-        const bi = this.roster.findIndex((x) => x.boss);
-        const boss = this.spawnMob(bi, p.x, p.y, { defender: true, esId: es.id });
-        boss.r = 34; boss.hp = boss.maxHp = this.roster[bi].hp * (this.path === 'brother' ? 1.3 : 1) * (1 + 0.15 * Math.max(0, this.humanCount() - 1));
+        const bi = this.roster.findIndex((x) => x.boss && x.bossId === this.bossKind);
+        const walker = this.roster[bi].walker;
+        // the Leviathan doesn't wait in its lair: it climbs out and walks straight through everything
+        const boss = this.spawnMob(bi, p.x, p.y, { defender: !walker, esId: es.id });
+        boss.r = walker ? 40 : 34; boss.hp = boss.maxHp = this.roster[bi].hp * (this.path === 'brother' ? 1.3 : 1) * (1 + 0.15 * Math.max(0, this.humanCount() - 1));
         this.boss = boss;
+        if (walker) this.log('alert', '☠ THE LEVIATHAN is climbing out of its hive. It is walking straight at us. Through the walls.');
       }
     }
     if (this.crew.some((c) => c.cls === 'chameleon')) this.addVents(rooms, 'them');
+    this.air = buildAir(this, this.rng, false);   // the docking stirs up the air (and it reaches into their ship now)
     if (kind === 'ship') {
       this.log('alert', `☠ ${es.name} has docked and blown a hole in our hull!`);
       const talkers = this.rng.shuffle(this.crew.filter((c) => c.alive)).slice(0, 2);
@@ -985,8 +1078,8 @@ export class Game {
 
   pickType(defender = false) {
     // (the Hoarder never stands guard)
-    const mix = this.mix.filter((m) => !(defender && this.roster[m.type]?.hoarder));
-    if (!mix.length) return this.roster.findIndex((x) => !x.creature && !x.boss && !x.hoarder && x.tier <= this.tier);
+    const mix = this.mix.filter((m) => !(defender && (this.roster[m.type]?.hoarder || this.roster[m.type]?.thief)));
+    if (!mix.length) return this.roster.findIndex((x) => isGrunt(x) && x.tier <= this.tier);
     const total = mix.reduce((a, m) => a + m.pct, 0);
     const r = this.rng() * total; let acc = 0;
     for (const m of mix) { acc += m.pct; if (r <= acc) return m.type; }
@@ -1011,7 +1104,7 @@ export class Game {
     for (const c of this.crew) if (on(c)) { c.x = home.x + this.rng.range(-20, 20); c.y = home.y; c.riding = null; }
     for (const m of this.mobs) {
       if (!on(m)) continue;
-      if (m.team === 'crew') { m.x = home.x; m.y = home.y; } else m.alive = false;
+      if (m.team === 'crew' || m.hoarder) { m.x = home.x; m.y = home.y; } else m.alive = false;   // (the Ship-Eater just climbs aboard ours)
     }
     this.mobs = this.mobs.filter((m) => m.team === 'crew' || m.alive);
     const R = es.rect;
@@ -1087,7 +1180,7 @@ export class Game {
     if (!es || es.done) return;
     es.done = true; es.surrendered = true;
     this.log('loot', `🏳 ${msg}`);
-    for (const m of this.mobs) if (m.team === 'enemy' && this.onEnemyShip(es, m)) m.alive = false;
+    for (const m of this.mobs) if (m.team === 'enemy' && !m.hoarder && this.onEnemyShip(es, m)) m.alive = false;   // (the Ship-Eater doesn't surrender)
     for (const id of es.rooms) { const r = this.rooms[id]; for (let k = 0; k < 1 + (this.rng.chance(0.5) ? 1 : 0); k++) { const p = roomPoint(r, this.rng); this.objs.push({ id: uid(), kind: 'crate', x: p.x, y: p.y, owner: 'them' }); } }
     if (es.stolen) { const r = this.rooms[es.rooms[0]]; this.objs.push({ id: uid(), kind: 'crate', x: r.station.x + 40, y: r.station.y + 40, owner: 'them', gems: es.stolen, gemVal: es.stolenVal || es.stolen }); }
     if (es.scrapStolen) { const r = this.rooms[es.rooms[0]]; this.objs.push({ id: uid(), kind: 'crate', x: r.station.x + 70, y: r.station.y + 40, owner: 'them', scrap: es.scrapStolen }); }
@@ -1123,7 +1216,7 @@ export class Game {
   }
   /** A ship gun turns up (loot): it goes into storage for the missile technician to install. */
   findGun(c, id) {
-    id ||= this.rng.pick(Object.keys(SHIP_GUNS).filter((k) => k !== 'dgun'));
+    id ||= this.rng.pick(Object.keys(SHIP_GUNS).filter((k) => k !== 'dgun' && !SHIP_GUNS[k].trader));
     this.ship.items.push({ id });
     this.log('loot', `🔫 ${c ? c.name + ' found' : 'Found'} a ${SHIP_GUNS[id].name}! It's in storage: the missile technician can install it at the weapons bay (needs ${SHIP_GUNS[id].power} power).`);
     this.fx({ t: 'gunfound', id });
@@ -1135,7 +1228,7 @@ export class Game {
     this.story({ title: 'Too late', lines: ['The pod door gives. By the time you get there, it\'s quiet.', 'You take his wrench. It\'s a good wrench.'], kind: 'note' });
   }
   bossDied() {
-    this.log('loot', '☀ THE CORE LEVIATHAN FALLS!');
+    this.log('loot', `☀ ${(this.boss?.name || 'THE THING AT THE CORE').toUpperCase()} FALLS!`);
     this.fx({ t: 'bossdie' });
     this.stats.score += 5000;
     for (const es of this.enemyShips) this.destroyEnemyShip(es);
@@ -1254,6 +1347,129 @@ function enemyLayout(kind, tier, rng, ourName, k = 0, level = 1) {
     // lots of them, from the very start, and more every level down
     boarders: Math.round((26 + level * 2.2 + tier * 10 + total * 4) * rng.range(0.85, 1.25)), wave: 4 + Math.round(tier * 1.4) + (total >= 6 ? 1 : 0),
   };
+}
+
+// ---------------------------------------------------------------------------
+// candy, random events, the trader, the virus
+
+const CANDY_W = { green: 5, red: 5, blue: 4, yellow: 4, white: 2, rainbow: 0.6 };
+function dropCandy(g, sub) {
+  const rooms = g.rooms.filter((r) => r.owner === 'us' && !r.gone);
+  if (!rooms.length) return;
+  const p = roomPoint(g.rng.pick(rooms), g.rng);
+  const pk = rainPickup(g, p.x, p.y, 'candy', 1, sub || g.rng.weighted(CANDY_W));
+  return pk;
+}
+
+function extrasTick(g, dt) {
+  // candy pops up around the ship every so often
+  if (['descent', 'encounter', 'aftermath'].includes(g.phase)) {
+    g.candyT -= dt;
+    if (g.candyT <= 0) {
+      g.candyT = g.rng.range(28, 50);
+      if (g.pickups.filter((p) => p.kind === 'candy').length < 5) dropCandy(g);
+    }
+  }
+  // the random event for this layer
+  if (g.phase === 'descent' && g.eventAt != null && !g.descent.stranded && g.descent.progress >= g.eventAt && !g.storyOpen) { g.eventAt = null; randomEvent(g); }
+  // the trader hangs around for a minute
+  if (g.trader) { g.trader.t -= dt; if (g.trader.t <= 0 || g.phase !== 'descent') { g.log('ship', 'The trader unhooks and digs off. "Pleasure doing business, foxes!"'); g.trader = null; } }
+  // the virus: every few seconds each one screams and splits in two. If they fill a room, the room is gone.
+  const viruses = g.mobs.filter((m) => m.alive && m.event === 'virus');
+  if (viruses.length) {
+    g.virusT = (g.virusT || 0) - dt;
+    if (g.virusT <= 0) {
+      g.virusT = 3.2;
+      const vi = g.roster.findIndex((x) => x.event === 'virus');
+      for (const v of viruses) {
+        if (g.mobs.length > 150) break;
+        const c = g.spawnMob(vi, v.x + g.rng.range(-12, 12), v.y + g.rng.range(-12, 12), { markable: false, wild: true });
+        unstick(g, c);
+        if (g.rng.chance(0.25)) g.fx({ t: 'say', id: v.id, text: g.rng.pick(['AAAAAAH!', 'EEEEEEE!', 'MORE OF US!', 'AAAH AAAH AAAH!']) });
+      }
+      g.fx({ t: 'virus', x: viruses[0].x, y: viruses[0].y });
+      // a room full of them: it's gone
+      const per = new Map();
+      for (const v of g.mobs) if (v.alive && v.event === 'virus') { const ri = roomAt(g, v); if (ri >= 0) per.set(ri, (per.get(ri) || 0) + 1); }
+      for (const [ri, n] of per) {
+        const r = g.rooms[ri];
+        if (!r || r.owner !== 'us' || n < 16) continue;
+        for (const v of g.mobs) if (v.alive && v.event === 'virus' && roomAt(g, v) === ri) v.alive = false;
+        if (r.sys) damageSystem(g, r, r.sys.hp + 1);
+        if (!g.storyMode) g.ship.hull = Math.max(1, g.ship.hull - 40);
+        igniteRoom(g, r, 4);
+        const p = roomCenter(r);
+        g.fx({ t: 'boom', x: p.x, y: p.y, r: 120 });
+        g.log('alert', `☣ The virus filled the ${r.name} and it BURST. The room is wrecked!`);
+      }
+    }
+  }
+}
+
+/** One thing happens on the way down (deeper: more likely bad, and worse). */
+function randomEvent(g) {
+  const L = g.level;
+  const good = Math.max(0.15, 0.62 - 0.016 * L);
+  const pool = {};
+  for (const [id, e] of Object.entries(EVENTS)) pool[id] = e.good ? good / 5 : (1 - good) / 7;
+  if (L < 5) { pool.worms = 0; pool.tentacles = 0; pool.virus *= 0.5; }
+  if (g.workingEngines() < 1) pool.engine = 0;
+  const id = g.rng.weighted(pool);
+  const E = EVENTS[id];
+  g.lastEvent = { id, at: g.time };
+  g.fx({ t: 'event', id, good: E.good, name: E.name });
+  g.log(E.good ? 'loot' : 'alert', `${E.good ? '✨' : '⚠'} ${E.name}! ${E.text}`);
+  const n = (base, per) => Math.round(base + per * g.tier + g.crew.length / 6);
+  switch (id) {
+    case 'trader': {
+      const guns = ['fire', g.rng.pick(Object.keys(SHIP_GUNS).filter((k) => k !== 'dgun' && k !== 'fire'))];
+      g.trader = { t: 60, guns, missilePrice: 35, missileBuy: 22, scrapPrice: 18, scrapBuy: 12 };
+      break;
+    }
+    case 'cache': for (let k = 0; k < 10 + g.tier * 4; k++) { const r = g.rng.pick(g.rooms.filter((x) => x.owner === 'us')); const p = roomPoint(r, g.rng); rainPickup(g, p.x, p.y, 'gem', 1, gemType(g)); } break;
+    case 'candyrain': for (let k = 0; k < 7; k++) dropCandy(g, k === 0 && g.rng.chance(0.4) ? 'rainbow' : undefined); break;
+    case 'strawberry': eventSpawn(g, 'strawberry', n(3, 1)); break;
+    case 'distress':
+      g.story({ title: 'A signal in the dirt: "DO I GO?"', kind: 'distress', lines: ['A weak distress beacon, close by. It just repeats three words: "Do I go? Do I go? Do I go?"', 'Could be someone like Joe. Could be bait.'],
+        choices: [{ id: 'help', label: DISTRESS_LINES[0] }, { id: 'leave', label: DISTRESS_LINES[1] }] });
+      break;
+    case 'fire': { const rooms = g.rooms.filter((r) => r.owner === 'us' && r.sys); igniteRoom(g, g.rng.pick(rooms), 3 + g.tier); break; }
+    case 'engine': {
+      const eng = g.rooms.filter((r) => r.owner === 'us' && r.type === 'engine' && r.sys.hp > 0);
+      const r = g.rng.pick(eng);
+      damageSystem(g, r, r.sys.hp + 1);
+      g.log('alert', eng.length > 1 ? `The other engine${eng.length > 2 ? 's keep' : ' keeps'} us moving. Engineers: fix the ${r.name}!` : 'That was our only engine. We\'re crawling. ENGINEERS!');
+      break;
+    }
+    case 'storks': eventSpawn(g, 'stork', n(6, 2)); break;
+    case 'virus': {
+      const hold = g.rooms.find((r) => r.owner === 'us' && r.type === 'storage') || g.rng.pick(g.rooms.filter((r) => r.owner === 'us' && r.sys));
+      const p = roomCenter(hold);
+      g.spawnMob(g.roster.findIndex((x) => x.event === 'virus'), p.x, p.y, { markable: false, wild: true });
+      g.virusT = 4;
+      g.log('alert', `☣ It started in the ${hold.name}. Kill every last one before they fill the room!`);
+      break;
+    }
+    case 'rocks': eventSpawn(g, 'rockmon', n(2, 0.7)); break;
+    case 'tentacles': eventSpawn(g, 'tentacle', n(3, 1)); break;
+    case 'worms': eventSpawn(g, 'burrower', n(1, 0.5)); break;
+  }
+}
+
+/** Event monsters burst in through the hull somewhere. */
+function eventSpawn(g, id, count) {
+  const ti = g.roster.findIndex((x) => x.event === id);
+  if (ti < 0) return;
+  const rooms = g.rooms.filter((r) => r.owner === 'us');
+  const r = g.rng.pick(rooms);
+  const walls = g.hullNear(r);
+  let at = roomCenter(r);
+  if (walls.length && !g.storyMode) {
+    const w = g.rng.pick(walls); hitTile(g, w.x, w.y, 9999, { hull: true });
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (g.grid.get(w.x + dx, w.y + dy) === T.FLOOR) { at = { x: (w.x + dx + .5) * TILE, y: (w.y + dy + .5) * TILE }; break; }
+  }
+  for (let k = 0; k < count; k++) g.spawnMob(ti, at.x + g.rng.range(-20, 20), at.y + g.rng.range(-20, 20), { markable: false, wild: true });
+  g.fx({ t: 'alarm' });
 }
 
 /** Creatures dig straight through the hull somewhere. */
@@ -1463,6 +1679,7 @@ function encounterTick(g, dt) {
   if (ships.every((x) => x.kind === 'derelict' || x.kind === 'pod') || g.boss?.alive) return;
   const pending = ships.some((x) => !x.done && !x.gone);
   if (pending) return;
+  if (g.mobs.some((m) => m.alive && m.hoarder && m.team === 'enemy')) return;   // nobody goes home while the Ship-Eater is alive
   const aboard = g.mobs.filter((m) => m.alive && m.team === 'enemy' && onOurs(g, m));
   g.mopT = (g.mopT || 0) + dt;
   if (aboard.length && g.mopT > 60) for (const m of aboard) { m.alive = false; g.fx({ t: 'poof', x: m.x, y: m.y }); }
@@ -1501,6 +1718,8 @@ function ourWeapons(g, fighting, dt) {
         es.hull -= dmg; g.fx({ t: 'dfire', who: 'us', w: 'gun', gun: gun.id, dmg, room: s.missileTarget, delay });
         if (target) damageSystem(g, target, dmg * 0.6 * (G.sysMul || 1));
         if (G.bubbleDmg && es.bubble > 0) es.bubble = Math.max(0, es.bubble - G.bubbleDmg);
+        // the trader's fire gun: their room goes up in flames and they have to put it out
+        if (G.fire && target) igniteRoom(g, target, 3);
       }
     }
   }
@@ -1573,6 +1792,7 @@ function shipFight(g, es, dt) {
   // out of boarders (or fighting too long)? they cut the tunnel and run. Not without a bridge, though.
   if (!theirs('bridge')) { es.fleeT = 0; return; }
   const boarding = theirCrew.some((m) => onOurs(g, m));
+  if (es.layout?.solo) return;   // the Ship-Eater's shell doesn't run: it waits for its passenger
   if ((es.crewLeft <= 0 && !boarding) || es.fightT > 160) {
     es.fleeT = (es.fleeT || 0) + dt;
     if (es.fleeT > 6 && !es.fleeWarned) { es.fleeWarned = true; g.log('alert', `${es.name} is spinning up its drill to flee! Wreck its bridge or board it in the next 20s!`); }
@@ -1687,6 +1907,23 @@ Game.prototype.choosePath = function () {
 const COMMANDS = {
   storyOk(g, c, cmd) {
     const s = g.storyOpen; if (!s) return;
+    if (s.kind === 'distress') {
+      g.nextStory();
+      if (cmd.choice !== 'help') { g.log('ship', 'We leave the beacon behind. "Do I go?" fades into the dirt.'); return; }
+      if (g.rng.chance(0.45 + 0.02 * g.tier)) {   // a trap!
+        g.log('alert', '☠ IT WAS BAIT. Ships pour out of the dirt around the beacon!');
+        g.resume = g.descent;
+        g.startEncounter('ship');
+        return;
+      }
+      // real survivors: grateful, and they pay
+      const gems = addGems(g, 8 + g.tier * 6);
+      g.ship.scrap += 25 + g.tier * 10;
+      for (const c of g.crew) { c.wallet += 20 + g.tier * 10; gainXp(g, c, 15); }
+      g.log('loot', `♥ Real survivors! A family of moles in a broken dig-pod. They hand over ${gems} gems and some scrap, and they cry a bit.`);
+      if (g.crew.length < 17 && g.rng.chance(0.4)) g.recruit(1, 'was on the pod and joins up');
+      return;
+    }
     if (s.kind === 'choice') {
       const choice = cmd.choice || 'easy';
       g.path = choice;
@@ -1927,9 +2164,10 @@ const COMMANDS = {
   /** Take over any crew member nobody else is playing, any time. A bot keeps your old job going. */
   switchClass(g, c, cmd) {
     if (g.phase === 'gameover' || g.phase === 'ending') return;
-    const t = g.crew.find((x) => x.cls === cmd.cls && !x.human);
+    let t = g.crew.find((x) => x.cls === cmd.cls && !x.human);
+    // anyone can choose to become the Urchid (troll class): one signs on if there isn't a free one
+    if (!t && cmd.cls === 'urchid') { g.ensureRoomFor('urchid'); t = g.addCrew('urchid'); }
     if (!t) return;
-    if (t.cls === 'urchid' || c.cls === 'urchid') return;
     c.human = false; c.bot = {}; c.atHelm = false;
     t.human = true; t.bot = {};
     if (g.player === c) g.player = t;
@@ -1990,6 +2228,38 @@ const COMMANDS = {
   },
   spin(g, c) { if (c.cls === 'slots' && c.cd.f <= 0) { if (spinSlots(g, c) !== false) c.cd.f = 1.2; } },
   buyIntel(g, c) { if (c.cls === 'agent' && g.phase === 'port' && c.wallet >= 40) { c.wallet -= 40; c.missionRank = (c.missionRank || 0) + 1; g.log('loot', `${c.name} swapped "knowledge" with a contact at the bar. More targets next fight.`); g.markedBonus = (g.markedBonus || 0) + 1; } },
+  /** Monster trainer: pick the starter pet (grass, fire, water or electric). */
+  pickStarter(g, c, cmd) { if (c.cls === 'trainer' && STARTER_MONSTERS.some((s) => s.id === cmd.id)) { g.giveStarter(c, cmd.id, false); g.log('crew', `${c.name} picks ${STARTER_MONSTERS.find((s) => s.id === cmd.id).name} as a starter!`); } },
+  /** Agent 013: put on the mark's crew uniform (or take it off). Enemies don't shoot at a disguise until it shoots first. */
+  disguise(g, c, cmd) {
+    if (c.cls !== 'agent') return;
+    if (cmd.off) { c.disguise = null; return; }
+    // (the mark on the latest report; any live mark if that one's gone)
+    const m = g.mobs.find((x) => x.alive && x.id === g.mission?.target) || g.mobs.find((x) => x.alive && x.marked);
+    const type = m ? m.type : g.mission?.type;
+    if (type == null) return;
+    c.disguise = type;
+    g.fx({ t: 'poof', x: c.x, y: c.y });
+    say(g, c, 'Nobody look at me. I\'m one of you.');
+  },
+  /** The trader (random event): missiles and scrap both ways, and their weird guns. */
+  trade(g, c, cmd, s) {
+    const T_ = g.trader; if (!T_) return;
+    switch (cmd.what) {
+      case 'sellMissile': if (s.missiles > 0) { s.missiles--; c.wallet += T_.missileBuy; } break;
+      case 'buyMissile': if (c.wallet >= T_.missilePrice && s.missiles < s.missilesMax) { c.wallet -= T_.missilePrice; s.missiles++; } break;
+      case 'sellScrap': if (s.scrap >= 20) { s.scrap -= 20; c.wallet += T_.scrapBuy; } break;
+      case 'buyScrap': if (c.wallet >= T_.scrapPrice) { c.wallet -= T_.scrapPrice; s.scrap += 20; } break;
+      case 'buyGun': {
+        const id = T_.guns[cmd.i]; const G = SHIP_GUNS[id];
+        if (!G || c.wallet < G.cost) return;
+        c.wallet -= G.cost; T_.guns.splice(cmd.i, 1);
+        s.items.push({ id });
+        g.log('loot', `🔫 ${c.name} bought a ${G.name} from the trader. The missile tech can install it.`);
+        break;
+      }
+    }
+  },
   pause(g, c, cmd) { g.paused = !!cmd.on; },
   release(g, c, cmd) { const i = c.monsters.findIndex((m) => m.type === cmd.type && !m.out); if (i >= 0) c.monsters.splice(i, 1); },
 };
@@ -2013,5 +2283,70 @@ Game.prototype.endGame = function () {
   this.setPhase('ending');
   const lines = this.joe.state === 'saved' ? ENDINGS.brother : ENDINGS.easy;
   this.endLines = lines;
+  this.makeIsland();
   this.fx({ t: 'ending', brother: this.joe.state === 'saved' });
+};
+
+/**
+ * The center of the world: an island. The dirt opens onto a sea, the ship beaches itself, the gangplanks
+ * drop, and everybody walks out onto the sand while the credits roll.
+ */
+Game.prototype.makeIsland = function () {
+  this.cleanupEnemy();
+  for (const m of this.mobs) if (m.team === 'enemy') m.alive = false;
+  this.mobs = this.mobs.filter((m) => m.alive);
+  this.projs = []; this.objs = this.objs.filter((o) => o.kind !== 'fire' && o.kind !== 'mess');
+  const B = this.box, G = this.grid;
+  const cx = (B.x0 + B.x1) / 2, cy = (B.y0 + B.y1) / 2;
+  const rx = (B.x1 - B.x0) / 2 + 13, ry = (B.y1 - B.y0) / 2 + 11;
+  // sand all round the ship, with a wobbly shoreline
+  for (let y = 1; y < MAP_H - 1; y++) for (let x = 1; x < MAP_W - 1; x++) {
+    const i = idx(x, y);
+    if (G.tiles[i] !== T.VOID) continue;
+    const a = Math.atan2(y - cy, x - cx);
+    const wob = 1 + 0.08 * Math.sin(a * 5 + 1.3) + 0.05 * Math.sin(a * 11);
+    if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 < wob * wob) { G.tiles[i] = T.SAND; G.hp[i] = 0; G.room[i] = -1; }
+  }
+  // gangplanks: open the outer hull in a few places (middle of each side, and a couple more)
+  const exits = [];
+  for (const i of this.hullTiles || []) {
+    const x = i % MAP_W, y = (i / MAP_W) | 0;
+    const out = [[1, 0], [-1, 0], [0, 1], [0, -1]].find(([dx, dy]) => G.get(x + dx, y + dy) === T.SAND);
+    const inn = [[1, 0], [-1, 0], [0, 1], [0, -1]].find(([dx, dy]) => G.get(x + dx, y + dy) === T.FLOOR);
+    if (out && inn) exits.push({ i, x, y });
+  }
+  const picks = [];
+  for (const target of [[cx, B.y0], [cx, B.y1], [B.x0, cy], [B.x1, cy], [cx - rx / 2, B.y1], [cx + rx / 2, B.y0]]) {
+    let best = null, bd = Infinity;
+    for (const e of exits) { const d = Math.hypot(e.x - target[0], e.y - target[1]); if (d < bd) { bd = d; best = e; } }
+    if (best && !picks.includes(best)) picks.push(best);
+  }
+  for (const e of picks) for (const [dx, dy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) { const j = idx(e.x + dx, e.y + dy); if (G.tiles[j] === T.HULL || G.tiles[j] === T.BREACH) { G.tiles[j] = T.FLOOR; G.hp[j] = 0; } }
+  G.version++;
+  // palm trees, a hut, treasure, fruit (the island makes everything for you)
+  const sand = [];
+  for (let i = 0; i < MAP_W * MAP_H; i++) if (G.tiles[i] === T.SAND) sand.push(i);
+  const at = (i) => ({ x: ((i % MAP_W) + 0.5) * TILE, y: (((i / MAP_W) | 0) + 0.5) * TILE });
+  for (let k = 0; k < 26 && sand.length; k++) { const p = at(this.rng.pick(sand)); this.objs.push({ id: uid(), kind: 'palm', x: p.x, y: p.y, s: this.rng.range(0.8, 1.3), a: this.rng.range(0, 6) }); }
+  for (let k = 0; k < 6 && sand.length; k++) { const p = at(this.rng.pick(sand)); this.objs.push({ id: uid(), kind: 'crate', island: true, x: p.x, y: p.y, owner: 'island', gems: 20, gemVal: 120 }); }
+  for (let k = 0; k < 30 && sand.length; k++) { const p = at(this.rng.pick(sand)); dropPickup(this, p.x, p.y, this.rng.chance(0.5) ? 'crop' : 'gem', 1); }
+  for (let k = 0; k < 3 && sand.length; k++) { const p = at(this.rng.pick(sand)); this.objs.push({ id: uid(), kind: 'hut', x: p.x, y: p.y }); }
+  this.island = { rx, ry, cx, cy };
+  for (const c of this.crew) { c.alive = true; c.hp = c.maxHp; c.atHelm = false; c.phased = false; c.riding = null; }
+  this.log('story', '🏝 The dirt opens up onto a warm sea, and in the middle of it: an island. The gangplanks drop. Go on, have a look around.');
+};
+
+/** On the island: everyone just walks around, picks up treasure, and enjoys it. Nothing attacks. */
+Game.prototype.islandTick = function (dt) {
+  if (this.time - (this.fieldsAt || -9) > 1) rebuildFields(this);
+  this.updateDoors(dt);
+  for (const c of this.crew) {
+    if (!c.alive) { c.alive = true; c.hp = c.maxHp; }
+    const inp = c.human ? (this.inputs.get(c.id) || {}) : botInput(this, c, dt);
+    crewTick(this, c, inp, dt);
+    if (c.human && inp.pressed) inp.pressed = {};
+  }
+  for (const m of this.mobs) mobTick(this, m, dt);
+  updateProjectiles(this, dt);
+  updatePickups(this, dt);
 };

@@ -3,7 +3,7 @@
 import {
   CLASSES, ABILITIES, WEAPONS, CLASS_UPGRADES, UPGRADE_BASE_COST, SHIP_UPGRADES, BUYABLE_ROOMS, ROOMS, RECIPES, RESEARCH,
   NODE_TYPES, KM_PER_LEVEL, LEVELS, FOODS, SHIP_UP_MAX, CLASS_UP_MAX, xpCost, POWER_SYS, SHIP_GUNS, roomSize, SHIP_COLS, SHIP_ROWS,
-  TILE, SLOT_W, SLOT_H,
+  TILE, SLOT_W, SLOT_H, STARTER_MONSTERS,
 } from '../shared/sim/data.js';
 import { interactTarget, DASH_COST } from '../shared/sim/classes.js';
 import { speedFactor } from '../shared/sim/pilot.js';
@@ -39,7 +39,8 @@ export function createUI(root, api) {
     <div class="g-modal hidden"><div class="g-card"></div></div>
     <div class="g-toast hidden"></div>
     <div class="g-hold hidden"></div>
-    <div class="g-actions"><button class="g-undock hidden"></button><button class="g-seal hidden"></button><button class="g-flee hidden"></button><button class="g-burn hidden" title="Redline an engine until it bursts: we tear free right now, guaranteed. Costs the engine (and sets it on fire).">🔥 Burn an engine: escape NOW</button></div>
+    <div class="g-credits hidden"></div>
+    <div class="g-actions"><button class="g-trader hidden"></button><button class="g-mission hidden"></button><button class="g-undock hidden"></button><button class="g-seal hidden"></button><button class="g-flee hidden"></button><button class="g-burn hidden" title="Redline an engine until it bursts: we tear free right now, guaranteed. Costs the engine (and sets it on fire).">🔥 Burn an engine: escape NOW</button></div>
     <div class="g-spawn hidden"></div>
     <form class="g-chat hidden"><input maxlength="200" placeholder="Say something to the crew… (Enter)"></form>
   `;
@@ -54,6 +55,9 @@ export function createUI(root, api) {
   let typed = '';
   let endSince = 0;            // when (client clock) the run ended: the end screen shows shortly after
   let aftermathSeen = null;    // which aftermath the player already closed ("stay and loot")
+  let missionSeen = 0;         // the last secret mission report we showed (013)
+  let starterSeen = false;     // the trainer's starter-pet pick
+  let creditsSkipped = false;
 
   // ---- click handling (delegated)
   card.addEventListener('click', (e) => {
@@ -69,7 +73,7 @@ export function createUI(root, api) {
     if (act.pick) { roomPick = act.pick; render(true); return; }
     if (act.ui) { api.ui(act.ui, act); return; }
     api.cmd(act);
-    if (act.t === 'route' || act.t === 'storyOk' || act.t === 'continue' || act.t === 'depart' || act.t === 'vent' || act.t === 'switchClass') closeModal();
+    if (['route', 'storyOk', 'continue', 'depart', 'vent', 'switchClass', 'pickStarter', 'disguise'].includes(act.t)) closeModal();
     if (act.t === 'helm' && act.on) closeModal();
     if (act.t === 'buyRoom') roomPick = null;
     setTimeout(() => render(true), 30);
@@ -78,6 +82,9 @@ export function createUI(root, api) {
   $('.g-seal').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'seal' }); });
   $('.g-flee').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'flee' }); });
   $('.g-burn').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'burnEngine' }); });
+  $('.g-trader').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); openModal('trader'); });
+  $('.g-mission').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); openModal('mission'); });
+  $('.g-credits').addEventListener('click', (e) => { if (e.target.closest('[data-scores]')) { creditsSkipped = true; openModal('end'); } });
   $('.g-spawn').addEventListener('click', (e) => { const b = e.target.closest('[data-sp]'); if (!b) return; b.blur(); api.sfx?.ui(); api.cmd({ t: 'spawnPick', d: +b.dataset.sp }); });
   card.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -178,8 +185,25 @@ export function createUI(root, api) {
     if (!over) endSince = 0; else if (!endSince) endSince = performance.now();
     if (g.storyOpen && modalKind !== 'story' && !over) openModal('story', g.storyOpen);
     else if ((!g.storyOpen || over) && modalKind === 'story') closeModal();
-    // the end screen always comes up (online the server stops the clock, so go by ours)
-    if (over && modalKind !== 'end' && performance.now() - endSince > 1500) openModal('end');
+    // the end screen always comes up (online the server stops the clock, so go by ours). After a win
+    // the credits roll first while everyone walks around the island.
+    const won = g.phase === 'ending';
+    if (over && modalKind !== 'end' && !(won && modalKind) && performance.now() - endSince > (won && !creditsSkipped ? 60000 : 1500)) openModal('end');
+    renderCredits(g, won && modalKind !== 'end');
+    // the trainer picks a starter pet (grass, fire, water, electric) the first time they play one
+    if (me?.cls === 'trainer' && me.starterAuto && !starterSeen && !modalKind && !over && g.phase !== 'briefing') { starterSeen = true; openModal('starter'); }
+    // 013: a paper report slides in when there's a new mark
+    const ms = $('.g-mission');
+    const mission = me?.cls === 'agent' && g.mission && g.mobs.some((m) => m.alive && m.marked) ? g.mission : null;
+    if (mission && mission.id !== missionSeen && !modalKind) { missionSeen = mission.id; openModal('mission'); }
+    ms.classList.toggle('hidden', !mission || modalKind === 'mission');
+    if (mission) ms.textContent = `📄 Secret mission: ${mission.name}`;
+    if (modalKind === 'mission' && !mission) closeModal();
+    // a trader alongside (random event)
+    const tr = $('.g-trader');
+    tr.classList.toggle('hidden', !g.trader || modalKind === 'trader');
+    if (g.trader) tr.textContent = `🛒 Trader alongside (${Math.ceil(g.trader.t)}s)`;
+    if (modalKind === 'trader' && !g.trader) closeModal();
     if (!g.storyOpen && !over) {
       if (g.phase === 'route' && modalKind !== 'route') openModal('route');
       if (g.phase === 'port' && modalKind !== 'port' && modalKind !== 'upgrades') openModal('port');
@@ -243,35 +267,36 @@ export function createUI(root, api) {
     const el = $('.g-me');
     const slots = [];
     const w = me.cls === 'vaelift' ? `Vurfenstaff (${me.form})` : CLASSES[me.cls].weapon;
-    slots.push(slot('LMB', weaponName(me), me.cd.fire, WEAPONS[def.weapon]?.rate || 1));
-    for (const [key, k] of [['rmb', 'RMB'], ['q', 'Q'], ['f', 'F'], ['space', 'SPACE']]) {
+    slots.push(slot('LMB', me.lightning > 0 ? `⚡ Lightning gun (${me.lightning})` : weaponName(me), me.cd.fire, WEAPONS[def.weapon]?.rate || 1));
+    for (const [key, k] of [['rmb', 'RMB'], ['q', 'Q'], ['r', 'R'], ['f', 'F'], ['g', 'G'], ['space', 'SPACE']]) {
       const id = def.abilities[key];
       if (!id) continue;
       const A = ABILITIES[id];
       let label = A.name;
       if (id === 'jarswap') label = `Jar: ${me.jar}`;
-      if (id === 'minetype') label = `Mine: ${me.mineType}`;
       if (id === 'staffform') label = `Staff: ${me.form}`;
       if (id === 'cloak' && me.cloaked) label = 'Uncloak';
       if (id === 'phase' && me.phased) label = `Phased ${me.phaseT.toFixed(1)}s`;
+      if (id === 'tank' && (me.missionRank || 0) < 2) label = 'Tank (rank 2)';
       slots.push(slot(k, label, me.cd[key] || 0, A.cd || 1, A.desc));
     }
-    if (me.cls === 'agent') slots.push(slot('RMB', 'Detonate remotes', 0, 1));
     if (me.cls === 'chef') slots.push(slot('RMB', 'Fish slap', me.cd.f, 9));
-    if (me.cls !== 'urchid') slots.push(slot('SHIFT', 'Dash', (me.stam ?? 100) < DASH_COST ? (DASH_COST - (me.stam ?? 100)) / 26 : 0, DASH_COST / 26, 'A quick dash with a puff of smoke. Uses stamina.'));
+    const sm = me.stamMax || 100;
+    if (me.cls !== 'urchid') slots.push(slot('SHIFT', 'Dash', (me.stam ?? sm) < DASH_COST ? (DASH_COST - (me.stam ?? sm)) / 26 : 0, DASH_COST / 26, 'A quick dash with a puff of smoke. Uses stamina.'));
     const buffs = (me.buffs || []).map((b) => `<span class="buff" title="${esc(JSON.stringify(b))}">${b.tag || 'buff'} ${Math.ceil(b.t)}s</span>`).join('');
     const extra = [];
-    if (me.cls === 'trainer') extra.push(`Monsters: ${me.monsters.map((m) => `${esc(m.name)}${m.out ? ' (out)' : m.reviveT > 0 ? ` (${Math.ceil(m.reviveT)}s)` : ''}`).join(', ') || 'none yet — weaken an enemy, then Q'}`);
-    if (me.cls === 'agent') extra.push(`Mission rank ${me.missionRank || 0}`);
+    if (me.cls === 'trainer') extra.push(`Monsters: ${me.monsters.map((m) => `${m.starter ? '★' : ''}${esc(m.name)}${m.out ? ' (out)' : m.reviveT > 0 ? ` (${Math.ceil(m.reviveT)}s)` : ''}`).join(', ') || 'none yet — weaken an enemy, then Q'}`);
+    if (me.cls === 'engineer') { const n = g.objs.filter((o) => o.kind === 'turret' && o.owner === me.id).length, max = 2 + me.upgrades[1]; extra.push(`<b class="${n >= max ? 'good' : ''}">Turrets ${n}/${max}</b>`); }
+    if (me.cls === 'agent') extra.push(`Mission rank ${me.missionRank || 0}${me.disguise != null ? ` · <b class="good">disguised as ${esc(g.roster[me.disguise]?.name || '?')}</b>` : ''}${(me.missionRank || 0) >= 4 ? ' · laser' : ''}`);
     if (me.cls === 'slots' && me.coinWinT > 0) extra.push(`<b class="good">WINNING STREAK ×${me.coinWinMul} (${Math.ceil(me.coinWinT)}s)</b>`);
     if (me.makeshift?.ammo > 0) extra.push(`<b class="good">Makeshift gun: ${me.makeshift.ammo} shots (LMB)</b>`);
     if (me.cls === 'urchid') extra.push('Contributes nothing. Cannot die. Living the dream.');
-    const ready = me.cls !== 'urchid' && [0, 1, 2].some((k) => me.upgrades[k] < CLASS_UP_MAX && (me.xp || 0) >= xpCost(me.upgrades[k]));
+    const ready = [0, 1, 2].some((k) => me.upgrades[k] < CLASS_UP_MAX && (me.xp || 0) >= xpCost(me.upgrades[k]));
     el.innerHTML = `
       <div class="who"><canvas class="portrait" width="56" height="56"></canvas>
         <div><b>${esc(me.name)}</b> <span class="muted">${def.name}</span>
           <div class="hp"><i style="width:${pct(me.hp, me.maxHp)}"></i><em>${me.alive ? `${Math.ceil(me.hp)} HP` : `DOWN ${Math.ceil(me.downT)}s`}</em></div>
-          ${me.cls !== 'urchid' ? `<div class="stam ${(me.stam ?? 100) < DASH_COST ? 'low' : ''}"><i style="width:${pct(me.stam ?? 100, 100)}"></i></div>` : ''}
+          ${me.cls !== 'urchid' ? `<div class="stam ${(me.stam ?? sm) < DASH_COST ? 'low' : ''}" title="Stamina ${Math.floor(me.stam ?? sm)}/${sm}"><i style="width:${pct(me.stam ?? sm, sm)}"></i></div>` : ''}
           <div class="wallet">💰 ${Math.floor(me.wallet)} <span class="xp ${ready ? 'ready' : ''}" title="Experience: earned by doing your job. Spend it on stars (Tab).">✦ ${Math.floor(me.xp || 0)} xp${ready ? ' · ★ ready' : ''}</span> <span class="muted">· <kbd>Tab</kbd> upgrades · <kbd>C</kbd> crew · <kbd>Esc</kbd> menu</span></div>
         </div></div>
       <div class="slots">${slots.join('')}</div>
@@ -304,7 +329,7 @@ export function createUI(root, api) {
     banner.innerHTML = `
       <div class="sea">${depthText(g)}</div>
       <div class="mix ${solo ? 'solo' : ''}">${g.mix.map((m) => `<div class="foe ${m.rare ? 'rare' : ''}"><canvas width="${solo ? 128 : 64}" height="${solo ? 128 : 64}" data-type="${m.type}"></canvas><b>${esc(g.roster[m.type].name)}</b><span>${m.pct}%</span>${m.rare ? '<small>rare!</small>' : ''}</div>`).join('')}</div>
-      ${solo ? '<div class="solo-note">Just one. Something very big. It wants our scrap.</div>' : ''}
+      ${solo ? '<div class="solo-note">Just one. THE MAIN EVENT. It eats ships.</div>' : ''}
       <div class="dig">DIG!</div>`;
     banner.querySelectorAll('canvas').forEach((cv) => {
       const type = g.roster[+cv.dataset.type];
@@ -332,6 +357,9 @@ export function createUI(root, api) {
       case 'pause': html = pauseHtml(g); break;
       case 'help': html = helpHtml(); break;
       case 'end': html = endHtml(g); break;
+      case 'mission': html = missionHtml(g, me); break;
+      case 'trader': html = traderHtml(g, me); break;
+      case 'starter': html = starterHtml(g, me); break;
       case 'stranded': html = `<h2>⚠ Stranded</h2><p>Out of fuel in the middle of the dirt. You can call for a fuel drop (60 money). Every ship in the area will hear it — expect company.</p><div class="row"><button data-act='{"t":"callFuel"}'>Call for fuel (60)</button></div>`; break;
     }
     if (force || html !== lastHtml) {
@@ -464,10 +492,13 @@ export function createUI(root, api) {
   /** Take over any crew member nobody else is playing. */
   function switchListHtml(g, me) {
     const others = g.crew.filter((c) => c !== me && c.cls !== 'urchid');
+    const urchid = g.crew.find((c) => c.cls === 'urchid');
+    const canTroll = me.cls !== 'urchid' && (!urchid || !urchid.human);
     return `<p>Switch who you play as, any time. A bot keeps your old job going, so every station stays crewed.</p>
-      <div class="classes">${others.map((c) => `<button class="cls" style="--c:${CLASSES[c.cls].color}" ${c.human || me.cls === 'urchid' ? 'disabled' : ''} data-act='${JSON.stringify({ t: 'switchClass', cls: c.cls })}'>
-        <b>${esc(c.name)}${c.human ? ` <small>(${esc(c.player || 'player')})</small>` : ''}</b><span>${CLASSES[c.cls].name} · ${'★'.repeat(c.upgrades.reduce((a, b) => a + b, 0) > 0 ? 1 : 0)}${c.upgrades.reduce((a, b) => a + b, 0)} stars</span><small>${esc(CLASSES[c.cls].blurb)}</small></button>`).join('')}</div>
-      ${me.cls === 'urchid' ? '<p class="muted">The Urchid does not get up. The Urchid has never gotten up.</p>' : ''}`;
+      <div class="classes">${others.map((c) => `<button class="cls" style="--c:${CLASSES[c.cls].color}" ${c.human ? 'disabled' : ''} data-act='${JSON.stringify({ t: 'switchClass', cls: c.cls })}'>
+        <b>${esc(c.name)}${c.human ? ` <small>(${esc(c.player || 'player')})</small>` : ''}</b><span>${CLASSES[c.cls].name} · ${'★'.repeat(c.upgrades.reduce((a, b) => a + b, 0) > 0 ? 1 : 0)}${c.upgrades.reduce((a, b) => a + b, 0)} stars</span><small>${esc(CLASSES[c.cls].blurb)}</small></button>`).join('')}
+      ${canTroll ? `<button class="cls troll" style="--c:${CLASSES.urchid.color}" data-act='${JSON.stringify({ t: 'switchClass', cls: 'urchid' })}'><b>Become the Urchid</b><span>⚠ TROLL CLASS</span><small>Contributes nothing. Sits in a lounge chair, sips coconut juice and insults everyone. Can't die. Just along for the ride.</small></button>` : ''}</div>
+      ${me.cls === 'urchid' ? '<p class="muted">The Urchid does not get up. (Fine. It gets up if you pick someone above.)</p>' : ''}`;
   }
   function crewHtml(g, me) {
     return `<h2>The crew</h2>${switchListHtml(g, me)}<div class="row end"><button data-act='{"close":1}'>Close</button></div>`;
@@ -502,7 +533,9 @@ export function createUI(root, api) {
 
   function helpHtml() {
     return `<h2>How to dig</h2><div class="help">
-      <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>LMB</kbd> attack · <kbd>RMB</kbd> <kbd>Q</kbd> <kbd>F</kbd> <kbd>Space</kbd> abilities · <kbd>Shift</kbd> dash (uses stamina)</p>
+      <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>LMB</kbd> attack · <kbd>RMB</kbd> <kbd>Q</kbd> <kbd>F</kbd> <kbd>Space</kbd> abilities (013 also has <kbd>R</kbd> and <kbd>G</kbd>) · <kbd>Shift</kbd> dash (uses stamina)</p>
+      <p><b>Candy</b> turns up around the ship: green = faster, red = faster trigger, blue = longer range, yellow = double gold per kill, white = a lightning chain gun, rainbow = all of it. Every star you spend also adds health and stamina.</p>
+      <p><b>Random events</b> happen on the way down (traders, fires, broken engines, storks, viruses, worms, strawberries...). The deeper you go, the nastier they get.</p>
       <p><kbd>E</kbd> use a station, shut a door or prop it open, unseal doors (clearance). <b>Hold E</b> to repair breaches, walls, doors, wreckage and systems, and to spray your fire extinguisher.</p>
       <p><kbd>L</kbd> seal / unseal every door during a docking. A walkway runs around the whole ship with 4 blast doors (open until someone shuts them; each one shuts as a whole).</p>
       <p><kbd>Tab</kbd> upgrades (spend XP: you earn it doing your job) · <kbd>C</kbd> switch crew member · <kbd>M</kbd> whole-ship view · <kbd>Mouse wheel</kbd> zoom · <kbd>Esc</kbd> menu</p>
@@ -512,6 +545,56 @@ export function createUI(root, api) {
       <p><b>Dockings:</b> you see them coming. Deeper down, up to four ships dock at once and blow holes in the hull. The weapons bay (or the pilot) picks which of their rooms our D-guns and missiles hit; bubbles block guns, not missiles. Wreck their bridge + engine or kill their crew and they surrender: then loot them, and the pilot undocks when everyone's back. Lose our weapons bay and we can't shoot; lose the bridge and we can't escape; lose an engine and the ship catches fire.</p>
       <p><b>Everything breaks, everything can be fixed:</b> breaches leak dirt and creatures crawl through them. Smashed doorways sometimes cave in and block the way. Fires spread unless you put them out (MrClean is fastest). Somebody fix the doors.</p>
       </div><div class="row end"><button data-act='{"close":1}'>Got it</button></div>`;
+  }
+
+  /** 013's secret mission: a typed paper report, with the mark's picture and a disguise. */
+  function missionHtml(g, me) {
+    const M = g.mission; if (!M) return '';
+    const disguised = me.disguise != null;
+    setTimeout(() => { const cv = card.querySelector('canvas.mark'); if (cv && g.roster[M.type]) { const c = cv.getContext('2d'); c.clearRect(0, 0, 96, 96); drawMob(c, { x: 48, y: 50, r: 26, facing: Math.PI / 2, id: 7, marked: true }, g.roster[M.type], performance.now() / 1000); } }, 0);
+    return `<div class="paper"><div class="stamp">TOP SECRET</div><h2>Mission #${M.id}</h2>
+      <div class="paper-row"><canvas class="mark" width="96" height="96"></canvas><div><p><b>THE MARK:</b> one of the ${esc(M.name)} (gold ring on the watch).</p><p>${esc(M.text)}</p><p class="muted">${esc(M.brief)}</p></div></div>
+      <p>An arrow on your watch points the way. Shooting gives away a disguise.</p>
+      <div class="row"><button data-act='${JSON.stringify(disguised ? { t: 'disguise', off: true } : { t: 'disguise' })}'>${disguised ? 'Take the disguise off' : `Put on the ${esc(M.name)} uniform (disguise)`}</button><button class="ghost" data-act='{"close":1}'>Burn after reading</button></div></div>`;
+  }
+  /** A trader alongside (random event): missiles and scrap both ways, plus guns you can't get anywhere else. */
+  function traderHtml(g, me) {
+    const T_ = g.trader; if (!T_) return '';
+    const s = g.ship;
+    const btn = (label, act, ok = true) => `<button ${ok ? '' : 'disabled'} data-act='${JSON.stringify(act)}'>${label}</button>`;
+    return `<h2>🛒 A trader pulls alongside</h2><p class="muted">"Missiles, scrap, money, and things you won't find at any port. Quick, I'm leaving in ${Math.ceil(T_.t)}s."</p>
+      <div class="wallet-line">Your money: <b>💰 ${Math.floor(me.wallet)}</b> · 🚀 ${s.missiles}/${s.missilesMax} · ⚙ ${Math.floor(s.scrap)}</div>
+      <div class="grid2">
+        <div class="item"><b>Sell a D-missile</b><span>They pay ${T_.missileBuy}</span>${btn(`Sell (+${T_.missileBuy})`, { t: 'trade', what: 'sellMissile' }, s.missiles > 0)}</div>
+        <div class="item"><b>Buy a D-missile</b><span>${T_.missilePrice} each</span>${btn(`Buy (${T_.missilePrice})`, { t: 'trade', what: 'buyMissile' }, me.wallet >= T_.missilePrice && s.missiles < s.missilesMax)}</div>
+        <div class="item"><b>Sell 20 scrap</b><span>They pay ${T_.scrapBuy}</span>${btn(`Sell (+${T_.scrapBuy})`, { t: 'trade', what: 'sellScrap' }, s.scrap >= 20)}</div>
+        <div class="item"><b>Buy 20 scrap</b><span>${T_.scrapPrice}</span>${btn(`Buy (${T_.scrapPrice})`, { t: 'trade', what: 'buyScrap' }, me.wallet >= T_.scrapPrice)}</div>
+        ${T_.guns.map((id, i) => { const G = SHIP_GUNS[id]; return `<div class="item"><b>${G.name} <small>⚡${G.power}</small>${G.trader ? ' <small class="good">trader only</small>' : ''}</b><span>${G.desc}</span>${btn(`Buy (${G.cost})`, { t: 'trade', what: 'buyGun', i }, me.wallet >= G.cost)}</div>`; }).join('')}
+      </div><div class="row end"><button data-act='{"close":1}'>Done</button></div>`;
+  }
+  /** The monster trainer's first pet. */
+  function starterHtml(g, me) {
+    setTimeout(() => card.querySelectorAll('canvas[data-st]').forEach((cv) => { const ty = g.roster.find((x) => x.starter === cv.dataset.st); if (ty) { const c = cv.getContext('2d'); c.clearRect(0, 0, 72, 72); drawMob(c, { x: 36, y: 38, r: 20, facing: Math.PI / 2, id: 3 }, ty, 0); } }), 0);
+    return `<h2>Pick your starter monster</h2><p class="muted">A trainer never goes into a fight empty-handed. Pick one; you can catch the rest of your team yourself (Q).</p>
+      <div class="classes">${STARTER_MONSTERS.map((s) => `<button class="cls" style="--c:${s.color}" data-act='${JSON.stringify({ t: 'pickStarter', id: s.id, close: 0 })}'><canvas data-st="${s.id}" width="72" height="72"></canvas><b>${s.icon} ${esc(s.name)}</b><small>${esc(s.desc)}</small></button>`).join('')}</div>`;
+  }
+  /** The credits roll over the island, bottom to top. */
+  function renderCredits(g, on) {
+    const el = $('.g-credits');
+    if (!on) { if (!el.classList.contains('hidden')) el.classList.add('hidden'); return; }
+    if (el.classList.contains('hidden')) {
+      const crew = g.crew.map((c) => `<p><b>${esc(c.name)}</b> · ${esc(CLASSES[c.cls].name)}${c.player ? ` <i>(${esc(c.player)})</i>` : ''}</p>`).join('');
+      el.innerHTML = `<div class="roll">
+        <h2>DO I GO?</h2><p class="muted">${esc(g.ship.name)} made it to the center of the world.</p>
+        ${(g.endLines || []).map((l) => `<p>${esc(l)}</p>`).join('')}
+        <h3>The crew</h3>${crew}${g.joe.state === 'saved' ? '<p><b>Joe</b> · Brother · fixed every door on the island</p>' : ''}
+        <h3>Featuring</h3><p>${g.stats.kills} enemies who should have stayed home</p><p>${g.stats.repairs} repairs · ${g.stats.meals} meals · ${g.stats.insults} insults</p>
+        <h3>Game design</h3><p>commanderstitch (right, yeah, that guy again)</p>
+        <h3>Special thanks</h3><p>The Urchid, for contributing nothing</p><p>Every door that held</p>
+        <p class="muted">Go on, have a walk around the island.</p></div>
+        <button class="scores" data-scores="1">Show the scores</button>`;
+      el.classList.remove('hidden');
+    }
   }
 
   function endHtml(g) {
@@ -639,6 +722,8 @@ export function createUI(root, api) {
       case 'gunfound': toast(`🔫 Found a ${SHIP_GUNS[e.id]?.name || 'gun'}! The missile tech can install it at the weapons bay.`); break;
       case 'recruit': toast(`🦊 ${e.name} the ${CLASSES[e.cls].name} joined the crew!`); break;
       case 'watch': if (me && e.crew === me.id) toast(`⌚ New mark: ${e.target}. ${e.text}`); break;
+      case 'event': toast(`${e.good ? '✨' : '⚠'} ${e.name}!`); break;
+      case 'mainevent': toast(`☠ THE MAIN EVENT: ${e.name}`); break;
       case 'unlock': toast('📡 Signal locked!'); break;
       case 'switch': if (!api.online || (me && (e.to === me.id || e.from === me.id))) toast('You switched class.'); break;
     }

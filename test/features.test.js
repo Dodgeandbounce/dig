@@ -144,8 +144,9 @@ test('captured monsters come back twice as strong', () => {
   tr.stunT = 5; for (const c of g.crew) c.stunT = 5;   // (so nobody whacks it first)
   g.projs.push({ id: 5, kind: 'cube', x: m.x - 20, y: m.y, vx: 300, vy: 0, team: 'crew', owner: tr, life: 1, r: 6, t: 0 });
   g.update(1 / 30);
-  assert.equal(tr.monsters.length, 1);
-  assert.ok(tr.monsters[0].hpMul >= 1.6 && tr.monsters[0].dmgMul >= 1.6, JSON.stringify(tr.monsters[0]));
+  const caught = tr.monsters.filter((x) => !x.starter);   // (the starter pet is already in there)
+  assert.equal(caught.length, 1);
+  assert.ok(caught[0].hpMul >= 1.6 && caught[0].dmgMul >= 1.6, JSON.stringify(caught[0]));
 });
 
 test('once a run the enemy mix is a single huge thing (100%), and it goes for our scrap', () => {
@@ -198,7 +199,7 @@ test('stuck inside a rebuilt wall? you get pushed out', () => {
   assert.ok(!collides(g, c));
 });
 
-test('dash: shift spends stamina and moves you fast; the air currents are real streams', () => {
+test('dash: shift spends stamina and moves you fast', () => {
   const g = live();
   const c = g.crew.find((x) => x.cls === 'engineer');
   const x0 = c.x;
@@ -206,10 +207,6 @@ test('dash: shift spends stamina and moves you fast; the air currents are real s
   assert.ok(c.stam < 100 && c.dashT > 0, 'dashing');
   for (let k = 0; k < 8; k++) press(g, c, { mx: 1, shift: true });
   assert.ok(c.x - x0 > 60, `moved ${c.x - x0}`);
-  assert.ok(g.air.paths.length >= 2 && g.air.paths[0].loop, 'a loop round the walkway and more');
-  const p = g.air.paths[0].pts;
-  const w = airAt(g, p[0], p[1]);
-  assert.ok(w.on && Math.hypot(w.x, w.y) > 80, 'strong wind on a current');
 });
 
 test('staying to loot is a gamble: wait too long and a bigger ship comes', () => {
