@@ -143,7 +143,7 @@ function primary(g, c, w, inp) {
   if (w === MAKESHIFT) {
     const lvl = c.makeshift.lvl || 0;
     fireBullet(g, c, ang, w, 'crew', { mul: mul * (1 + 0.2 * lvl), kind: 'scrap', pierce: true });
-    g.fx({ t: 'shot', x: c.x, y: c.y, a: ang, w: 'scrap' });
+    g.fx({ t: 'shot', crew: c.id, x: c.x, y: c.y, a: ang, w: 'scrap' });
     if (--c.makeshift.ammo <= 0) {
       c.makeshift = null; g.ship.scrap += 1;
       g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'gun fell apart: +1 scrap', color: '#c0c0c0' });
@@ -183,13 +183,13 @@ function primary(g, c, w, inp) {
       if (c.cls === 'slots') { if (c.wallet < 1) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'no coins!', color: '#ccc' }); c.cd.fire = 0.5; return; } c.wallet -= 1; }
       const kind = c.cls === 'slots' ? 'coin' : c.cls === 'agent' ? 'ppk' : 'bullet';
       fireBullet(g, c, ang, ww, 'crew', { mul, kind });
-      g.fx({ t: 'shot', x: c.x, y: c.y, a: ang, w: c.cls === 'agent' && up[0] ? 'silenced' : kind });
+      g.fx({ t: 'shot', crew: c.id, x: c.x, y: c.y, a: ang, w: c.cls === 'agent' && up[0] ? 'silenced' : kind });
       break;
     }
     case 'rocket':
       spawnProj(g, { kind: 'rocket', x: c.x + Math.cos(ang) * 14, y: c.y + Math.sin(ang) * 14, vx: Math.cos(ang) * w.speed, vy: Math.sin(ang) * w.speed,
         dmg: w.dmg * mul, radius: w.radius * (1 + 0.15 * up[2]), team: 'crew', owner: c, life: 1.6, r: 5 });
-      g.fx({ t: 'shot', x: c.x, y: c.y, a: ang, w: 'rocket' });
+      g.fx({ t: 'shot', crew: c.id, x: c.x, y: c.y, a: ang, w: 'rocket' });
       break;
     case 'jar': lob(g, c, inp.ax, inp.ay, 'jar', { jar: c.jar || 'poison' }); break;
     case 'bubble': {

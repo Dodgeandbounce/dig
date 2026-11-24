@@ -89,7 +89,7 @@ export function createUI(root, api) {
     // top bar
     const s = g.ship;
     $('.g-shipname').textContent = s.name;
-    $('.g-level').textContent = `Level ${g.level}/${LEVELS} · Sea Level: −${g.depthKm.toLocaleString()} km${g.path === 'brother' ? ' · following Joe' : ''}`;
+    $('.g-level').textContent = `Sea Level: −${g.depthKm.toLocaleString()} km${g.path === 'brother' ? ' · following Joe' : ''}`;
     setMeter('.hull', s.hull, s.hullMax, s.hull < s.hullMax * 0.3 ? 'bad' : '');
     setMeter('.fuel', s.fuel, s.fuelMax, s.fuel < 25 ? 'bad' : '');
     $('.g-pips').innerHTML = Array.from({ length: s.bubbleMax }, (_, k) => `<i class="${k < s.bubble ? 'on' : ''}"></i>`).join('') + '<small>bubble</small>';
@@ -273,7 +273,6 @@ export function createUI(root, api) {
 
   function renderBriefing(g, banner) {
     banner.innerHTML = `
-      <div class="lvl">Level ${g.level}</div>
       <div class="sea">Sea Level: −${g.depthKm.toLocaleString()} km</div>
       <div class="mix">${g.mix.map((m) => `<div class="foe"><canvas width="64" height="64" data-type="${m.type}"></canvas><b>${esc(g.roster[m.type].name)}</b><span>${m.pct}%</span></div>`).join('')}</div>
       <div class="dig">DIG!</div>`;

@@ -12,6 +12,15 @@ export function createRenderer(canvas) {
   const ripples = []; // dog sense
   const tracers = []; // ship-to-ship fire
   let flash = 0, flashColor = '255,60,40';
+  // Lighting: everything is dark except what you can see (line of sight from your fox, like the
+  // old top-down shooters), lit up further by muzzle flashes, explosions, fires and consoles.
+  const lights = [];                 // short-lived: { x, y, r, a, col, life, max }
+  const lightCv = document.createElement('canvas');
+  const lctx = lightCv.getContext('2d');
+  const recoil = new Map();          // crew id -> seconds of gun kick left (drawn pushed back)
+  const kick = { x: 0, y: 0 };       // camera kick when you fire
+  let drillSpin = 0;
+  let meId = null;
   let t = 0;
   let W = 0, H = 0, dpr = 1;
   const seen = new Map(); // room index -> last time visible (fades fog)
@@ -24,7 +33,9 @@ export function createRenderer(canvas) {
     const r = canvas.getBoundingClientRect();
     W = canvas.width = Math.round(r.width * dpr);
     H = canvas.height = Math.round(r.height * dpr);
+    lightCv.width = W; lightCv.height = H;
   }
+  const light = (x, y, r, a, col, life) => lights.push({ x, y, r, a, col, life, max: life });
   new ResizeObserver(resize).observe(canvas);
   resize();
 
@@ -33,20 +44,35 @@ export function createRenderer(canvas) {
     const R = Math.random;
     switch (e.t) {
       case 'hit': for (let k = 0; k < 4; k++) parts.push(p(e.x, e.y, (R() - .5) * 160, (R() - .5) * 160, 0.3, e.team === 'crew' ? '#ff5040' : '#ffd080', 2)); if (e.amt >= 3) texts.push(txt(e.x, e.y - 14, String(e.amt), e.team === 'crew' ? '#ff6050' : '#fff', 0.7, 11)); break;
-      case 'boom': { cam.shake = Math.min(14, cam.shake + e.r / 9); parts.push({ ring: true, x: e.x, y: e.y, r: 4, R: e.r, life: 0.35, max: 0.35, color: '255,180,80' });
+      case 'boom': { cam.shake = Math.min(14, cam.shake + e.r / 9); light(e.x, e.y, e.r * 2.8 + 40, 1, '255,170,80', 0.4); parts.push({ ring: true, x: e.x, y: e.y, r: 4, R: e.r, life: 0.35, max: 0.35, color: '255,180,80' });
         for (let k = 0; k < 18; k++) { const a = R() * 7, s = R() * e.r * 4; parts.push(p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, 0.5 + R() * 0.4, R() < .5 ? '#ffb040' : '#ff6020', 3 + R() * 3)); }
         for (let k = 0; k < 8; k++) { const a = R() * 7, s = R() * 120; parts.push(p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, 1.2, '#3a3028', 2, true)); } break; }
-      case 'spark': for (let k = 0; k < 3; k++) parts.push(p(e.x, e.y, (R() - .5) * 200, (R() - .5) * 200, 0.25, e.color || '#ffe080', 1.6)); break;
+      case 'spark': light(e.x, e.y, 40, 0.5, '255,220,140', 0.06); for (let k = 0; k < 3; k++) parts.push(p(e.x, e.y, (R() - .5) * 200, (R() - .5) * 200, 0.25, e.color || '#ffe080', 1.6)); break;
       case 'die': for (let k = 0; k < 14; k++) { const a = R() * 7, s = 40 + R() * 160; parts.push(p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, 0.6, e.color, 3)); } break;
       case 'text': texts.push(txt(e.x, e.y, e.text, e.color || '#fff', 1.4, 12)); break;
       case 'swing': parts.push({ arc: true, x: e.x, y: e.y, a: e.a, r: e.r, life: 0.15, max: 0.15, color: e.cls === 'mrclean' ? '#a0ffb0' : e.cls === 'fish' ? '#a0e0ff' : '#ffffff' }); break;
-      case 'shot': parts.push(p(e.x + Math.cos(e.a) * 16, e.y + Math.sin(e.a) * 16, 0, 0, 0.06, e.w === 'coin' ? '#f4c542' : '#fff2a0', 5)); break;
-      case 'eshot': break;
+      case 'shot': {
+        const mx = e.x + Math.cos(e.a) * 16, my = e.y + Math.sin(e.a) * 16;
+        const big = e.w === 'rocket' || e.w === 'scrap' || e.w === 'ppk';
+        // muzzle flash: a bright star and a burst of light
+        parts.push({ muzzle: true, x: mx, y: my, a: e.a, life: 0.06, max: 0.06, size: big ? 13 : 9, color: e.w === 'coin' ? '#f4c542' : '#fff6c0' });
+        if (e.w !== 'silenced') light(mx, my, big ? 150 : 110, 0.95, e.w === 'coin' ? '255,220,90' : '255,225,160', 0.07);
+        // spent brass flies out the side
+        if (e.w === 'bullet' || e.w === 'ppk' || e.w === 'silenced' || e.w === 'scrap') {
+          const s = Math.random() < 0.5 ? 1 : -1, ca = e.a + s * Math.PI / 2 + (R() - .5) * 0.6, sp = 70 + R() * 60;
+          parts.push(p(e.x, e.y, Math.cos(ca) * sp - Math.cos(e.a) * 20, Math.sin(ca) * sp - Math.sin(e.a) * 20, 0.9, e.w === 'scrap' ? '#9a9080' : '#d8a840', 2.5, true));
+        }
+        // your gun kicks: the view jolts back a touch and your fox flinches
+        if (e.crew != null) recoil.set(e.crew, 0.09);
+        if (e.crew != null && e.crew === meId) { const k = big ? 5 : 2.2; kick.x -= Math.cos(e.a) * k; kick.y -= Math.sin(e.a) * k; }
+        break;
+      }
+      case 'eshot': light(e.x, e.y, 80, 0.7, '255,130,90', 0.07); parts.push({ muzzle: true, x: e.x, y: e.y, a: R() * 6, life: 0.05, max: 0.05, size: 7, color: '#ffb080' }); break;
       case 'pop': parts.push({ ring: true, x: e.x, y: e.y, r: e.r, R: e.r * 1.8, life: 0.25, max: 0.25, color: '160,230,255' }); break;
       case 'fling': parts.push({ fling: true, x: e.x, y: e.y, x2: e.x2, y2: e.y2, life: 0.5, max: 0.5, color: e.color }); break;
-      case 'zap': for (let k = 0; k < 8; k++) parts.push(p(e.x, e.y, (R() - .5) * 220, (R() - .5) * 220, 0.3, '#80e0ff', 2)); break;
+      case 'zap': light(e.x, e.y, 100, 0.9, '120,200,255', 0.15); for (let k = 0; k < 8; k++) parts.push(p(e.x, e.y, (R() - .5) * 220, (R() - .5) * 220, 0.3, '#80e0ff', 2)); break;
       case 'splash': parts.push({ ring: true, x: e.x, y: e.y, r: 8, R: 60, life: 0.4, max: 0.4, color: hexToRgb(e.color) }); break;
-      case 'flame': for (let k = 0; k < 3; k++) { const a = e.a + (R() - .5) * 0.5, s = 200 + R() * 120; parts.push(p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, e.r / s, R() < .5 ? '#ff8020' : '#ffd040', 5)); } break;
+      case 'flame': light(e.x + Math.cos(e.a) * e.r * 0.6, e.y + Math.sin(e.a) * e.r * 0.6, 150, 0.8, '255,140,40', 0.12); for (let k = 0; k < 3; k++) { const a = e.a + (R() - .5) * 0.5, s = 200 + R() * 120; parts.push(p(e.x, e.y, Math.cos(a) * s, Math.sin(a) * s, e.r / s, R() < .5 ? '#ff8020' : '#ffd040', 5)); } break;
       case 'saw': if (e.hit) for (let k = 0; k < 2; k++) parts.push(p(e.x + Math.cos(e.a) * 30, e.y + Math.sin(e.a) * 30, (R() - .5) * 200, (R() - .5) * 200, 0.3, '#c02020', 2.5)); break;
       case 'claw': parts.push({ arc: true, x: e.x, y: e.y, a: R() * 6, r: 14, life: 0.12, max: 0.12, color: '#ff5050' }); break;
       case 'bang': parts.push(p(e.x, e.y, 0, 0, 0.1, '#ffffff', 6)); cam.shake = Math.min(6, cam.shake + 1); break;
@@ -85,7 +111,12 @@ export function createRenderer(canvas) {
     let zoom = cam.zoom;
     if (cam.overview) {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      if (g.box) { x0 = g.box.x0; y0 = g.box.y0; x1 = g.box.x1; y1 = g.box.y1; }
+      if (g.box) { // the ship, plus room for the drill out front
+        x0 = g.box.x0; y0 = g.box.y0; x1 = g.box.x1; y1 = g.box.y1;
+        const dx = Math.cos(heading), dy = Math.sin(heading);
+        if (dx > 0.3) x1 += 7; else if (dx < -0.3) x0 -= 7;
+        if (dy > 0.3) y1 += 7; else if (dy < -0.3) y0 -= 7;
+      }
       for (const r of g.rooms) { if (r.gone) continue; x0 = Math.min(x0, r.x0); y0 = Math.min(y0, r.y0); x1 = Math.max(x1, r.x0 + SLOT_W); y1 = Math.max(y1, r.y0 + SLOT_H); }
       for (const es of g.enemyShips || []) if (!es.gone && es.rect) { const R = es.rect; x0 = Math.min(x0, R.x0); y0 = Math.min(y0, R.y0); x1 = Math.max(x1, R.x0 + R.w); y1 = Math.max(y1, R.y0 + R.h); }
       zoom = Math.min(W / dpr / ((x1 - x0 + 2) * TILE), H / dpr / ((y1 - y0 + 2) * TILE));
@@ -97,7 +128,9 @@ export function createRenderer(canvas) {
       cam.y += (target.y + lead.y - cam.y) * Math.min(1, dt * 8);
     }
     cam.shake *= Math.pow(0.02, dt);
-    const sx = (Math.random() - .5) * cam.shake, sy = (Math.random() - .5) * cam.shake;
+    meId = me?.id ?? null;
+    const kf = Math.pow(0.0005, dt); kick.x *= kf; kick.y *= kf;
+    const sx = (Math.random() - .5) * cam.shake + kick.x, sy = (Math.random() - .5) * cam.shake + kick.y;
     const z = zoom * dpr;
     cam.effZoom = zoom;
     ctxs.setTransform(z, 0, 0, z, W / 2 - (cam.x + sx) * z, H / 2 - (cam.y + sy) * z);
@@ -134,6 +167,14 @@ export function createRenderer(canvas) {
       }
     }
     drawApproaching(ctxs, g);
+    // drills: ours on the front of the ship (pointing the way we're digging), theirs pointing at us
+    drillSpin += dt * (moving ? (g.descent?.boost ? 14 : 9) : 0.6);
+    if (g.box) drawShipDrill(ctxs, g, moving);
+    for (const es of g.enemyShips || []) if (es.docked && !es.gone && es.rect) {
+      const R = es.rect, dir = es.side === 'top' ? 1 : -1;
+      const bx = (R.x0 + R.w * 0.22) * TILE, by = (es.side === 'top' ? R.y0 + R.h : R.y0) * TILE;
+      drawDrill(ctxs, bx, by, dir > 0 ? Math.PI / 2 : -Math.PI / 2, 4.2 * TILE, 4.4 * TILE, es.done ? 0 : t * 1.5, true);
+    }
 
     // visibility
     const vis = visibleRooms(g, me);
@@ -143,6 +184,20 @@ export function createRenderer(canvas) {
     const tx0 = Math.max(0, Math.floor(vx0 / TILE)), ty0 = Math.max(0, Math.floor(vy0 / TILE));
     const tx1 = Math.min(MAP_W - 1, Math.floor(vx1 / TILE)), ty1 = Math.min(MAP_H - 1, Math.floor(vy1 / TILE));
     const G = g.grid;
+    // a little depth: walls get a darker face where they drop down to the floor, and floors are
+    // shadowed under the wall above and to the left
+    const tall = (tt) => tt === T.WALL || tt === T.HULL || tt === T.DEBRIS;
+    const wallFace = (x, y, px, py, col) => {
+      const below = G.get(x, y + 1);
+      if (below === T.FLOOR || below === T.RUBBLE || below === T.TUNNEL) {
+        ctxs.fillStyle = col; ctxs.fillRect(px, py + TILE - 11, TILE, 11);
+        ctxs.fillStyle = 'rgba(255,255,255,.08)'; ctxs.fillRect(px, py + TILE - 11, TILE, 1.5);
+      }
+    };
+    const floorShade = (x, y, px, py) => {
+      if (tall(G.get(x, y - 1))) { ctxs.fillStyle = 'rgba(0,0,0,.32)'; ctxs.fillRect(px, py, TILE, 6); ctxs.fillStyle = 'rgba(0,0,0,.14)'; ctxs.fillRect(px, py + 6, TILE, 7); }
+      if (tall(G.get(x - 1, y))) { ctxs.fillStyle = 'rgba(0,0,0,.22)'; ctxs.fillRect(px, py, 6, TILE); }
+    };
     for (let y = ty0; y <= ty1; y++) for (let x = tx0; x <= tx1; x++) {
       const i = idx(x, y);
       const tt = G.tiles[i];
@@ -157,16 +212,18 @@ export function createRenderer(canvas) {
             ctxs.fillStyle = '#3a3733';
             for (let k = 2; k < TILE; k += 6) ctxs.fillRect(px + k, py + 2, 3, TILE - 4);
             ctxs.fillStyle = 'rgba(0,0,0,.35)'; ctxs.fillRect(px, py + TILE - 2, TILE, 2);
+            floorShade(x, y, px, py);
             break;
           }
           const base = room ? (ROOMS[room.type]?.color || (room.owner === 'them' ? '#3a2a2a' : '#333')) : '#333';
           ctxs.fillStyle = (x + y) & 1 ? base : shade(base, 8);
           ctxs.fillRect(px, py, TILE, TILE);
           if (room?.owner === 'them') { ctxs.fillStyle = 'rgba(120,0,0,.12)'; ctxs.fillRect(px, py, TILE, TILE); }
+          floorShade(x, y, px, py);
           break;
         }
-        case T.WALL: ctxs.fillStyle = '#5c5650'; ctxs.fillRect(px, py, TILE, TILE); ctxs.fillStyle = '#6e6862'; ctxs.fillRect(px, py, TILE, 5); dmgCracks(ctxs, px, py, G.hp[i] / 90); break;
-        case T.HULL: ctxs.fillStyle = '#48443f'; ctxs.fillRect(px, py, TILE, TILE); ctxs.fillStyle = '#5a5650'; ctxs.fillRect(px + 2, py + 2, TILE - 4, TILE - 4); ctxs.fillStyle = '#2e2a26'; ctxs.fillRect(px + 5, py + 5, 3, 3); ctxs.fillRect(px + TILE - 8, py + TILE - 8, 3, 3); if (G.hp[i] < 140) dmgCracks(ctxs, px, py, G.hp[i] / 140); break;
+        case T.WALL: ctxs.fillStyle = '#5c5650'; ctxs.fillRect(px, py, TILE, TILE); ctxs.fillStyle = '#6e6862'; ctxs.fillRect(px, py, TILE, 5); wallFace(x, y, px, py, '#3d3934'); dmgCracks(ctxs, px, py, G.hp[i] / 90); break;
+        case T.HULL: ctxs.fillStyle = '#48443f'; ctxs.fillRect(px, py, TILE, TILE); ctxs.fillStyle = '#5a5650'; ctxs.fillRect(px + 2, py + 2, TILE - 4, TILE - 4); ctxs.fillStyle = '#2e2a26'; ctxs.fillRect(px + 5, py + 5, 3, 3); ctxs.fillRect(px + TILE - 8, py + TILE - 8, 3, 3); wallFace(x, y, px, py, '#33302c'); if (G.hp[i] < 140) dmgCracks(ctxs, px, py, G.hp[i] / 140); break;
         case T.DOOR: drawDoor(ctxs, g, G.doorAt[i], px, py); break;
         case T.TUNNEL: ctxs.fillStyle = '#2f2a26'; ctxs.fillRect(px, py, TILE, TILE); ctxs.fillStyle = '#3a342e'; ctxs.fillRect(px, py + ((y * 7) % 3) * 8, TILE, 3); break;
         case T.BREACH: { ctxs.fillStyle = '#0a0705'; ctxs.fillRect(px, py, TILE, TILE); ctxs.fillStyle = '#6a4a2a';
@@ -249,7 +306,14 @@ export function createRenderer(canvas) {
     actors.sort((a, b) => a.y - b.y);
     for (const a of actors) {
       if (a.x < vx0 - 60 || a.x > vx1 + 60 || a.y < vy0 - 60 || a.y > vy1 + 60) continue;
-      if (a.team === 'crew' && a.cls) { drawCrew(ctxs, a, t, { own: a === me }); continue; }
+      if (a.team === 'crew' && a.cls) {
+        const rk = recoil.get(a.id) || 0;
+        if (rk > 0) { // gun kick: pushed back a couple of pixels for a moment
+          const ox = Math.cos(a.facing || 0) * rk * 30, oy = Math.sin(a.facing || 0) * rk * 30;
+          ctxs.save(); ctxs.translate(-ox, -oy); drawCrew(ctxs, a, t, { own: a === me }); ctxs.restore();
+        } else drawCrew(ctxs, a, t, { own: a === me });
+        continue;
+      }
       const ri = G.room[idx(Math.floor(a.x / TILE), Math.floor(a.y / TILE))];
       const visible = ri < 0 || vis.has(ri) || a.team === 'crew';
       if (!visible && !seeAll) continue;
@@ -276,6 +340,12 @@ export function createRenderer(canvas) {
       ctxs.fillStyle = `rgba(6,4,3,${a * fade})`;
       ctxs.fillRect(x, y, (SLOT_W - 1) * TILE, (SLOT_H - 1) * TILE);
     });
+
+    for (const [id, v] of recoil) { if (v - dt <= 0) recoil.delete(id); else recoil.set(id, v - dt); }
+
+    // lighting: dark beyond what you can see
+    if (!cam.overview && me) applyLighting(g, view.focus || me, z, W / 2 - (cam.x + sx) * z, H / 2 - (cam.y + sy) * z, dt);
+    else lights.length = 0;
 
     // dog sense ripples
     if (me && me.cls === 'dog' && me.alive) {
@@ -326,6 +396,107 @@ export function createRenderer(canvas) {
   }
 
   // ---------------------------------------------------------------------
+  // Line-of-sight lighting. Rays from your eyes stop at walls and closed doors; inside that shape
+  // it's lit (brightest near you), outside it's dark. Muzzle flashes, explosions, fires and
+  // consoles light up whatever you can see around them. Crewmates carry a dim lamp.
+  const lgrad = (c, x, y, r, a, inner = 0, col = '0,0,0') => {
+    const gr = c.createRadialGradient(x, y, r * inner, x, y, r);
+    gr.addColorStop(0, `rgba(${col},${a})`); gr.addColorStop(1, `rgba(${col},0)`);
+    c.fillStyle = gr; c.fillRect(x - r, y - r, r * 2, r * 2);
+  };
+  function sightPolygon(g, eye, R) {
+    const G = g.grid, N = 360, poly = [];
+    for (let k = 0; k < N; k++) {
+      const a = k / N * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+      let d = 4;
+      for (; d < R; d += 4) {
+        if (G.blocksShot(Math.floor((eye.x + ca * d) / TILE), Math.floor((eye.y + sa * d) / TILE), g.doors)) { d += 14; break; } // light the wall's face too
+      }
+      poly.push(eye.x + ca * d, eye.y + sa * d);
+    }
+    return poly;
+  }
+  const tracePoly = (c, poly) => { c.beginPath(); c.moveTo(poly[0], poly[1]); for (let k = 2; k < poly.length; k += 2) c.lineTo(poly[k], poly[k + 1]); c.closePath(); };
+  function applyLighting(g, eye, z, ox, oy, dt) {
+    for (const l of lights) l.life -= dt;
+    for (let k = lights.length - 1; k >= 0; k--) if (lights[k].life <= 0) lights.splice(k, 1);
+    if (lights.length > 160) lights.splice(0, lights.length - 160);
+    const R = 15 * TILE;
+    const poly = sightPolygon(g, eye, R);
+    const fires = g.objs.filter((o) => o.kind === 'fire');
+    const flick = (o) => 0.75 + 0.25 * Math.sin(t * 13 + o.id * 1.7) * Math.sin(t * 7.3 + o.id);
+    const L = lctx;
+    L.setTransform(1, 0, 0, 1, 0, 0);
+    L.globalCompositeOperation = 'source-over';
+    L.clearRect(0, 0, W, H);
+    L.fillStyle = 'rgba(3,2,1,0.8)'; L.fillRect(0, 0, W, H);
+    L.setTransform(z, 0, 0, z, ox, oy);
+    L.globalCompositeOperation = 'destination-out';
+    for (const c of g.crew) if (c.alive && c !== eye) lgrad(L, c.x, c.y, 140, 0.4);
+    L.save(); tracePoly(L, poly); L.clip();
+    lgrad(L, eye.x, eye.y, R, 1, 0.45);
+    for (const r of g.rooms) if (!r.gone && r.sys && r.sys.hp > 0 && Math.abs(r.station.x - eye.x) < R && Math.abs(r.station.y - eye.y) < R) lgrad(L, r.station.x, r.station.y + 6, 90, 0.35);
+    for (const o of fires) lgrad(L, o.x, o.y, 110 * Math.max(0.3, o.f), 0.7 * flick(o));
+    for (const l of lights) lgrad(L, l.x, l.y, l.r, l.a * Math.max(0, l.life / l.max));
+    for (const q of g.projs) if (q.kind === 'rocket' || q.kind === 'fireball') lgrad(L, q.x, q.y, 90, 0.6);
+    L.restore();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(lightCv, 0, 0);
+    // coloured glow on top (only where you can see)
+    ctx.setTransform(z, 0, 0, z, ox, oy);
+    ctx.save(); tracePoly(ctx, poly); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const o of fires) lgrad(ctx, o.x, o.y, 90 * Math.max(0.3, o.f), 0.22 * flick(o), 0, '255,110,30');
+    for (const l of lights) lgrad(ctx, l.x, l.y, l.r * 0.8, 0.3 * l.a * Math.max(0, l.life / l.max), 0, l.col);
+    for (const q of g.projs) if (q.kind === 'rocket' || q.kind === 'fireball') lgrad(ctx, q.x, q.y, 60, 0.25, 0, '255,140,60');
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------------
+  // drills
+  function drawDrill(c, x, y, ang, len, w, spin, enemy = false) {
+    c.save(); c.translate(x, y); c.rotate(ang);
+    // mount collar with bolts
+    c.fillStyle = enemy ? '#4a302a' : '#4a4540'; c.fillRect(-14, -w * 0.62, 26, w * 1.24);
+    c.fillStyle = enemy ? '#70443a' : '#77706a'; c.fillRect(-14, -w * 0.62, 26, 5);
+    c.fillStyle = '#221e1a'; for (let k = 0; k < 4; k++) { c.beginPath(); c.arc(-1, -w * 0.45 + k * w * 0.3, 3.2, 0, 7); c.fill(); }
+    // the cone, shaded like turned metal
+    const gr = c.createLinearGradient(0, -w / 2, 0, w / 2);
+    if (enemy) { gr.addColorStop(0, '#3a1c16'); gr.addColorStop(0.35, '#a0503a'); gr.addColorStop(0.5, '#d08060'); gr.addColorStop(0.7, '#80402c'); gr.addColorStop(1, '#2a1410'); }
+    else { gr.addColorStop(0, '#2a2a30'); gr.addColorStop(0.35, '#8a8c96'); gr.addColorStop(0.5, '#e4e6ee'); gr.addColorStop(0.7, '#70727c'); gr.addColorStop(1, '#202028'); }
+    c.fillStyle = gr;
+    c.beginPath(); c.moveTo(12, -w / 2); c.lineTo(12 + len, 0); c.lineTo(12, w / 2); c.closePath(); c.fill();
+    // spiral flutes that run toward the tip as it turns
+    c.save(); c.clip();
+    const step = 24, off = ((spin * 26) % step + step) % step;
+    c.lineWidth = 6; c.strokeStyle = 'rgba(0,0,0,.38)';
+    for (let s = -w; s < len + w; s += step) { const u = 12 + s + off; c.beginPath(); c.moveTo(u, -w / 2); c.lineTo(u - w * 0.55, w / 2); c.stroke(); }
+    c.lineWidth = 2; c.strokeStyle = 'rgba(255,255,255,.22)';
+    for (let s = -w; s < len + w; s += step) { const u = 12 + s + off + 7; c.beginPath(); c.moveTo(u, -w / 2); c.lineTo(u - w * 0.55, w / 2); c.stroke(); }
+    c.restore();
+    c.strokeStyle = 'rgba(0,0,0,.5)'; c.lineWidth = 2; c.beginPath(); c.moveTo(12, -w / 2); c.lineTo(12 + len, 0); c.lineTo(12, w / 2); c.stroke();
+    c.fillStyle = enemy ? '#ffd0b0' : '#ffffff'; c.beginPath(); c.arc(12 + len - 3, 0, 3, 0, 7); c.fill();
+    c.restore();
+  }
+  function drawShipDrill(c, g, moving) {
+    const B = g.box, G = g.grid;
+    const cx = (B.x0 + B.x1 + 1) / 2 * TILE, cy = (B.y0 + B.y1 + 1) / 2 * TILE;
+    const dx = Math.cos(heading), dy = Math.sin(heading);
+    // walk out from the middle until we leave the hull: that's the front
+    let bx = cx, by = cy;
+    for (let d = 0; d < 4000; d += 8) {
+      const x = cx + dx * d, y = cy + dy * d, tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+      if (tx < B.x0 || tx > B.x1 || ty < B.y0 || ty > B.y1) break;
+      if (G.get(tx, ty) !== T.VOID) { bx = x; by = y; }
+    }
+    const w = 6 * TILE, len = 7 * TILE;
+    drawDrill(c, bx - dx * 10, by - dy * 10, heading, len, w, drillSpin);
+    if (moving && Math.random() < 0.8) { // chewed-up dirt sprays off the cutting edge
+      const tip = { x: bx + dx * (len * 0.7), y: by + dy * (len * 0.7) };
+      for (let k = 0; k < 2; k++) { const s = Math.random() < 0.5 ? 1 : -1; const a = heading + s * (Math.PI / 2 + 0.6) + (Math.random() - .5) * 0.5, sp = 120 + Math.random() * 160; parts.push(p(tip.x + (Math.random() - .5) * 60, tip.y + (Math.random() - .5) * 60, Math.cos(a) * sp, Math.sin(a) * sp, 0.6, Math.random() < 0.5 ? '#5a4030' : '#7a5a40', 3 + Math.random() * 3, true)); }
+    }
+  }
+
   function visibleRooms(g, me) {
     const vis = new Set();
     for (const c of g.crew) if (c.alive) { const ri = g.grid.room[idx(Math.floor(c.x / TILE), Math.floor(c.y / TILE))]; if (ri >= 0) vis.add(ri); }
@@ -396,9 +567,17 @@ export function createRenderer(canvas) {
 
   function drawProj(c, q, t) {
     switch (q.kind) {
-      case 'bullet': case 'ppk': case 'knife':
-        c.strokeStyle = q.team === 'crew' ? (q.kind === 'knife' ? '#ddd' : '#fff2a0') : '#ff7050'; c.lineWidth = q.kind === 'ppk' ? 2.5 : 2;
-        c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(q.x - q.vx * 0.02, q.y - q.vy * 0.02); c.stroke(); break;
+      case 'bullet': case 'ppk': case 'knife': {
+        // glowing tracer: a soft wide streak with a hot core
+        const crew = q.team === 'crew', tail = q.kind === 'knife' ? 0.02 : 0.035;
+        if (q.kind !== 'knife') {
+          c.strokeStyle = crew ? 'rgba(255,220,120,.28)' : 'rgba(255,90,60,.3)'; c.lineWidth = 6; c.lineCap = 'round';
+          c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(q.x - q.vx * tail, q.y - q.vy * tail); c.stroke();
+        }
+        c.strokeStyle = crew ? (q.kind === 'knife' ? '#ddd' : '#fffbe0') : '#ffb090'; c.lineWidth = q.kind === 'ppk' ? 2.5 : 2;
+        c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(q.x - q.vx * tail * 0.6, q.y - q.vy * tail * 0.6); c.stroke(); c.lineCap = 'butt';
+        break;
+      }
       case 'coin': c.fillStyle = '#f4c542'; c.beginPath(); c.arc(q.x, q.y, 3.5, 0, 7); c.fill(); break;
       case 'scrap': c.save(); c.translate(q.x, q.y); c.rotate(t * 20 + q.id); c.fillStyle = '#b0a890'; c.fillRect(-4, -3, 8, 6); c.fillStyle = '#e0c060'; c.fillRect(-2, -1, 4, 2); c.restore(); break;
       case 'rocket': c.fillStyle = '#ddd'; c.beginPath(); c.arc(q.x, q.y, 4, 0, 7); c.fill(); parts.push(p(q.x, q.y, (Math.random() - .5) * 30, (Math.random() - .5) * 30, 0.3, '#aaa', 3)); break;
@@ -424,6 +603,13 @@ export function createRenderer(canvas) {
       if (q.life <= 0) continue;
       if (q.ring) { const k = 1 - q.life / q.max; c.strokeStyle = `rgba(${q.color},${Math.max(0, q.life / q.max)})`; c.lineWidth = 3; c.beginPath(); c.arc(q.x, q.y, Math.max(0, q.r + (q.R - q.r) * k), 0, 7); c.stroke(); if (q.R > 40) { c.fillStyle = `rgba(${q.color},${0.25 * q.life / q.max})`; c.fill(); } continue; }
       if (q.arc) { c.strokeStyle = q.color; c.globalAlpha = Math.max(0, q.life / q.max); c.lineWidth = 3; c.beginPath(); c.arc(q.x, q.y, q.r, q.a - 0.9, q.a + 0.9); c.stroke(); c.globalAlpha = 1; continue; }
+      if (q.muzzle) { // muzzle flash: a four-point star along the barrel
+        const k = q.life / q.max, s = q.size * (0.6 + 0.4 * k);
+        c.save(); c.translate(q.x, q.y); c.rotate(q.a); c.globalAlpha = Math.min(1, k * 1.5); c.fillStyle = q.color;
+        c.beginPath(); c.moveTo(s * 1.6, 0); c.lineTo(s * 0.25, s * 0.3); c.lineTo(0, s * 0.8); c.lineTo(-s * 0.25, s * 0.25); c.lineTo(-s * 0.4, 0); c.lineTo(-s * 0.25, -s * 0.25); c.lineTo(0, -s * 0.8); c.lineTo(s * 0.25, -s * 0.3); c.closePath(); c.fill();
+        c.fillStyle = '#ffffff'; c.beginPath(); c.arc(0, 0, s * 0.3, 0, 7); c.fill();
+        c.restore(); continue;
+      }
       if (q.fling) { const k = 1 - q.life / q.max; c.fillStyle = q.color; c.beginPath(); c.arc(q.x + (q.x2 - q.x) * k, q.y + (q.y2 - q.y) * k - Math.sin(k * Math.PI) * 40, 7, 0, 7); c.fill(); continue; }
       q.x += q.vx * dt; q.y += q.vy * dt;
       if (q.debris) { q.vx *= 0.9; q.vy *= 0.9; } else { q.vx *= 0.92; q.vy *= 0.92; }
@@ -446,18 +632,15 @@ export function createRenderer(canvas) {
       c.save();
       c.globalAlpha = 0.35 + 0.55 * k;
       // the drill nose pointing at us, chewing dirt
-      const nx = x0 + w / 2, ny = es.side === 'top' ? y0 + h : y0;
-      c.fillStyle = '#5a4a3a';
-      c.beginPath(); c.moveTo(nx - 60, ny); c.lineTo(nx, ny - dir * 90); c.lineTo(nx + 60, ny); c.fill();
-      c.strokeStyle = '#8a7a60'; c.lineWidth = 3;
-      for (let s = 0; s < 4; s++) { const ph = (t * 3 + s / 4) % 1; c.beginPath(); c.moveTo(nx - 60 * (1 - ph), ny - dir * 90 * ph); c.lineTo(nx + 60 * (1 - ph), ny - dir * 90 * ph); c.stroke(); }
+      const nx = x0 + w * 0.22, ny = es.side === 'top' ? y0 + h : y0;
+      drawDrill(c, x0 + w * 0.22, ny, es.side === 'top' ? Math.PI / 2 : -Math.PI / 2, 4.2 * TILE, 4.4 * TILE, t * 8, true);
       // hull and rooms
       c.fillStyle = '#3a2a26'; c.fillRect(x0, y0, w, h);
       c.strokeStyle = '#6a4a40'; c.lineWidth = 4; c.strokeRect(x0 + 2, y0 + 2, w - 4, h - 4);
       c.fillStyle = 'rgba(160,40,30,.35)';
       for (let rr = 0; rr < es.rows; rr++) for (let cc = 0; cc < es.cols; cc++) c.fillRect(x0 + (cc * SLOT_W + 1) * TILE, y0 + (rr * SLOT_H + 1) * TILE, (SLOT_W - 1) * TILE, (SLOT_H - 1) * TILE);
       // dirt spraying off it
-      if (Math.random() < 0.5) parts.push(p(nx + (Math.random() - .5) * 100, ny, (Math.random() - .5) * 200, -dir * 120 * Math.random(), 0.6, '#4a3626', 4, true));
+      if (Math.random() < 0.5) parts.push(p(nx + (Math.random() - .5) * 100, ny - dir * 4 * TILE, (Math.random() - .5) * 200, -dir * 120 * Math.random(), 0.6, '#4a3626', 4, true));
       c.globalAlpha = 1;
       c.fillStyle = '#ff6a3a'; c.font = 'bold 16px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle';
       c.fillText(`☠ ${es.name} — docking in ${Math.max(0, Math.ceil(es.approachT))}s`, x0 + w / 2, y0 + h / 2);

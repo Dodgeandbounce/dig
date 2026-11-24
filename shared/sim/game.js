@@ -393,7 +393,7 @@ export class Game {
         for (const c of this.crew) if (c.alive && Math.abs(c.x - cx) < 50 && Math.abs(c.y - cy) < 50) { want = 1; break; }
         if (!want) for (const m of this.mobs) if (m.alive && m.team === 'crew' && Math.abs(m.x - cx) < 46 && Math.abs(m.y - cy) < 46) { want = 1; break; }
       }
-      d.open = clamp(d.open + (want ? 1 : -1) * dt / (d.blast ? 1.8 : 1.1), 0, 1); // they open and close slowly (blast doors slower)
+      d.open = clamp(d.open + (want ? 1 : -1) * dt / (d.blast ? 1.4 : 1.1), 0, 1); // they open and close slowly (blast doors a bit slower)
     }
   }
 
@@ -498,7 +498,7 @@ export class Game {
     this.mix = levelMix(this.roster, this.level, this.path, this.rng);
     this.descent = newDescent();
     this.setPhase('briefing');
-    this.log('story', `— Level ${this.level}: ${this.depthKm.toLocaleString()} km down —`);
+    this.log('story', `— ${this.depthKm.toLocaleString()} km below sea level —`);
     for (const c of this.crew) if (c.atHelm) c.atHelm = false;
     if (this.level === this.transponderLevel && !this.joe.transponder) {
       this.joe.transponder = true;
