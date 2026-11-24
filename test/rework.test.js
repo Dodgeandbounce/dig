@@ -22,8 +22,8 @@ test('a walkway runs around the ship, with a door out of every outer room and 4 
   assert.ok(blast.length >= 4, `blast door tiles: ${blast.length}`);
   assert.ok(blast.every((d) => d.hold === 'open' && d.open === 1));
   assert.ok(g.doors.some((d) => d.b === -1 && !d.blast), 'rooms open onto the walkway');
-  // consoles sit clear of the doors
-  for (const r of g.rooms) {
+  // consoles sit clear of the doors (hallways have no console)
+  for (const r of g.rooms.filter((x) => x.sys)) {
     const s = { x: Math.floor(r.station.x / TILE), y: Math.floor(r.station.y / TILE) };
     for (const d of g.doors) assert.ok(Math.abs(d.x - s.x) + Math.abs(d.y - s.y) > 2, `${r.name} console next to a door`);
   }

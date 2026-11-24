@@ -26,6 +26,10 @@ export class Store {
   loadPlayers() { return this.#read(join(this.dir, 'players.json'), {}); }
   savePlayers(players) { this.#write(join(this.dir, 'players.json'), players); }
 
+  // every finished run (solo and online), best first
+  loadBoard() { return this.#read(join(this.dir, 'leaderboard.json'), []); }
+  saveBoard(board) { this.#write(join(this.dir, 'leaderboard.json'), board); }
+
   loadWorlds() {
     return readdirSync(this.worldDir)
       .filter((f) => f.endsWith('.json'))

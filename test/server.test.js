@@ -173,3 +173,34 @@ test('serves under a /dig prefix (proxy passes or strips it)', async () => {
   await game.close();
   rmSync(dataDir, { recursive: true, force: true });
 });
+
+test('the leaderboard: solo runs are posted, online runs are recorded when they end, and it survives a restart', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'doigo-lb-'));
+  let game = createGameServer({ dataDir, speed: 20, rng: () => 0.5 });
+  t.after(async () => { for (const ws of open) ws.close(); open.clear(); await game.close().catch(() => {}); rmSync(dataDir, { recursive: true, force: true }); });
+  const port = await game.listen(0);
+  const solo = await client(port, { name: 'Cy' });
+  solo.send({ t: 'score', entry: { ship: 'The Mole Hole', score: 4321, depthKm: 1548, level: 8, result: 'lost at -1548km', crew: [{ name: 'Zap', cls: 'pilot', player: 'Cy', stars: 9 }], stats: { kills: 40 }, evil: '<script>' } });
+  await sleep(100);
+  let board = await (await fetch(`http://localhost:${port}/api/leaderboard`)).json();
+  assert.equal(board.length, 1);
+  assert.equal(board[0].ship, 'The Mole Hole');
+  assert.equal(board[0].score, 4321);
+  assert.deepEqual(board[0].players, ['Cy']);
+  assert.equal(board[0].evil, undefined, 'only known fields are kept');
+  // an online run ends: it goes on the board too
+  solo.send({ t: 'create', name: 'Deep Ones', maxPlayers: 2 });
+  await solo.waitFor((m) => m.t === 'world');
+  const w = [...game.worlds.values()][0];
+  w.game.ship.hull = 0; w.tick(50);
+  await sleep(50);
+  board = await (await fetch(`http://localhost:${port}/api/leaderboard`)).json();
+  assert.ok(board.some((e) => e.ship === 'Deep Ones' && e.online), JSON.stringify(board.map((e) => e.ship)));
+  // saved to disk
+  game.saveAll(true);
+  await game.close();
+  game = createGameServer({ dataDir, speed: 20, rng: () => 0.5 });
+  const port2 = await game.listen(0);
+  board = await (await fetch(`http://localhost:${port2}/api/leaderboard`)).json();
+  assert.equal(board.length, 2);
+});

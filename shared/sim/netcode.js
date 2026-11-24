@@ -11,7 +11,7 @@ import { Grid } from './grid.js';
 
 // Server-only or recomputable state that never goes over the wire.
 const SKIP_TOP = new Set(['rng', 'grid', 'fields', 'fieldCache', 'fieldsAt', 'inputs', 'fxq', 'logs', 'storyQ',
-  'iceUnder', 'panels', 'tips', 'player', 'paused', 'hullTiles']);
+  'iceUnder', 'panels', 'tips', 'player', 'paused', 'hullTiles', 'ringOuter']);
 // Per-entity internals (bot brains, hit lists, caches) the client never reads.
 const SKIP_KEY = new Set(['bot', 'dashHit', 'hit', '_tun', 'recentInsults', 'layout']);
 const ENTITY_LISTS = ['crew', 'mobs', 'projs', 'pickups', 'objs'];

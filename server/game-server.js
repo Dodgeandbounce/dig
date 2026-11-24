@@ -32,7 +32,20 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
   basePath = basePath.replace(/\/+$/, '');
   if (basePath && !basePath.startsWith('/')) basePath = '/' + basePath;
   const store = new Store(dataDir);
-  const worldOpts = { speed, rng };
+  // the leaderboard: every finished run, best scores first
+  const board = store.loadBoard();
+  let boardDirty = false;
+  const BOARD_MAX = 300;
+  function record(entry) {
+    const e = cleanEntry(entry);
+    if (!e) return;
+    board.push(e);
+    board.sort((a, b) => b.score - a.score);
+    board.length = Math.min(board.length, BOARD_MAX);
+    boardDirty = true;
+  }
+  const worldOpts = { speed, rng, onRunEnd: (world, summary) => record({ ...summary, online: true, shipId: world.id, run: world.run.number,
+    host: world.members[world.hostId]?.name, players: Object.values(world.members).map((m) => m.name) }) };
   const players = store.loadPlayers();           // id -> { name, tokenHash, createdAt }
   const worlds = new Map();                      // id -> World
   for (const data of store.loadWorlds()) {
@@ -180,6 +193,14 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
 
     chat(conn, msg) { worlds.get(conn.worldId)?.chat(conn.playerId, msg.text); },
 
+    // A solo run finished in someone's browser: it goes on the shared leaderboard.
+    score(conn, msg) {
+      const now = Date.now();
+      if (now - (conn.lastScoreAt || 0) < 20000) return;   // one per run is plenty
+      conn.lastScoreAt = now;
+      record({ ...(msg.entry || {}), solo: true, online: false, players: [conn.name], host: conn.name });
+    },
+
     // Host: "End run & restart" — new run, same ship and crew.
     restart(conn) {
       const world = requireHost(conn); if (!world) return;
@@ -267,6 +288,7 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
       if (games && w.gameDirty) saveGame(w);
     }
     if (playersDirty) { store.savePlayers(players); playersDirty = false; }
+    if (boardDirty) { store.saveBoard(board); boardDirty = false; }
   }
 
   // ---------- http ----------
@@ -279,6 +301,7 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     if (basePath && url.pathname.startsWith(basePath + '/')) url.pathname = url.pathname.slice(basePath.length);
     if (url.pathname === '/api/health') return json(res, { ok: true, worlds: worlds.size, connections: conns.size });
     if (url.pathname === '/api/worlds') return json(res, lobbyList());
+    if (url.pathname === '/api/leaderboard') return json(res, board.slice(0, 50));
     const prefix = url.pathname.startsWith('/shared/') ? '/shared/' : '/';
     const base = STATIC_DIRS[prefix];
     let rel = url.pathname.slice(prefix.length) || 'index.html';
@@ -305,6 +328,24 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     },
     saveAll,
   };
+}
+
+/** Only what the leaderboard shows, sized and typed (solo entries come from browsers). */
+function cleanEntry(e) {
+  if (!e || typeof e !== 'object') return null;
+  const str = (v, n = 40) => String(v ?? '').slice(0, n);
+  const num = (v, max = 1e9) => (Number.isFinite(+v) ? Math.max(0, Math.min(max, Math.round(+v))) : 0);
+  const out = {
+    ship: str(e.ship) || 'Unnamed ship', score: num(e.score), depthKm: num(e.depthKm, 7000), level: num(e.level, 99),
+    result: str(e.result, 60), won: !!e.won, joe: str(e.joe, 16), path: e.path ? str(e.path, 12) : null, time: num(e.time, 1e7),
+    solo: !!e.solo, online: !!e.online, host: str(e.host, 24), run: num(e.run, 1e6), at: Date.now(),
+    players: Array.isArray(e.players) ? e.players.slice(0, 17).map((p) => str(p, 24)) : [],
+    stats: {}, upgrades: {}, guns: Array.isArray(e.guns) ? e.guns.slice(0, 8).map((x) => str(x, 12)) : [], rooms: num(e.rooms, 99),
+    crew: Array.isArray(e.crew) ? e.crew.slice(0, 20).map((c) => ({ name: str(c?.name, 16), cls: str(c?.cls, 14), player: c?.player ? str(c.player, 24) : null, stars: num(c?.stars, 30), kills: num(c?.kills, 1e6) })) : [],
+  };
+  for (const k of ['kills', 'gems', 'repairs', 'captures', 'insults', 'cleaned', 'meals']) out.stats[k] = num(e.stats?.[k]);
+  for (const k of ['plating', 'bubble', 'dgun', 'dmissile', 'drill', 'feeders', 'tank']) out.upgrades[k] = num(e.upgrades?.[k], 20);
+  return out;
 }
 
 function json(res, body) {

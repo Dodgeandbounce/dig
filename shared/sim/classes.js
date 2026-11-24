@@ -1,11 +1,32 @@
 // Every class's kit: primary fire, abilities, passives, and E-interactions.
-import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES, LINES } from './data.js';
+import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES, LINES, CLASS_UP_MAX, xpCost, CREW_HP_MUL } from './data.js';
 import { idx, inMap } from './grid.js';
 import {
   moveActor, melee, fireBullet, spawnProj, explode, damage, stat, addBuff, healActor, roomAt,
-  hostiles, popBubble, airAt, addMess, dropPickup, damageSystem, hitTile, tileOwner, extinguish,
+  hostiles, popBubble, airAt, addMess, dropPickup, damageSystem, hitTile, tileOwner, extinguish, gainXp, unstick, collides,
 } from './combat.js';
 import { clamp, norm, dist, dist2, angTo, uid } from './util.js';
+
+const MELEE_CLASSES = new Set(['engineer', 'chef', 'mrclean', 'dog', 'chameleon', 'trainer', 'vaelift']);
+export const DASH_COST = 34;
+
+/** Max HP from the class, the upgrades that add to it, and the base multiplier. */
+export function recalcCrewHp(c) {
+  const base = c.baseHp || c.maxHp;
+  const was = c.maxHp;
+  c.maxHp = Math.round(base * (1 + (c.cls === 'chameleon' ? 0.12 * c.upgrades[1] : 0)));
+  if (c.maxHp > was) c.hp += c.maxHp - was;
+}
+/** Bots put their XP into their weakest track as soon as they can afford a star. */
+export function autoSpendXp(g, c) {
+  if (c.cls === 'urchid' && !c.human) { /* the urchid upgrades its chair, obviously */ }
+  for (let guard = 0; guard < 24; guard++) {
+    const k = [0, 1, 2].filter((t) => c.upgrades[t] < CLASS_UP_MAX).sort((a, b) => c.upgrades[a] - c.upgrades[b])[0];
+    if (k === undefined || (c.xp || 0) < xpCost(c.upgrades[k])) break;
+    c.xp -= xpCost(c.upgrades[k]); c.upgrades[k]++;
+    recalcCrewHp(c);
+  }
+}
 
 /** The scrap gun anyone can carry: a few heavy shots, then it falls apart into 1 scrap. */
 export const MAKESHIFT = { kind: 'bullet', dmg: 24, rate: 0.42, speed: 600, spread: 0.06, range: 480 };
@@ -35,7 +56,7 @@ const STAFF_W = {
   shotgun: { ...WEAPONS.shotgun, pellets: 6 },
 };
 export const MINE_TYPES = ['proximity', 'timed', 'remote', 'c4'];
-const JARS = ['poison', 'acid', 'explosive'];
+const JARS = ['poison', 'acid', 'explosive', 'buff'];
 
 export function weaponOf(c) {
   if (c.makeshift?.ammo > 0) return MAKESHIFT;
@@ -53,7 +74,7 @@ export function crewSpeed(g, c, inp) {
   if (c.chainsawOn) sp *= 0.6;
   if (c.slowT > 0) sp *= 0.5;
   if (c.cls === 'farmer' && c.carrying) sp *= 1 - 0.06 * c.carrying;
-  if (inp.shift && !c.cloaked) sp *= 1.25;
+  if (c.phased) sp *= 1.6;   // the empty dimension has no friction
   return sp;
 }
 
@@ -74,16 +95,35 @@ export function crewTick(g, c, inp, dt) {
   // regen buffs, poison
   const regen = stat(c, 'regen');
   if (regen) healActor(c, regen * dt);
+  // stamina comes back after a short breather
+  if (c.stamT > 0) c.stamT -= dt; else c.stam = Math.min(100, (c.stam ?? 100) + dt * 26);
+  // never stuck inside a wall (somebody rebuilt it on top of you)
+  unstick(g, c);
+  // knocked back by something big
+  if (c.kx || c.ky) { moveActor(g, c, c.kx * dt, c.ky * dt); c.kx *= 0.85; c.ky *= 0.85; if (Math.abs(c.kx) + Math.abs(c.ky) < 5) c.kx = c.ky = 0; }
   if (c.stunT > 0) { c.stunT -= dt; return; }
 
   // ---- movement
   const sp = crewSpeed(g, c, inp);
   if (c.slowT > 0) c.slowT -= dt;
 
-  if (c.dashT > 0) { // lunges, pounces, rolls
+  // Shift: a quick dash with a puff of smoke (melee classes go further, faster)
+  const shiftDown = !!inp.shift && !c.shiftHeld;
+  c.shiftHeld = !!inp.shift;
+  if (shiftDown && !(c.dashT > 0) && !c.riding && !c.atHelm && (c.stam ?? 100) >= DASH_COST && c.cls !== 'urchid') {
+    const n = norm(inp.mx || 0, inp.my || 0);
+    const a = n.l ? Math.atan2(n.y, n.x) : c.facing;
+    const melee = MELEE_CLASSES.has(c.cls);
+    const d = melee ? 165 : 120, time = melee ? 0.15 : 0.17;
+    c.dashT = time; c.dashV = { x: Math.cos(a) * d / time, y: Math.sin(a) * d / time }; c.dashDmg = 0; c.dashKind = 'none'; c.dashHit = new Set();
+    c.stam -= DASH_COST; c.stamT = 0.7;
+    g.fx({ t: 'dash', x: c.x, y: c.y, a, crew: c.id, big: melee });
+  }
+
+  if (c.dashT > 0) { // lunges, pounces, rolls, dashes
     c.dashT -= dt;
     moveActor(g, c, c.dashV.x * dt, c.dashV.y * dt);
-    dashHits(g, c);
+    if (c.dashKind !== 'none') dashHits(g, c);
   } else if (c.riding) {
     const b = c.riding;
     if (b.dead) c.riding = null; else { c.x = b.x; c.y = b.y; }
@@ -118,9 +158,9 @@ export function crewTick(g, c, inp, dt) {
   if (P.q && def.abilities.q) useAbility(g, c, def.abilities.q, inp, 'q');
   if (P.f && def.abilities.f) useAbility(g, c, def.abilities.f, inp, 'f');
   if (def.abilities.rmb === 'chainsaw') chainsaw(g, c, inp.rmb, dt);
+  else if (def.abilities.rmb === 'pitchfork') { if ((inp.rmb || P.rmb) && c.cd.rmb <= 0 && !c.phased) useAbility(g, c, 'pitchfork', inp, 'rmb'); }
   else if (P.rmb && def.abilities.rmb) useAbility(g, c, def.abilities.rmb, inp, 'rmb');
   else if (P.rmb && c.cls === 'agent') detonateRemotes(g, c);
-  else if (P.rmb && c.cls === 'farmer') useAbility(g, c, 'pitchfork', inp, 'q');
   else if (P.rmb && c.cls === 'chef') useAbility(g, c, 'fish', inp, 'f');
   if (P.space && def.abilities.space) useAbility(g, c, def.abilities.space, inp, 'space');
 
@@ -182,7 +222,7 @@ function primary(g, c, w, inp) {
       if (c.cls === 'farmer') ww = { ...w, pellets: w.pellets + 2 * up[1] };
       if (c.cls === 'slots') { if (c.wallet < 1) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'no coins!', color: '#ccc' }); c.cd.fire = 0.5; return; } c.wallet -= 1; }
       const kind = c.cls === 'slots' ? 'coin' : c.cls === 'agent' ? 'ppk' : 'bullet';
-      fireBullet(g, c, ang, ww, 'crew', { mul, kind });
+      fireBullet(g, c, ang, ww, 'crew', { mul, kind, pierce: !!w.pierce });
       g.fx({ t: 'shot', crew: c.id, x: c.x, y: c.y, a: ang, w: c.cls === 'agent' && up[0] ? 'silenced' : kind });
       break;
     }
@@ -271,8 +311,10 @@ const ABILITY_FNS = {
   },
   rally(g, c) {
     const r = roomAt(g, c);
-    for (const o of g.crew) if (o.alive && roomAt(g, o) === r) addBuff(o, { speed: 0.25, rate: 0.25 }, 6, 'rally');
-    say(g, c, 'Hold together, crew!');
+    let n = 0;
+    for (const o of g.crew) if (o.alive && roomAt(g, o) === r) { addBuff(o, { speed: 1, rate: 1 }, 6, 'rally'); n++; }
+    say(g, c, 'Hold together, crew! DOUBLE TIME!');
+    gainXp(g, c, 1 + n);
   },
   turret(g, c) {
     const mine = g.objs.filter((o) => o.kind === 'turret' && o.owner === c.id);
@@ -285,6 +327,7 @@ const ABILITY_FNS = {
     const target = nearestCrew(g, c);
     say(g, c, pickInsult(g, c, true), target);
     g.stats.insults++;
+    gainXp(g, c, 0.6);
   },
   ghost(g, c) {
     const living = g.crew.filter((o) => o.alive && o !== c);
@@ -327,13 +370,26 @@ const ABILITY_FNS = {
     spawnProj(g, { kind: 'grenade', x: c.x, y: c.y, vx: Math.cos(a) * 420, vy: Math.sin(a) * 420, dmg: 48 * (1 + 0.25 * c.upgrades[1]), radius: 80, team: 'crew', owner: c, life: 1.6, r: 5 });
   },
   tnt(g, c) { const p = inFront(c, 16); g.objs.push({ id: uid(), kind: 'tnt', owner: c.id, x: p.x, y: p.y, t: 3, dmg: 110 * (1 + 0.25 * c.upgrades[1]) }); say(g, c, 'FIRE IN THE HOLE!'); },
-  pitchfork(g, c) { melee(g, c, { dmg: 20, range: 56, arc: 1.7 }, c.facing, 'crew', { knock: 280 }); c.swingT = 0.22; g.fx({ t: 'swing', x: c.x, y: c.y, a: c.facing, r: 56, cls: 'pitchfork' }); },
+  // the pitchfork: short jabs that always shove things back. Hold RMB and nothing gets close.
+  pitchfork(g, c) {
+    melee(g, c, { dmg: 9 * (1 + (c.special ? 0.4 : 0)), range: 62, arc: 1.6 }, c.facing, 'crew', { knock: 380 });
+    c.swingT = 0.18; g.fx({ t: 'swing', x: c.x, y: c.y, a: c.facing, r: 62, cls: 'pitchfork' });
+  },
+  scarecrow(g, c) {
+    const lvl = c.upgrades[2];
+    const mine = g.objs.filter((o) => o.kind === 'scarecrow' && o.owner === c.id);
+    if (mine.length >= 1 + Math.floor(lvl / 3)) g.objs.splice(g.objs.indexOf(mine[0]), 1);
+    const p = inFront(c, 26);
+    const hp = 80 + 25 * lvl;
+    g.objs.push({ id: uid(), kind: 'scarecrow', owner: c.id, x: p.x, y: p.y, hp, maxHp: hp, atkT: 0.5, lvl, a: c.facing });
+    say(g, c, g.rng.pick(['Git em, crows!', 'Scarecrow up!', 'Ol\' Straw-Pete will watch this door.']));
+  },
   feast(g, c) { healActor(c, 50); say(g, c, 'Mmm. Dirt-fresh.'); },
-  jarswap(g, c) { c.jar = JARS[(JARS.indexOf(c.jar || 'poison') + 1) % JARS.length]; g.fx({ t: 'text', x: c.x, y: c.y - 20, text: `${c.jar} jar`, color: '#50c8e8' }); },
+  jarswap(g, c) { c.jar = JARS[(JARS.indexOf(c.jar || 'poison') + 1) % JARS.length]; g.fx({ t: 'text', x: c.x, y: c.y - 20, text: `${c.jar} jar`, color: c.jar === 'buff' ? '#f4c542' : '#50c8e8' }); },
   overclock(g, c) {
     const r = g.rooms[roomAt(g, c)];
     if (!r || r.type !== 'lab') { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'route power from the lab', color: '#ccc' }); return false; }
-    g.panel(c, 'lab');
+    g.panel(c, 'lab', r);
   },
   pounce(g, c) { startDash(g, c, 130, 0.18, 26 * (1 + 0.2 * c.upgrades[0]), 'bite'); say(g, c, g.rng.pick(DOG_BARKS)); },
   howl(g, c) {
@@ -456,6 +512,7 @@ export function spinSlots(g, c) {
   else if (best === 2) win = 6;
   c.wallet += win;
   c.lastSpin = { reels, win };
+  gainXp(g, c, 1 + win / 12);
   if (win > 6) { c.coinWinT = 30; c.coinWinMul = best === n ? 3 : 2; }
   if (best === n && sym === '7') { // JACKPOT: coin explosion
     explode(g, c.x, c.y, 140, 60, 'crew', c, { kind: 'coin' });
@@ -472,7 +529,11 @@ export function interactTarget(g, c) {
   for (const o of g.objs) {
     if ((o.kind === 'journal' || o.kind === 'crate') && dist(o, c) < 40) return { kind: o.kind, obj: o, label: o.kind === 'journal' ? 'Read the journal' : 'Loot crate' };
   }
-  if (c.cls === 'chameleon') for (const o of g.objs) if (o.kind === 'vent' && !o.broken && dist(o, c) < 30) return { kind: 'vent', obj: o, label: 'Crawl into the vent' };
+  if (c.cls === 'chameleon') {
+    for (const o of g.objs) if (o.kind === 'vent' && !o.broken && dist(o, c) < 30) return { kind: 'vent', obj: o, label: 'Crawl into the vent (pick where to come out)' };
+    // or point at one (with the mouse) that's not too far
+    if (c.aim) for (const o of g.objs) if (o.kind === 'vent' && !o.broken && dist(o, c.aim) < 22 && dist(o, c) < 5 * TILE && g.grid.los(c.x, c.y, o.x, o.y, g.doors)) return { kind: 'vent', obj: o, label: 'Crawl into that vent (pick where to come out)' };
+  }
   if (c.cls === 'farmer' && (c.carrying || 0) < 5) for (const o of g.objs) if (o.kind === 'mess' && o.sub === 'dirt' && dist(o, c) < 34) return { kind: 'dirt', obj: o, label: 'Scoop dirt' };
   if (r && r.sys && r.alive && dist(r.station, c) < 46) {
     const dmg = r.sys.hp < r.sys.max;
@@ -542,7 +603,11 @@ function interactPress(g, c) {
   switch (it.kind) {
     case 'journal': g.readJournal(c, it.obj); break;
     case 'crate': g.lootCrate(c, it.obj); break;
-    case 'vent': ventTravel(g, c, it.obj); break;
+    case 'vent':
+      // players get the vent map and choose; bots just pop out somewhere
+      if (c.human) g.fx({ t: 'panel', crew: c.id, panel: 'vents', room: null, vent: it.obj.id });
+      else ventTravel(g, c, it.obj);
+      break;
     case 'dirt': { const take = Math.min(it.obj.amt, 5 - (c.carrying || 0)); c.carrying = (c.carrying || 0) + take; it.obj.amt -= take; if (it.obj.amt <= 0) g.objs.splice(g.objs.indexOf(it.obj), 1); g.fx({ t: 'text', x: c.x, y: c.y - 20, text: `dirt ${c.carrying}/5`, color: '#c8b040' }); break; }
     case 'station':
       if (it.obj.owner === 'them') break;
@@ -555,9 +620,11 @@ function interactPress(g, c) {
       const d = it.obj;
       if (d.sealed) { if (CLASSES[c.cls].clearance || c.isJoe) { d.sealed = false; d.hold = null; g.fx({ t: 'door', x: d.x, y: d.y, unseal: true }); } else g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'no clearance', color: '#ff8080' }); }
       else {
-        // toggle: shut it (boarders have to smash through) or prop it open (anyone can pass, them too)
-        d.hold = d.hold === 'closed' ? 'open' : 'closed';
-        g.fx({ t: 'door', x: d.x, y: d.y, blast: !!d.blast, open: d.hold === 'open' });
+        // toggle: shut it (boarders have to smash through) or prop it open (anyone can pass, them too).
+        // A blast door is several tiles across the walkway; they all go together.
+        const hold = d.hold === 'closed' ? 'open' : 'closed';
+        for (const o of d.group != null ? g.doors.filter((x) => x.blast && x.group === d.group && !x.broken) : [d]) o.hold = hold;
+        g.fx({ t: 'door', x: d.x, y: d.y, blast: !!d.blast, open: hold === 'open' });
       }
       break;
     }
@@ -571,7 +638,7 @@ function interactHold(g, c, dt) {
   if (c.cls === 'mrclean') {
     for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) {
       o.sweep = (o.sweep || 0) + dt * (1.6 + 1.6 * c.upgrades[1]);
-      if (o.sweep >= 1) { o.sweep = 0; o.amt--; c.wallet += 2; g.stats.cleaned++; if (o.amt <= 0) g.objs.splice(g.objs.indexOf(o), 1); g.fx({ t: 'sweep', x: o.x, y: o.y }); }
+      if (o.sweep >= 1) { o.sweep = 0; o.amt--; c.wallet += 2; g.stats.cleaned++; gainXp(g, c, 1.5); if (o.amt <= 0) g.objs.splice(g.objs.indexOf(o), 1); g.fx({ t: 'sweep', x: o.x, y: o.y }); }
       return;
     }
   }
@@ -595,13 +662,16 @@ export function repairRate(c) {
 
 export function repairSystem(g, c, r, dt, amount) {
   let amt = amount ?? repairRate(c) * dt;
-  if (r.type === 'engine' && c.cls !== 'engineer' && !c.isJoe) amt *= 0.25; // only engineers really fix engines
+  if (r.type === 'engine' && c.cls !== 'engineer' && !c.isJoe) amt *= 0.45; // engineers fix engines best
   if (r.type === 'vault' && c.cls === 'guard') amt *= 2;
   const cost = amt * 0.06;
-  if (g.ship.scrap >= cost) g.ship.scrap -= cost; else amt *= 0.35;
+  if (g.ship.scrap >= cost) g.ship.scrap -= cost; else amt *= 0.6;
+  const before = r.sys.hp;
   r.sys.hp = Math.min(r.sys.max, r.sys.hp + amt);
   c.repairs = (c.repairs || 0) + amt;
   c.repairing = 0.2;
+  gainXp(g, c, (r.sys.hp - before) * 0.11);
+  if (before < r.sys.max && r.sys.hp >= r.sys.max && g.rng.chance(0.5)) quip(g, c, 'repair');
   if (g.rng.chance(dt * 6)) g.fx({ t: 'spark', x: r.station.x + g.rng.range(-10, 10), y: r.station.y + g.rng.range(-6, 6), color: '#7cc46a' });
 }
 
@@ -614,6 +684,7 @@ export function repairTile(g, c, t, amt) {
   const tt = g.grid.tiles[i];
   c.repairing = 0.2;
   c.repairs = (c.repairs || 0) + amt;
+  gainXp(g, c, amt * 0.1);
   if (g.rng.chance(0.15)) g.fx({ t: 'spark', x: (t.tx + .5) * TILE, y: (t.ty + .5) * TILE, color: '#7cc46a' });
   if (tt === T.DOOR) {
     const d = g.doors[g.grid.doorAt[i]];
@@ -636,6 +707,9 @@ export function repairTile(g, c, t, amt) {
     g.grid.version++;
     g.fx({ t: 'fixed', x: (t.tx + .5) * TILE, y: (t.ty + .5) * TILE });
     g.stats.repairs++;
+    gainXp(g, c, 3);
+    // anyone standing half inside the new wall gets nudged out of it
+    for (const a of [...g.crew, ...g.mobs]) if (a.alive && Math.abs(a.x - (t.tx + .5) * TILE) < TILE + a.r && Math.abs(a.y - (t.ty + .5) * TILE) < TILE + a.r) unstick(g, a);
   }
 }
 
@@ -667,14 +741,18 @@ function hitThingsInFront(g, c, dmg) {
 }
 
 function ventTravel(g, c, from) {
-  const vents = g.objs.filter((o) => o.kind === 'vent' && !o.broken && o.owner === from.owner);
-  if (vents.length < 2) return;
-  const i = vents.indexOf(from);
-  const to = vents[(i + 1) % vents.length];
+  const vents = g.objs.filter((o) => o.kind === 'vent' && !o.broken && o !== from);
+  if (!vents.length) return;
+  ventTo(g, c, from, g.rng.pick(vents));
+}
+/** Crawl from one vent to another (any vent: ours, or theirs on a docked ship). */
+export function ventTo(g, c, from, to) {
   c.x = to.x; c.y = to.y + 18;
+  unstick(g, c);
   c.ventT = c.upgrades[2] ? 0 : 0.6;
   g.fx({ t: 'vent', x: from.x, y: from.y, x2: to.x, y2: to.y });
   if (!c.cloaked) { c.cloaked = true; c.cloakBreak = 0; }
+  gainXp(g, c, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -703,8 +781,11 @@ function passive(g, c, dt) {
     m.reviveT -= dt * (inPen ? 2 : 1);
   }
   if (c.cls === 'urchid' && !c.human && g.rng.chance(dt / 12)) ABILITY_FNS.insult(g, c);
-  if (c.cls === 'scientist' && g.ship.researching) {
+  if (c.cls === 'scientist') {
     const r = g.rooms[roomAt(g, c)];
-    if (r?.type === 'lab') g.researchTick(c, dt);
+    if (r?.type === 'lab') {
+      if (g.ship.researching) g.researchTick(c, dt);
+      else gainXp(g, c, dt * 0.3);   // minding the power grid
+    }
   }
 }

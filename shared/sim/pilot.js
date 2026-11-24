@@ -2,7 +2,7 @@
 // Rocks and creatures come at you; gem veins and fuel pockets are worth flying through.
 import { TILE, T, SLOT_W, SLOT_H } from './data.js';
 import { idx, roomCenter, roomPoint } from './grid.js';
-import { hitTile, rainPickup, addMess } from './combat.js';
+import { hitTile, rainPickup, addMess, gainXp, gemType } from './combat.js';
 import { clamp } from './util.js';
 
 export function newDescent(resume) {
@@ -14,7 +14,8 @@ export function speedFactor(g) {
   const engines = g.rooms.filter((r) => r.owner === 'us' && r.type === 'engine');
   let eng = 0;
   engines.forEach((r, k) => { eng += (k === 0 ? 1 : 0.35) * (0.25 + 0.75 * r.sys.hp / r.sys.max); });
-  let f = eng * (1 + 0.12 * s.up.drill) * (s.research.has('drillbits') ? 1.2 : 1) * (s.overclock?.sys === 'engine' ? 1.3 : 1);
+  const p = s.power?.alloc?.engine ?? 1;
+  let f = eng * (1 + 0.12 * s.up.drill) * (s.research.has('drillbits') ? 1.2 : 1) * [0.55, 1, 1.15, 1.3][Math.min(3, p)];
   const helm = g.rooms.find((r) => r.owner === 'us' && r.type === 'bridge');
   if (!helm || helm.sys.hp <= 0) f *= 0.4;
   return f;
@@ -35,6 +36,7 @@ export function descentTick(g, dt, pilotInput) {
   }
   const spd = speedFactor(g) * (d.boost ? 1.6 : 1) * g.speed;
   d.progress += dt * spd / 86;   // ~1.5 minutes a level at normal speed (30 levels down)
+  if (pilot?.atHelm || !pilotInput) gainXp(g, pilot, dt * 0.3);   // flying is the pilot's job
   // the tunnel bends now and then: the pilot banks into it (the view outside follows)
   d.turnT = (d.turnT ?? g.rng.range(4, 10)) - dt;
   if (d.turnT <= 0) { d.turnT = g.rng.range(5, 14); d.heading = clamp(g.rng.range(-0.75, 0.75), -0.8, 0.8); }
@@ -73,7 +75,7 @@ export function descentTick(g, dt, pilotInput) {
       o.done = true;
       const near = Math.hypot(o.x - d.steer.x, o.y - d.steer.y) < o.r + 0.13;
       if (!near) continue;
-      if (o.kind === 'gems') { collectVein(g, 'gem', 3 + g.tier * 2); d.collected++; g.fx({ t: 'vein', kind: 'gem' }); }
+      if (o.kind === 'gems') { collectVein(g, 'gem', 3 + g.tier * 2); d.collected++; g.fx({ t: 'vein', kind: 'gem' }); gainXp(g, pilot, 3); }
       else if (o.kind === 'fuel') { s.fuel = Math.min(s.fuelMax, s.fuel + 12); g.fx({ t: 'vein', kind: 'fuel' }); g.log('ship', '+12 fuel from a fuel pocket.'); }
       else impact(g, o.kind);
     }
@@ -133,18 +135,24 @@ function dropSpot(g) {
 }
 
 function collectVein(g, kind, n) {
-  for (let k = 0; k < n; k++) { const p = dropSpot(g); rainPickup(g, p.x, p.y, kind, 1); }
+  for (let k = 0; k < n; k++) { const p = dropSpot(g); rainPickup(g, p.x, p.y, kind, 1, kind === 'gem' ? gemType(g) : undefined); }
 }
+
+/** How many things the feeders drop per level: once the seam is mined out, it's mined out. */
+export const dropLimit = (g) => 70 + 12 * g.tier + 10 * (g.ship.up.feeders || 0);
 
 /** Auto-feeders: gems, ore and food rain down into the ship as we drill. */
 export function feeders(g, dt) {
   const s = g.ship;
-  g.feedT = (g.feedT || 0) - dt * (1 + 0.25 * s.up.feeders) * (s.overclock?.sys === 'feeder' ? 1.5 : 1);
+  if ((g.drops || 0) >= dropLimit(g)) return;
+  const sysP = s.power?.alloc?.systems ?? 1;
+  g.feedT = (g.feedT || 0) - dt * (1 + 0.25 * s.up.feeders) * [0.4, 1, 1.25, 1.5][Math.min(3, sysP)];
   if (g.feedT > 0) return;
   g.feedT = g.rng.range(0.9, 1.8);
+  g.drops = (g.drops || 0) + 1;
   const roll = g.rng();
   const { x, y } = dropSpot(g);
-  if (roll < 0.5) rainPickup(g, x, y, 'gem', 1 + (g.rng.chance(0.15) ? g.tier : 0));
+  if (roll < 0.5) rainPickup(g, x, y, 'gem', 1, gemType(g));
   else if (roll < 0.75) rainPickup(g, x, y, 'ore', 1);
   else if (roll < 0.93) rainPickup(g, x, y, 'food', 1, g.rng.pick(['grub', 'shroom', 'fish', 'spice']));
   else addMess(g, x, y, 'dirt', 1); // dirt filters in through the roof

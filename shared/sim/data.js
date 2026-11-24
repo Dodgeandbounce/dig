@@ -32,6 +32,8 @@ export const BLAST_DOOR_HP = 220;
 
 // ---------------------------------------------------------------------------
 // Rooms. `cls` = the class whose job lives here. `sys` = the system the room powers.
+// `size` = how many slots it covers ([wide, tall]); most rooms are one slot. The bridge only needs the
+// helm, so it's a bit smaller (a short hallway takes the rest of its slot).
 export const ROOMS = {
   bridge:   { name: 'Bridge',            cls: 'pilot',      sys: 'helm',     hp: 140, color: '#2f4a5c', icon: 'helm' },
   engine:   { name: 'Engine Room',       cls: 'engineer',   sys: 'engine',   hp: 120, color: '#4a3a2a', icon: 'engine' },
@@ -43,7 +45,7 @@ export const ROOMS = {
   kitchen:  { name: 'Galley',            cls: 'chef',       sys: 'kitchen',  hp: 80,  color: '#4a3524', icon: 'pot' },
   closet:   { name: 'Janitor Closet',    cls: 'mrclean',    sys: 'closet',   hp: 70,  color: '#2f3f36', icon: 'broom' },
   armory:   { name: 'Armory',            cls: 'commando',   sys: 'armory',   hp: 100, color: '#3a3a30', icon: 'crate' },
-  farm:     { name: 'Dirt Farm',         cls: 'farmer',     sys: 'farm',     hp: 70,  color: '#3b3a1c', icon: 'crop' },
+  farm:     { name: 'Dirt Farm',         cls: 'farmer',     sys: 'farm',     hp: 110, color: '#3b3a1c', icon: 'crop', size: [2, 2] },
   lab:      { name: 'Laboratory',        cls: 'scientist',  sys: 'lab',      hp: 90,  color: '#24304a', icon: 'flask' },
   kennel:   { name: 'Kennel',            cls: 'dog',        sys: 'kennel',   hp: 60,  color: '#45362a', icon: 'bone' },
   pen:      { name: 'Monster Pen',       cls: 'trainer',    sys: 'pen',      hp: 110, color: '#2d4030', icon: 'cube' },
@@ -53,15 +55,19 @@ export const ROOMS = {
   casino:   { name: 'Casino Nook',       cls: 'slots',      sys: 'casino',   hp: 80,  color: '#4a2430', icon: 'slot' },
   guardpost:{ name: 'Guard Post',        cls: 'vaelift',    sys: 'guardpost',hp: 100, color: '#30304a', icon: 'staff' },
   storage:  { name: 'Storage',           cls: null,         sys: 'storage',  hp: 90,  color: '#33302a', icon: 'crate' },
-  quarters: { name: 'Crew Quarters',     cls: null,         sys: 'quarters', hp: 80,  color: '#33283a', icon: 'bed' },
+  quarters: { name: 'Crew Quarters',     cls: null,         sys: 'quarters', hp: 100, color: '#33283a', icon: 'bed', size: [2, 1] },
+  power:    { name: 'Power Core',        cls: 'scientist',  sys: 'power',    hp: 120, color: '#2a3a24', icon: 'power' },
   corridor: { name: 'Corridor',          cls: null,         sys: null,       hp: 60,  color: '#2b2521', icon: null },
 };
+export const roomSize = (type) => ROOMS[type]?.size || [1, 1];
+export const BRIDGE_W = 6;          // the bridge is 6 tiles wide; a 4-wide hallway fills the rest of its slot
 
 // Rooms the crew can buy at ports to expand the ship.
 export const BUYABLE_ROOMS = [
   { type: 'engine',   cost: 160, desc: 'Another engine: faster descent, more fuel burn, more for the engineers to fix.' },
   { type: 'storage',  cost: 90,  desc: '+40 vault capacity. Gems overflow without it.' },
-  { type: 'quarters', cost: 80,  desc: 'Crew respawn faster (and closer).' },
+  { type: 'quarters', cost: 80,  desc: 'Big bunk room (2 slots). Crew respawn faster, and you can pick it as a respawn point.' },
+  { type: 'power',    cost: 150, desc: '+3 power cells for the scientist to route to engines, bubbles, guns, systems and the galley.' },
   { type: 'hall',     cost: 110, desc: 'Another auto-feeder hall. More gems, ore and food rain down.' },
   { type: 'corridor', cost: 30,  desc: 'Just a hallway. Connects things. Chokepoints are strategy.' },
 ];
@@ -122,14 +128,14 @@ export const CLASSES = {
   farmer: {
     name: 'Farmer', def: 'Dood', room: 'farm', color: '#c8b040', hp: 120, speed: 140, clearance: false, unlock: 4,
     weapon: 'shotgun',
-    abilities: { q: 'pitchfork', f: 'feast' },
-    blurb: 'Hauls the dirt that leaks in, farms it, and sells boosted crops to the chef. Shotgun and pitchfork.',
+    abilities: { q: 'scarecrow', f: 'feast', rmb: 'pitchfork' },
+    blurb: 'Hauls the dirt that leaks in, farms it, and sells boosted crops to the chef. Zone defense: a shotgun, a pitchfork that shoves everything back, and scarecrows that launch crows.',
   },
   scientist: {
     name: 'Scientist', def: 'York', room: 'lab', color: '#50c8e8', hp: 90, speed: 140, clearance: true, unlock: 4,
     weapon: 'jar',
     abilities: { q: 'jarswap', f: 'overclock' },
-    blurb: 'Researches upgrades, scans enemy ships, routes power. Throws jars of poison, acid and explosives. Says big words.',
+    blurb: 'Researches upgrades and routes the ship\'s power cells (engines, bubbles, guns, systems, galley). Throws jars of poison, acid, explosives and buffs. Says big words.',
   },
   dog: {
     name: 'Dog', def: 'Ruff', room: 'kennel', color: '#b08050', hp: 110, speed: 230, clearance: false, unlock: 5,
@@ -187,7 +193,7 @@ export const WEAPONS = {
   rifle:      { kind: 'bullet', dmg: 8,  rate: 0.09, speed: 720, spread: 0.09, range: 600 },
   shotgun:    { kind: 'bullet', dmg: 7,  rate: 0.75, speed: 560, spread: 0.32, range: 260, pellets: 7 },
   ppk:        { kind: 'bullet', dmg: 20, rate: 0.36, speed: 760, spread: 0.02, range: 640 },
-  coins:      { kind: 'bullet', dmg: 9,  rate: 0.12, speed: 560, spread: 0.12, range: 420, cost: 1 },
+  coins:      { kind: 'bullet', dmg: 18, rate: 0.12, speed: 560, spread: 0.12, range: 420, cost: 1, pierce: true }, // your hard-earned money goes straight through them
   rocket:     { kind: 'rocket', dmg: 42, rate: 1.05, speed: 380, spread: 0,    range: 600, radius: 70 },
   jar:        { kind: 'jar',    dmg: 0,  rate: 0.7,  speed: 330, spread: 0,    range: 340 },
   bubble:     { kind: 'bubble', dmg: 0,  rate: 0.38, speed: 170, spread: 0.05, range: 600 },
@@ -195,7 +201,7 @@ export const WEAPONS = {
   cleaver:    { kind: 'melee',  dmg: 19, rate: 0.36, range: 38, arc: 1.5 },
   axe:        { kind: 'melee',  dmg: 31, rate: 0.62, range: 46, arc: 2.5, knock: 140 },
   whip:       { kind: 'melee',  dmg: 13, rate: 0.40, range: 62, arc: 0.7 },
-  dagger:     { kind: 'melee',  dmg: 18, rate: 0.34, range: 34, arc: 1.2, backstab: 4 },
+  dagger:     { kind: 'melee',  dmg: 18, rate: 0.34, range: 34, arc: 1.2, backstab: true },   // from behind: instant kill
   bite:       { kind: 'melee',  dmg: 21, rate: 0.30, range: 32, arc: 1.4, lifesteal: 0.35 },
   staff:      { kind: 'melee',  dmg: 15, rate: 0.40, range: 50, arc: 2.0, knock: 180 },
   heckle:     { kind: 'heckle', dmg: 0,  rate: 0.9 },
@@ -204,7 +210,7 @@ export const WEAPONS = {
 // Ability cooldowns (seconds) and costs.
 export const ABILITIES = {
   evasive:   { name: 'Evasive Maneuvers', cd: 18, desc: 'At the helm during a docking: enemy D-fire misses for 4s.' },
-  rally:     { name: 'Rally the Crew',    cd: 30, desc: 'Everyone in your room moves and shoots 25% faster for 6s.' },
+  rally:     { name: 'Rally the Crew',    cd: 30, desc: 'Everyone in your room moves and shoots twice as fast (+100%) for 6s.' },
   turret:    { name: 'Gun Turret',        cd: 6,  cost: { scrap: 15 }, desc: 'Build an auto-turret (15 scrap).' },
   trap:      { name: 'Shock Trap',        cd: 4,  cost: { scrap: 5 },  desc: 'Place a shock trap that stuns (5 scrap).' },
   insult:    { name: 'Insult',            cd: 2.5, desc: 'Mock a crewmate. Better insults unlock deeper down.' },
@@ -219,10 +225,11 @@ export const ABILITIES = {
   chainsaw:  { name: 'Chainsaw',          cd: 0,  desc: 'Hold right mouse: near-perfect melee in one direction. VRRRM.' },
   grenade:   { name: 'Grenade',           cd: 4,  desc: 'Bouncy grenade, 1.6s fuse.' },
   tnt:       { name: 'TNT',               cd: 14, desc: 'Plant TNT. 3 seconds. Run.' },
-  pitchfork: { name: 'Pitchfork Sweep',   cd: 5,  desc: 'Knock back everything in front of you.' },
+  pitchfork: { name: 'Pitchfork',         cd: 0.55, desc: 'Hold right mouse: jab over and over, shoving everything in front of you back.' },
+  scarecrow: { name: 'Scarecrow',         cd: 10, cost: { scrap: 6 }, desc: 'Plant a scarecrow (6 scrap). It launches crows at anything that comes near.' },
   feast:     { name: 'Harvest Snack',     cd: 20, cost: { crops: 1 }, desc: 'Eat a crop: heal 50.' },
-  jarswap:   { name: 'Swap Jar',          cd: 0.3, desc: 'Cycle poison / acid / explosive jars.' },
-  overclock: { name: 'Overclock',         cd: 1,  desc: 'Route spare power to a system (at the lab).' },
+  jarswap:   { name: 'Swap Jar',          cd: 0.3, desc: 'Cycle poison / acid / explosive / buff jars.' },
+  overclock: { name: 'Power Routing',     cd: 1,  desc: 'Open the power panel (at the lab): move power cells between systems.' },
   pounce:    { name: 'Pounce',            cd: 4,  desc: 'Leap and bite.' },
   howl:      { name: 'Howl',              cd: 20, desc: 'Enemies nearby flee in terror for 3s.' },
   cloak:     { name: 'Cloak',             cd: 1,  desc: 'Blend in. Move slowly to stay hidden. Attacking reveals you.' },
@@ -252,10 +259,10 @@ export const CLASS_UPGRADES = {
   mrclean:     [['Biceps', '+20% axe damage'], ['Super Broom', 'Sweep 2x faster'], ['Squeaky Clean', 'Clean-ship buff is stronger']],
   missiletech: [['Warheads', '+25% D-missile damage'], ['Fast Assembly', 'Build missiles faster'], ['Bigger Rockets', '+blast radius']],
   commando:    [['Extended Mag', '+25% rifle fire rate'], ['Bigger Boom', '+explosive damage'], ['Scrap Smith', 'Makeshift guns hit harder']],
-  farmer:      [['Better Seeds', 'Crops grow faster'], ['Sawed-Off', '+2 pellets'], ['Big Plots', '+2 farm plots']],
+  farmer:      [['Better Seeds', 'Crops grow faster, +1 plot'], ['Sawed-Off', '+2 pellets'], ['Murder of Crows', 'Scarecrows: +1 crow, harder pecks, tougher straw']],
   scientist:   [['Grant Money', 'Research 30% faster'], ['Potent Jars', '+30% jar effects'], ['Big Words', 'Even more jargon (morale +)']],
   dog:         [['Sharper Teeth', '+20% bite'], ['Fluffier Bed', 'Heal faster at the kennel'], ['Zoomies', '+10% speed']],
-  chameleon:   [['Silent Steps', 'Move faster while cloaked'], ['Sharper Dagger', '+30% backstab'], ['Vent Rat', 'Vent travel is instant']],
+  chameleon:   [['Silent Steps', 'Move faster while cloaked'], ['Sturdy Step', '+12% max health'], ['Vent Rat', 'Vent travel is instant']],
   trainer:     [['Bigger Team', '+1 monster summoned at once'], ['Revive Tech', 'Revive time -25%'], ['Better Cubes', 'Capture at 50% HP']],
   jorbal:      [['Bigger Lungs', 'Bubbles hold enemies longer'], ['Chain Master', '+50% chain bonus'], ['Speed Blower', 'Blow bubbles faster']],
   vaelift:     [['Deep Phase', 'Phase lasts longer'], ['Staff Mastery', '+25% staff damage'], ['Glacier', 'Ice cubes last longer']],
@@ -263,6 +270,11 @@ export const CLASS_UPGRADES = {
   slots:       [['More Reels', '+1 reel (bigger payouts)'], ['Heavier Frame', 'Roll crushes harder'], ['Lucky', 'Better odds']],
 };
 export const UPGRADE_BASE_COST = 40;
+// Personal upgrades are earned, not bought: doing your job (repairs, fires, cooking, kills, research...)
+// earns XP, and each star costs a bit more XP than the last. A busy crew member gets all but a couple
+// of stars by the time we reach the core. Late joiners come aboard with some XP to catch up.
+export const xpCost = (lvl) => 40 + 15 * lvl;
+export const XP_JOIN_PER_LEVEL = 75;
 
 // Ship upgrades (bought at ports). level 0..5
 export const SHIP_UPGRADES = {
@@ -276,15 +288,55 @@ export const SHIP_UPGRADES = {
 };
 
 // ---------------------------------------------------------------------------
+// Power. The ship has a bank of power cells (more with each Power Core room). The scientist routes them;
+// without one aboard they're spread out automatically. Allocated power is constant: it never runs out,
+// but a system with no cells can't run its extras.
+export const POWER_BASE = 5;
+export const POWER_PER_CORE = 3;
+export const POWER_SYS = {
+  engine:  { name: 'Engines',          max: 3, desc: 'Each cell: faster descent and +8% chance to dodge enemy fire. 0 cells: crawling.' },
+  shield:  { name: 'Bubble',           max: 3, desc: 'Bubbles recharge faster with more cells. 0 cells: no recharge.' },
+  weapons: { name: 'Weapons',          max: 8, desc: 'Each installed gun needs its power to fire. Unpowered guns shut down.' },
+  systems: { name: 'Internal systems', max: 3, desc: 'Feeders, doors and the lab. More cells, more pickups and faster research.' },
+  kitchen: { name: 'Galley',           max: 3, desc: 'Better cooking gear: meals heal more, cook faster, and the fancy recipes need it.' },
+};
+export const POWER_DEFAULT = { engine: 1, shield: 1, weapons: 1, systems: 1, kitchen: 1 };
+
+// Ship guns. The D-gun comes with the ship. The rest are found in enemy wrecks or bought at ports,
+// sit in storage, and the missile technician installs them in the weapons bay. Each one needs power.
+export const SHIP_GUNS = {
+  dgun:  { name: 'D-Gun',          power: 1, period: 5,   dmg: 18, shots: 1, cost: 0,   desc: 'The old reliable. Bubbles stop it.' },
+  flak:  { name: 'Flak Battery',   power: 1, period: 4.5, dmg: 6,  shots: 4, cost: 160, desc: 'Four quick shells. Strips bubbles fast.' },
+  burst: { name: 'Burst Cannon',   power: 2, period: 7,   dmg: 14, shots: 3, cost: 220, desc: 'Three heavy rounds in a row.' },
+  ion:   { name: 'Ion Lance',      power: 2, period: 8,   dmg: 10, shots: 1, bubbleDmg: 3, sysMul: 2.5, cost: 240, desc: 'Drains 3 bubbles per hit and fries systems.' },
+  rail:  { name: 'Rail Driver',    power: 3, period: 11,  dmg: 70, shots: 1, pierce: true, cost: 320, desc: 'Goes straight through bubbles. Huge hit, slow reload.' },
+};
+export const GUN_SLOTS = 3;           // guns the weapons bay can hold (+1 per extra weapons bay)
+
+// ---------------------------------------------------------------------------
+// Gems: all kinds, worth different amounts. Deeper down the rich ones turn up more often.
+export const GEMS = {
+  bronze:   { name: 'bronze',   value: 1,  color: '#c07a3a', hi: '#f0b070', shape: 'nugget', depth: 0 },
+  silver:   { name: 'silver',   value: 2,  color: '#b8c0c8', hi: '#ffffff', shape: 'nugget', depth: 0 },
+  quartz:   { name: 'quartz',   value: 3,  color: '#5ec8e8', hi: '#e0f8ff', shape: 'diamond', depth: 0 },
+  gold:     { name: 'gold',     value: 5,  color: '#f4c542', hi: '#fff4a0', shape: 'nugget', depth: 1 },
+  amethyst: { name: 'amethyst', value: 7,  color: '#a060e0', hi: '#e0c0ff', shape: 'shard', depth: 1 },
+  sapphire: { name: 'sapphire', value: 10, color: '#3060e0', hi: '#a0c0ff', shape: 'oval', depth: 2 },
+  ruby:     { name: 'ruby',     value: 14, color: '#e02040', hi: '#ffa0b0', shape: 'heart', depth: 3 },
+};
+export const GEM_ORDER = Object.keys(GEMS);
+
+// ---------------------------------------------------------------------------
 // Food & recipes (Chef)
 export const FOODS = ['grub', 'shroom', 'fish', 'spice'];
+// heal: HP the meal gives back when it lands (the better the food, the more). power: galley cells it needs.
 export const RECIPES = [
-  { id: 'skewers', name: 'Fried Grub Skewers', needs: { grub: 2 }, buff: { dmg: 0.25 }, side: { speed: -0.1 }, dur: 60, text: '+25% damage, a bit greasy (-10% speed)' },
-  { id: 'salad',   name: 'Rock Shroom Salad',  needs: { shroom: 2 }, buff: { regen: 2 }, side: { rate: -0.08 }, dur: 60, text: 'Regenerate 2 HP/s, slower trigger finger' },
-  { id: 'sticks',  name: 'Frozen Fish Sticks', needs: { fish: 2 }, buff: { speed: 0.3 }, side: { maxhp: -0.1 }, dur: 45, text: '+30% speed, brain freeze (-10% max HP)' },
-  { id: 'chili',   name: 'Magma Chili',        needs: { grub: 1, shroom: 1, spice: 1 }, buff: { cd: 0.3 }, side: { armor: -0.1 }, dur: 60, text: 'Abilities recharge 30% faster, take 10% more damage' },
-  { id: 'feast',   name: "Farmer's Feast",     needs: { crops: 2, spice: 1 }, buff: { dmg: 0.2, speed: 0.15, regen: 1 }, side: {}, dur: 90, text: 'A bit of everything. Farm-fresh, no downside.' },
-  { id: 'stew',    name: 'Class-Special Stew', needs: { crops: 1, fish: 1, grub: 1 }, buff: { special: 1 }, side: { speed: -0.05 }, dur: 75, text: "Boosts each class's speciality (+40%)" },
+  { id: 'skewers', name: 'Fried Grub Skewers', needs: { grub: 2 }, heal: 25, power: 0, buff: { dmg: 0.25 }, side: { speed: -0.1 }, dur: 60, text: '+25% damage, a bit greasy (-10% speed)' },
+  { id: 'salad',   name: 'Rock Shroom Salad',  needs: { shroom: 2 }, heal: 35, power: 0, buff: { regen: 2 }, side: { rate: -0.08 }, dur: 60, text: 'Regenerate 2 HP/s, slower trigger finger' },
+  { id: 'sticks',  name: 'Frozen Fish Sticks', needs: { fish: 2 }, heal: 30, power: 0, buff: { speed: 0.3 }, side: { maxhp: -0.1 }, dur: 45, text: '+30% speed, brain freeze (-10% max HP)' },
+  { id: 'chili',   name: 'Magma Chili',        needs: { grub: 1, shroom: 1, spice: 1 }, heal: 50, power: 1, buff: { cd: 0.3 }, side: { armor: -0.1 }, dur: 60, text: 'Abilities recharge 30% faster, take 10% more damage' },
+  { id: 'stew',    name: 'Class-Special Stew', needs: { crops: 1, fish: 1, grub: 1 }, heal: 65, power: 1, buff: { special: 1 }, side: { speed: -0.05 }, dur: 75, text: "Boosts each class's speciality (+40%)" },
+  { id: 'feast',   name: "Farmer's Feast",     needs: { crops: 2, spice: 1 }, heal: 90, power: 2, buff: { dmg: 0.2, speed: 0.15, regen: 1 }, side: {}, dur: 90, text: 'A bit of everything. Farm-fresh, no downside.' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -302,22 +354,33 @@ export const RESEARCH = [
 
 // ---------------------------------------------------------------------------
 // Enemies: a roster is generated each run from these parts.
+// tier: the shallowest depth tier they turn up at (the weird ones are saved for later)
 export const RACES = [
-  { id: 'mole',   body: 'round',  color: '#6b5444', eye: '#ffd0d0' },
-  { id: 'rat',    body: 'long',   color: '#7a7066', eye: '#ff4040' },
-  { id: 'beetle', body: 'shell',  color: '#3a5a4a', eye: '#a0ff80' },
-  { id: 'worm',   body: 'worm',   color: '#b0707a', eye: '#202020' },
-  { id: 'golem',  body: 'square', color: '#707a80', eye: '#60e0ff' },
-  { id: 'ghoul',  body: 'round',  color: '#5a6a50', eye: '#f0f040' },
-  { id: 'crab',   body: 'shell',  color: '#a04a30', eye: '#202020' },
-  { id: 'bat',    body: 'wing',   color: '#4a3a5a', eye: '#ff80ff' },
-  { id: 'magmite',body: 'square', color: '#a03a10', eye: '#ffe060' },
+  { id: 'mole',   body: 'round',  color: '#6b5444', eye: '#ffd0d0', tier: 0 },
+  { id: 'rat',    body: 'long',   color: '#7a7066', eye: '#ff4040', tier: 0 },
+  { id: 'beetle', body: 'shell',  color: '#3a5a4a', eye: '#a0ff80', tier: 0 },
+  { id: 'worm',   body: 'worm',   color: '#b0707a', eye: '#202020', tier: 0 },
+  { id: 'raider', body: 'human',  color: '#8a6a50', eye: '#ffffff', tier: 0 },   // other digging folk: they want your ship too
+  { id: 'golem',  body: 'square', color: '#707a80', eye: '#60e0ff', tier: 1 },
+  { id: 'ghoul',  body: 'round',  color: '#5a6a50', eye: '#f0f040', tier: 1 },
+  { id: 'crab',   body: 'shell',  color: '#a04a30', eye: '#202020', tier: 1 },
+  { id: 'bat',    body: 'wing',   color: '#4a3a5a', eye: '#ff80ff', tier: 1 },
+  { id: 'spider', body: 'spider', color: '#3a2a2a', eye: '#ff3030', tier: 2 },
+  { id: 'slime',  body: 'blob',   color: '#5aa040', eye: '#ffffff', tier: 2 },
+  { id: 'magmite',body: 'square', color: '#a03a10', eye: '#ffe060', tier: 2 },
+  { id: 'squid',  body: 'squid',  color: '#7a4a8a', eye: '#ffe0a0', tier: 3 },
+  { id: 'crystal',body: 'crystal',color: '#60a0c0', eye: '#ffffff', tier: 3 },
+  { id: 'eyeball',body: 'eye',    color: '#d8c8c0', eye: '#c02020', tier: 3 },
+  { id: 'mantle', body: 'human',  color: '#5a3030', eye: '#ff8020', tier: 4 },   // deep folk, half rock
+  { id: 'horror', body: 'squid',  color: '#3a1020', eye: '#40ff80', tier: 4 },
 ];
 export const BUILDS = [
-  { id: 'scrawny', size: 0.8, hp: 0.7, speed: 1.2,  dmg: 0.8 },
-  { id: 'lanky',   size: 1.0, hp: 0.9, speed: 1.15, dmg: 1.0 },
-  { id: 'squat',   size: 0.95,hp: 1.2, speed: 0.9,  dmg: 1.0 },
-  { id: 'burly',   size: 1.3, hp: 1.8, speed: 0.8,  dmg: 1.4 },
+  { id: 'scrawny', size: 0.8, hp: 0.7, speed: 1.2,  dmg: 0.8, tier: 0 },
+  { id: 'lanky',   size: 1.0, hp: 0.9, speed: 1.15, dmg: 1.0, tier: 0 },
+  { id: 'squat',   size: 0.95,hp: 1.2, speed: 0.9,  dmg: 1.0, tier: 0 },
+  { id: 'burly',   size: 1.3, hp: 1.8, speed: 0.8,  dmg: 1.4, tier: 1 },
+  { id: 'hulking', size: 1.65,hp: 3.0, speed: 0.68, dmg: 1.8, tier: 2 },
+  { id: 'titan',   size: 2.1, hp: 5.0, speed: 0.55, dmg: 2.4, tier: 3 },
 ];
 // role: what they go for once aboard. brute=crew, thief=vault, saboteur=systems, carver=walls
 export const ENEMY_WEAPONS = [
@@ -330,7 +393,14 @@ export const ENEMY_WEAPONS = [
   { id: 'sack',   kind: 'melee',  dmg: 6,  rate: 0.8, range: 30, role: 'thief',    meleeWeak: true },
   { id: 'bomb',   kind: 'bomb',   dmg: 30, rate: 2.6, range: 260, role: 'carver' },
   { id: 'drill',  kind: 'melee',  dmg: 12, rate: 0.5, range: 34, role: 'carver',   wallDmg: 3 },
+  { id: 'maul',   kind: 'melee',  dmg: 26, rate: 1.4, range: 42, role: 'carver',   wallDmg: 4 },
+  { id: 'harpoon',kind: 'bullet', dmg: 16, rate: 1.8, range: 420, speed: 380, role: 'brute' },
+  { id: 'spit',   kind: 'bullet', dmg: 6,  rate: 0.9, range: 300, speed: 340, pellets: 3, spread: 0.25, role: 'saboteur', acid: true },
+  { id: 'laser',  kind: 'bullet', dmg: 9,  rate: 0.5, range: 520, speed: 900, role: 'saboteur' },
 ];
+// The Hoarder: once a run, a single huge thing comes aboard alone ("100%"). It smashes walls, grabs
+// your scrap and flies back to its ship with it unless you put it down.
+export const HOARDER = { name: 'The Hoarder', race: 'golem', body: 'hoarder', color: '#5a5048', eye: '#ffb020', size: 2.6, hp: 900, speed: 70, dmgMul: 2.4, weapon: 'maul' };
 export const NAME_A = ['Rab', 'Bur', 'Qu', 'Grub', 'Skree', 'Mog', 'Snik', 'Dreg', 'Kob', 'Thrum', 'Glim', 'Vor', 'Nub', 'Krag', 'Slor', 'Pib', 'Zor', 'Wem', 'Fung', 'Druk'];
 export const NAME_B = ['bers', 'lys', 'es', 'blins', 'chers', 'gles', 'lings', 'rots', 'kins', 'mites', 'loks', 'pers', 'sies', 'rats', 'wums'];
 
@@ -341,6 +411,9 @@ export const CREATURES = [
   { id: 'magmaw',     name: 'Magmaw',      race: 'magmite',build: 'squat',  weapon: 'flamer',tierMin: 2 },
   { id: 'shrieker',   name: 'Shrieker',    race: 'bat',    build: 'lanky',  weapon: 'claws', tierMin: 1 },
   { id: 'changed',    name: 'The Changed', race: 'ghoul',  build: 'lanky',  weapon: 'club',  tierMin: 3 },
+  { id: 'gloomspider',name: 'Gloom Spider',race: 'spider', build: 'burly',  weapon: 'spit',  tierMin: 2 },
+  { id: 'rocklobster',name: 'Rock Lobster',race: 'crab',   build: 'hulking',weapon: 'maul',  tierMin: 3 },
+  { id: 'molemother', name: 'Mole Mother', race: 'slime',  build: 'titan',  weapon: 'claws', tierMin: 4 },
 ];
 export const BOSS = { id: 'coreking', name: 'The Core Leviathan', race: 'magmite', build: 'burly', hp: 2000, size: 3.2 };
 
@@ -384,6 +457,30 @@ export const JOE_NOTES = [
     reward: { upgrade: 'bubble' }, rewardText: 'Bubble defense upgraded' },
 ];
 export const TRANSPONDER_NOTE = "IT HAPPENED. They're all changing. Something got into them through the dirt, through the vents, through the FOOD. I got out in the pod. I don't know how long I can make it. If anyone finds this — my ship is still out there. Transponder: ";
+export const TRANSPONDER_PILOT = "⚠ PILOT: this one's on you. Write the number down and keep it. Only the pilot can type it into the targeting computer when the signal turns up, so nobody else needs to remember it.";
+// Warnings scratched into the tunnel walls, early on: it gets worse, so build the ship up while it's easy.
+export const EARLY_WARNINGS = [
+  { level: 2, title: 'Scratched into the tunnel wall', lines: ['"It was easy at first, but we are barely able to hold together. BE YE WARNED!"', '(Upgrade the hull plating and bubble defense at the next port. Fix every door. It only gets worse from here.)'] },
+  { level: 4, log: '📜 Another scratching, older: "THEY COME IN BIGGER SHIPS. THEN TWO SHIPS. THEN FOUR. PATCH YOUR HULL OR BE PATCHED INTO THE DIRT."' },
+  { level: 6, log: '📜 A bent hull plate wired to a rock: "We skipped the plating to save money. Don\'t be us. —The crew of the Mudlark (deceased)"' },
+  { level: 9, log: '📜 Painted in something red: "BREACHES LET THE BUGS IN. THE BUGS EAT EVERYONE. EVEN THEM."' },
+];
+// Boarders shout at the foxes. The Urchid gets special treatment.
+export const ENEMY_TAUNTS = [
+  'Nice ship, fox. Mine now.', "Look at its little ears! I'm gonna make a hat.", 'Foxes! I LOVE foxes! Crunchy!',
+  'Your hull is made of tinfoil and dreams!', 'Run, foxy, run!', "Who taught you to fight, a mole? I'm a mole and I'm offended.",
+  "You smell like a wet carpet that's been dug up twice.", "Is that a wrench or are you just happy to see me? Either way, I'm taking it.",
+  "I've seen scarier things in my soup.", "Your tail's on fire. No wait, that's just how ugly it is.",
+  'Surrender the gems and I only bite you a little!', 'Bushy tail, empty head!', 'Fox stew tonight, boys!',
+  'Your pilot drives like a drunk worm.', "Hey! Hey fox! Your door's broken! Hahaha!", 'Grab the shiny ones, leave the furry ones!',
+];
+export const URCHID_TAUNTS = [
+  "What is THAT? A fox in a lounge chair? What a waste of space.", "Don't bother with the chair one. It's furniture.",
+  "Even the bugs won't eat that one. Too lazy to digest.", "Is it... asleep? In the middle of a boarding? Respect.",
+  "That one's not crew, that's cargo.", "Somebody throw the urchid out the airlock. Oh wait, it can't even be bothered to die.",
+  "I've boarded a hundred ships and never seen anything contribute LESS.",
+];
+
 export const JOURNAL_TEXT = [
   "The journal is in Joe's ship, wedged in a skeleton's paw. Not Joe's. Too short.",
   "Last entries: 'The deeper you go, the worse they get. Every layer, the creatures are bigger and there are more of them.'",
@@ -574,6 +671,101 @@ export const LINES = {
   },
   slots: { idle: ['*ding ding ding*', '*whirr*', 'PLAY ME!', 'Feeling lucky?', '*coin noises*'], fight: ['JACKPOT!', 'House always wins!', 'Rolling!'], kill: ['CHA-CHING!', 'Payout!', 'You lose!'], hurt: ['TILT! TILT!'], dock: ['New players at the table!'], fire: ['*alarm bells* *also regular bells*'] },
 };
+// More of them, and two new moods: repair (just fixed something) and win (a fight is over).
+const MORE_LINES = {
+  pilot: {
+    idle: ['If you can read this, the ship is still flying. You are welcome.', 'I parallel-parked this thing between two magma pockets once.', 'Joe always took the corners too wide.', "Every rock out there has my name on it. I've been dodging autographs all day.", 'Next stop: somewhere with fewer teeth.', 'The light is getting brighter. That is either good or very, very bad.'],
+    fight: ['Hold the line, I have to drive this thing!', 'Watch the console, watch the console!', 'Evasive is on cooldown, so YOU dodge!'],
+    kill: ['Ground control to dead guy.', 'Flight cancelled.', 'Turbulence. Permanent turbulence.'],
+    repair: ['Bridge back online. Nobody touch anything.', 'Helm is good. My nerves are not.'],
+    win: ['Good flying, everyone. Mostly me.', 'Sweep the bodies off the deck, we have a schedule.', "Undocking when you're all back. I mean it this time."],
+  },
+  engineer: {
+    idle: ['Duct tape is load-bearing. Do not remove the duct tape.', 'I can hear the engine humming in B-flat. That is a warning.', 'Pass me the big wrench. No, the BIGGER wrench.', "Somebody keeps putting ketchup in the coolant. I know it's the chef.", 'Every bolt on this ship has a name. That one is Gerald.'],
+    fight: ['Turret two, wake up! Earn your rivets!', 'You break it, I break YOU.', 'Get away from my engine!'],
+    kill: ['Torqued to spec.', 'Unscrewed.', 'Scrap metal. Like you.'],
+    repair: ['Good as new. Better, actually.', "There. Hit it if it rattles.", 'Fixed. Stop breaking things.', 'Tightened, greased, insulted. Done.'],
+    win: ['Now everyone hold still while I fix everything you broke.', 'Who wants to watch me weld? Nobody? Fine.'],
+  },
+  urchid: {
+    idle: ['Could someone fluff my cushion? I would, but effort.', 'I am supervising. From a distance. With my eyes closed.', 'This journey has really taken a toll on my nap schedule.', 'Is it lunch? It feels like lunch. It always feels like lunch.'],
+    fight: ['You missed. Again. I counted.', 'Oh no. Anyway.', "Please fight quieter, I'm resting my eyes."],
+    win: ['We won? I knew my moral support would pay off.', 'Great team effort. Especially from the chair.'],
+  },
+  guard: {
+    idle: ['I counted the gems. Then I counted them again. Then once more for luck.', 'Nobody gets past me. Except the dog. The dog is allowed.', 'Eyes open. Always open. I blink in shifts.', "My pistols are named Left and Right. I'm very creative."],
+    fight: ['Halt! Hands where I can see them! All of them!', 'Unauthorized personnel detected! Authorizing bullets!', 'That vault is OFF LIMITS!'],
+    kill: ['Badge revoked.', 'Escorted off the premises.', 'Trespassing has consequences.'],
+    win: ['Vault intact. Gems counted. All is well.', 'Perimeter clear. For now.'],
+  },
+  chef: {
+    idle: ["Who's hungry? Don't answer, everyone's hungry.", 'The soup is alive. It is supposed to be.', "I learned this recipe from a mushroom. It wasn't a nice mushroom.", 'Do NOT touch the pot. The pot is my child.', 'Today we are making deep-crust dirt pie. Very crunchy.', 'A good meal fixes everything. Except the hull. Somebody fix the hull.'],
+    fight: ['Get out of my kitchen!', "You're about to be today's special!", 'Taste my cleaver!', 'Hot pan coming through!'],
+    kill: ['Overcooked.', 'Diced!', 'Back to the walk-in freezer with you.', 'Garnished and served.'],
+    hurt: ['I burned myself! On purpose! For flavor!'],
+    win: ['Victory feast! Somebody bring me the leftovers. Of the enemies.', "Line up, line up, plates out, it's still hot!"],
+  },
+  mrclean: {
+    idle: ['I can smell a crumb from three rooms away.', 'There is no stain I cannot defeat.', 'The axe is for enemies. The broom is for everything else. Mostly.', 'Somebody sneezed in the hall. I will find them.'],
+    fight: ['MESS DETECTED. ELIMINATING.', "You're dirty and you're DONE!", 'Whirlwind of cleanliness!'],
+    kill: ['Disinfected.', 'Bagged and tagged.', 'Gone. Like a dust bunny.'],
+    repair: ['Fire out. Floors mopped. You may proceed.'],
+    win: ['Look at this mess. LOOK at it. Fine. I got it.', 'Enemy guts on my clean floor. Again.'],
+  },
+  missiletech: {
+    idle: ['I painted a face on this one. His name is Kevin. Kevin explodes.', 'Calibrating the warheads. And by calibrating I mean hugging.', 'Somebody owes me a bigger launcher.', 'You hear that whistling? That is the sound of me being right.'],
+    fight: ['Danger close! I love danger close!', 'Kevin, go!', 'Locking on! Locked! Fire!'],
+    kill: ['Detonation successful.', 'Boom. Signed, sealed, delivered.', 'Payload received.'],
+    win: ['Reloading for the next one. There is always a next one.', 'That was a good boom. Ten out of ten boom.'],
+  },
+  commando: {
+    idle: ['I sleep with one eye open and both guns loaded.', 'I once fought a cave bear with a spoon. The spoon won.', 'Pain is just weakness leaving the body. Loudly.', 'I can make a gun out of three forks and a bad attitude.'],
+    fight: ['Contact front! Contact everywhere!', 'Covering fire! Cover me covering you!', 'Eat dirt! Literally, we have plenty!'],
+    kill: ['Target down.', 'Confirmed.', 'Rest in pieces.', "That's how we do it in the dirt."],
+    win: ['Area secure. Check your corners, soldiers.', 'Good work, maggots. Now clean your weapons.'],
+  },
+  farmer: {
+    idle: ['These crops grow better down here. Must be the screaming.', 'Raised a turnip the size of a dog once. The dog was jealous.', 'The scarecrow works. Mostly scares me.', "Dirt's dirt. Good dirt's gold.", 'Rain? Down here? Pfft.'],
+    fight: ['Shoo! Shoo, varmint!', 'Git! Git on outta here!', 'Crows! Get em!', 'Pitchfork says GO AWAY!'],
+    kill: ['Plowed under.', 'Compost.', 'Back to the earth, critter.'],
+    win: ['Harvest time. Of the enemy gear.', 'Now that was a good day of farmin.'],
+  },
+  scientist: {
+    fight: ['My jar of hypotheses says you lose!', 'This is for SCIENCE!', 'Observe! The scientific method! Applied to your face!'],
+    kill: ['Experiment concluded.', 'Results are in. You are dead.', 'Statistically insignificant. Now.'],
+    repair: ['Rewired. Recalibrated. Re-awesome.'],
+    win: ['A fascinating outcome. I will write a paper. Nobody will read it.', 'Reallocate the power cells! No, the OTHER way!'],
+  },
+  dog: { idle: ['*chases own tail*', '*sniffs the engine*', '*lies down in the middle of the hall*', '*stares at the wall, growling*'], kill: ['*proud zoomies*', '*brings you a piece of the enemy*'], win: ['*rolls over for belly rubs*', '*victory howl*'] },
+  chameleon: {
+    idle: ['Have you checked behind you lately?', 'I live in the walls now.', 'Blink twice if you can see me. Ha. You blinked.', "Every vent on this ship knows my name. They don't say it out loud."],
+    fight: ['Here. No, here. No, behind you.', 'You never see the knife.', 'Look at me. Too late.'],
+    kill: ['Shhhh.', 'Never there.', 'Erased.'],
+    win: ['I was there the whole time. You just did not notice.'],
+  },
+  trainer: {
+    idle: ['Every monster is a friend you have not caught yet.', 'I name all my monsters Steve. It saves time.', 'My whip is for encouragement. Mostly.'],
+    fight: ['Weaken it! WEAKEN IT! Not too much!', 'Into the cube, you!', 'Sic em, Steve!'],
+    kill: ['Too feisty. Shame.', "That one wouldn't have fit in the pen anyway."],
+    win: ['New friends in the pen! Everybody say hi!', 'Good monsters. Good, good monsters.'],
+  },
+  jorbal: { idle: ['Blub blub blub.', '*pops a bubble on its own nose*', 'Wheee, currents!', '*rides a tiny breeze*'], fight: ['Bubble trap!', 'Bloop! Gotcha!'], kill: ['Bloop bloop!', '*happy dino noises*'], win: ['BUBBLES FOR EVERYONE!'] },
+  vaelift: {
+    idle: ['The empty dimension is very quiet. I go there to think.', 'The Vurfenstaff has opinions. It is usually right.', 'Premium guard service. No refunds.'],
+    fight: ['You cannot strike what has already left!', 'Staff! Blade! Rifle! Pick one!', 'The ice holds!'],
+    kill: ['Dismissed.', 'Unmade.'],
+    win: ['The dimension is stable. You are welcome.'],
+  },
+  agent: {
+    idle: ['The watch says three new marks. The watch is never wrong.', 'Martini, please. Shaken. Not dirt.', 'I have a license. To dig. And other things.'],
+    fight: ['Take the shot.', 'Clean and quiet.', 'Your file says you lose here.'],
+    kill: ['Case closed.', 'Paid in full.', 'Retired.'],
+    win: ['Mission debrief: I was excellent.', 'Another job well done. Expenses: one bullet.'],
+  },
+  slots: { idle: ['*ding*', 'INSERT COIN', '*jingle jingle*', 'LUCKY DAY!', '*plays a little tune*'], fight: ['BONUS ROUND!', 'COINS COINS COINS!', 'ALL IN!'], kill: ['WINNER!', 'PAYOUT!', 'DOUBLE OR NOTHING!'], win: ['BIG WIN! BIG WIN!', '*fireworks noises*'] },
+};
+for (const [cls, kinds] of Object.entries(MORE_LINES)) for (const [k, list] of Object.entries(kinds)) (LINES[cls][k] ||= []).push(...list);
+
 export const JARGON = ['Quantum-tunnelling the eigen-dirt!', 'Classic Mohorovičić discontinuity behaviour.', 'The lithostatic pressure is non-Newtonian, obviously.',
   'Recalibrating the isostatic flux capacitor.', 'Those are basalt-phase metamorphic resonances.', 'A textbook paleomagnetic reversal cascade!',
   'Hypothesis: the enemy is made of hostile peptides.', 'Peer review would DESTROY that boarding party.', 'Entropy is just dirt with ambition.',

@@ -10,16 +10,17 @@ import { moveActor } from '../shared/sim/combat.js';
 import { norm } from '../shared/sim/util.js';
 import { createRenderer } from './render.js';
 import { createUI } from './ui.js';
-import { initAudio, sfx, setIntensity, toggleMute } from './audio.js';
+import { initAudio, sfx, setIntensity, toggleMute, setListener, at } from './audio.js';
+import { roomCenter } from '../shared/sim/grid.js';
 import { drawCrew } from './sprites.js';
 
 const STEP = 1 / 30;
 const INPUT_MS = 50;
 
-export function launchSolo(host, { name = '', onExit, quick } = {}) {
+export function launchSolo(host, { name = '', onExit, quick, submit } = {}) {
   const wrap = mount(host);
-  if (quick && CLASSES[quick]) { initAudio(); startSolo(wrap, { playerClass: quick, playerName: name }, onExit, name); return; }
-  showSplash(wrap, () => showClassSelect(wrap, name, (opts) => startSolo(wrap, opts, onExit, name), onExit));
+  if (quick && CLASSES[quick]) { initAudio(); startSolo(wrap, { playerClass: quick, playerName: name }, onExit, name, submit); return; }
+  showSplash(wrap, () => showClassSelect(wrap, name, (opts) => startSolo(wrap, opts, onExit, name, submit), onExit));
 }
 
 /**
@@ -96,15 +97,18 @@ function showClassSelect(wrap, name, start, onExit) {
   });
 }
 
-function startSolo(wrap, opts, onExit, lobbyName) {
+function startSolo(wrap, opts, onExit, lobbyName, submit) {
   const ctl = runSession(wrap, soloSession(new Game(opts)), {
     online: false,
+    submit,
     actions: {
       quit: () => { ctl.stop(); onExit?.(); },
-      again: () => { ctl.stop(); launchSolo(wrap.parentElement, { name: lobbyName, onExit }); },
+      again: () => { ctl.stop(); launchSolo(wrap.parentElement, { name: lobbyName, onExit, submit }); },
     },
   });
 }
+
+const runSummary = (g, extra) => g.runSummary(extra);
 
 // ---------------------------------------------------------------------------
 // Sessions: where the game comes from. Same shape for solo and online.
@@ -283,7 +287,7 @@ function onlineSession(net, playerId) {
 }
 
 // ---------------------------------------------------------------------------
-function runSession(wrap, session, { online, isHost = () => false, actions = {} }) {
+function runSession(wrap, session, { online, isHost = () => false, actions = {}, submit }) {
   wrap.innerHTML = '';
   const uiRoot = document.createElement('div');
   uiRoot.className = 'g-root' + (online ? ' online' : '');
@@ -304,6 +308,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
     online, isHost,
     ui: (what, act) => {
       if (what === 'upgrades') ui.openModal('upgrades');
+      if (what === 'crew') ui.openModal('crew');
       if (what === 'help') ui.openModal('help');
       if (what === 'mute') ui.toast(toggleMute() ? 'Sound off' : 'Sound on');
       if (what === 'target') ui.panelTarget(act.target);
@@ -313,8 +318,14 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
       if (['leave', 'restart', 'shelve', 'destroy'].includes(what)) { ui.closeModal(); actions[what]?.(); }
     },
     onClose: () => session.setPaused(false),
-    highScores: (game, score) => saveScore(game, score),
+    highScores: (game, score) => {
+      // solo runs go on the shared leaderboard too (online runs are recorded by the server)
+      const key = `${game.seed}|${game.ship.name}`;
+      if (!online && submit && submitted !== key) { submitted = key; try { submit(runSummary(game, { solo: true, playerName: game.player?.name })); } catch {} }
+      return saveScore(game, score);
+    },
   });
+  let submitted = null;
   const renderer = createRenderer(ui.canvas);
 
   // ---- input
@@ -326,16 +337,22 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
     if (e.target.tagName === 'INPUT') return;
     if (!me) return;
     const k = e.code;
+    if (down && !e.repeat && ui.isOpen() && ui.keyNav(k)) { e.preventDefault(); return; }
+    // downed: choose where to get back up
+    if (down && !e.repeat && !me.alive && !ui.isOpen() && ['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight'].includes(k)) {
+      session.cmd({ t: 'spawnPick', d: k === 'KeyA' || k === 'ArrowLeft' ? -1 : 1 }); sfx.uiHover(); e.preventDefault(); return;
+    }
     if (down && !e.repeat) {
       if (k === 'Escape') {
         if (view.pilot) { session.cmd({ t: 'helm', on: false }); return; }
-        if (ui.isOpen()) { if (['panel', 'upgrades', 'help', 'pause'].includes(ui.kind())) { ui.closeModal(); session.setPaused(false); } }
+        if (ui.isOpen()) { if (['panel', 'upgrades', 'help', 'pause', 'crew'].includes(ui.kind())) { ui.closeModal(); session.setPaused(false); } }
         else { ui.openModal('pause'); session.setPaused(true); }
         e.preventDefault(); return;
       }
       if (k === 'Enter' && online && !ui.isOpen()) { e.preventDefault(); ui.openChat(); return; }
       if (k === 'Tab') { e.preventDefault(); if (ui.kind() === 'upgrades') ui.closeModal(); else if (!ui.isOpen() || ui.kind() === 'panel') ui.openModal('upgrades'); return; }
       if (k === 'KeyH' && !ui.isOpen()) { ui.openModal('help'); return; }
+      if (k === 'KeyC') { if (ui.kind() === 'crew') ui.closeModal(); else if (!ui.isOpen() || ui.kind() === 'panel') ui.openModal('crew'); return; }
       if (k === 'KeyM') { renderer.cam.overview = !renderer.cam.overview; return; }
       if (k === 'KeyL' && !ui.isOpen()) { session.cmd({ t: 'seal' }); return; }
       if (k === 'KeyE' && view.pilot) { session.cmd({ t: 'helm', on: false }); return; }
@@ -388,16 +405,21 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
     if (!g || !me) { if (online) wait.classList.remove('hidden'); return; }
     wait.classList.add('hidden');
     if (me.id !== lastMeId) { lastMeId = me.id; lastHp = me.hp; }
-    if (!online) g.paused = ['help', 'pause', 'upgrades'].includes(ui.kind());
+    if (!online) g.paused = ['help', 'pause', 'upgrades', 'crew'].includes(ui.kind());
     view.pilot = me.cls === 'pilot' && me.atHelm && g.phase === 'descent' && me.alive;
     session.step(dt, buildInput());
     const cur = session.game();
     me = session.me() || me;
-    for (const e of session.drainFx()) handleFx(e, cur);
+    // sounds come from where things happen: left/right and quieter further away
+    setListener(me.x, me.y);
+    for (const e of session.drainFx()) { at(e.x, e.y); handleFx(e, cur); at(null); }
     if (me.hp < lastHp - 0.5 && me.alive) sfx.hurt();
     lastHp = me.hp;
-    // camera focus: urchid ghost mode
+    ambience(cur, dt);
+    if (!online) for (const m of cur.mobs) if (m.sayT > 0) m.sayT -= dt;
+    // camera focus: urchid ghost mode, or (while you're down) the room you'll get back up in
     view.focus = me.cls === 'urchid' && me.ghost ? cur.crew.find((c) => c.id === me.ghost) : null;
+    if (!me.alive && view.spawnRoom != null && cur.rooms[view.spawnRoom]) view.focus = roomCenter(cur.rooms[view.spawnRoom]);
     renderer.frame(cur, me, dt, view);
     uiT -= dt;
     if (uiT <= 0) { uiT = 0.1; ui.update(cur, me, view); }
@@ -405,13 +427,36 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
   }
   requestAnimationFrame(loop);
 
+  // Loops that come from the world itself: fires crackle (from wherever they are), repairs whirr like gears.
+  let fireT = 0, gearT = 0;
+  function ambience(g, dt) {
+    fireT -= dt; gearT -= dt;
+    if (fireT <= 0) {
+      fireT = 0.09 + Math.random() * 0.12;
+      let best = null, bd = 700 * 700;
+      const fires = g.objs.filter((o) => o.kind === 'fire');
+      for (const o of fires) { const d = (o.x - me.x) ** 2 + (o.y - me.y) ** 2; if (d < bd) { bd = d; best = o; } }
+      if (best) { const pickOne = fires.length > 1 && Math.random() < 0.4 ? fires[(Math.random() * fires.length) | 0] : best; at(pickOne.x, pickOne.y); sfx.burn(Math.min(1, fires.length / 6)); at(null); }
+    }
+    if (gearT <= 0) {
+      gearT = 0.11;
+      for (const c of g.crew) if (c.repairing > 0 && c.alive && Math.hypot(c.x - me.x, c.y - me.y) < 520) { at(c.x, c.y); sfx.gear(); at(null); break; }
+    }
+  }
+
   function handleFx(e, g) {
     renderer.onFx(e, g);
     ui.onFx(e, g, me);
     switch (e.t) {
       case 'shot': sfx.shot(e.w); break;
-      case 'eshot': sfx.eshot(); break;
-      case 'swing': sfx.swing(); break;
+      case 'eshot': sfx.eshot(e.w); break;
+      case 'swing': if (e.cls === 'trainer') sfx.whip(); else sfx.swing(e.cls); break;
+      case 'dash': sfx.dash(); break;
+      case 'caw': sfx.caw(); break;
+      case 'backstab': sfx.stab(); break;
+      case 'xp': if (e.crew === me.id) sfx.xp(); break;
+      case 'meal': if (e.crew === me.id) sfx.eat(); break;
+      case 'gunfound': sfx.gunfound(); break;
       case 'hit': if (e.team !== 'crew') sfx.hit(); break;
       case 'boom': sfx.boom(e.r); break;
       case 'pickup': sfx.pickup(e.kind); break;
@@ -430,6 +475,13 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
       case 'zap': sfx.zap(); break;
       case 'clang': sfx.clang(); break;
       case 'fixed': sfx.fixed(); break;
+      case 'bang': sfx.bang(); break;
+      case 'claw': sfx.claw(e.big); break;
+      case 'flame': sfx.flame(); break;
+      case 'vent': sfx.vent(); break;
+      case 'capture': sfx.capture(); break;
+      case 'respawn': sfx.respawn(); break;
+      case 'spark': sfx.spark(); break;
       case 'slots': if (e.crew === me.id) sfx.slots(e.win); break;
       case 'victory': sfx.victory(); break;
       case 'gameover': sfx.defeat(); break;
@@ -439,8 +491,8 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {} 
       case 'ability': if (e.id === 'pounce' || e.id === 'howl') sfx.bark(); if (e.id === 'insult') sfx.insult(); break;
       case 'say': {
         const a = g.crew.find((c) => c.id === e.id) || g.mobs.find((m) => m.id === e.id);
-        if (a && !a.cls) { a.say = e.text; a.sayT = 3; }
-        if (a?.cls && Math.hypot(a.x - me.x, a.y - me.y) < 500) sfx.chirp(a.cls);
+        if (a && !a.cls) { a.say = e.text; a.sayT = 3.2; }
+        if (a && Math.hypot(a.x - me.x, a.y - me.y) < 500) { at(a.x, a.y); if (a.cls) sfx.chirp(a.cls); else if (!a.isJoe) sfx.grunt(); at(null); }
         break;
       }
       case 'switch': me = session.me() || me; break;
@@ -468,7 +520,7 @@ function saveScore(g, score) {
   try { list = JSON.parse(localStorage.getItem('doigo.scores') || '[]'); } catch {}
   const key = `${g.ship.name}|${g.seed}`;
   if (!saveScore.saved?.has(key)) {
-    (saveScore.saved ||= new Map()).set(key, { ship: g.ship.name, score, result: g.phase === 'ending' ? (g.joe.state === 'saved' ? 'reached the core with Joe' : 'reached the core') : `lost at ${g.depthKm.toLocaleString()} km`, arms: g.phase === 'ending' && g.joe.state === 'saved', at: Date.now() });
+    (saveScore.saved ||= new Map()).set(key, { ship: g.ship.name, score, result: g.phase === 'ending' ? (g.joe.state === 'saved' ? 'reached the core with Joe' : 'reached the core') : `lost at -${g.depthKm}km`, arms: g.phase === 'ending' && g.joe.state === 'saved', at: Date.now() });
     list.push(saveScore.saved.get(key));
     list.sort((a, b) => b.score - a.score);
     list = list.slice(0, 10);

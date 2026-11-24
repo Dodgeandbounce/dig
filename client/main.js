@@ -1,5 +1,20 @@
 import { Net, loadIdentity, saveIdentity } from './net.js';
 import { launchSolo, launchOnline } from './game/app.js';
+import { sfx, initAudio } from './game/audio.js';
+import { CLASSES } from '../shared/sim/data.js';
+
+// menus sound like digging: hover a button for a scoop of dirt, click it for a shovel clank
+let hovered = null;
+document.addEventListener('mouseover', (e) => {
+  const b = e.target.closest?.('button, .node, .cls, .lb-row');
+  if (b && b !== hovered && !b.disabled) sfx.uiHover();
+  hovered = b;
+});
+document.addEventListener('click', (e) => {
+  initAudio();
+  const b = e.target.closest?.('button, .lb-row');
+  if (b && !b.disabled && !b.closest('.g-card, .g-actions, .g-spawn, .pick')) sfx.ui();   // (those play their own click)
+}, true);
 
 const $ = (id) => document.getElementById(id);
 const net = new Net();
@@ -33,11 +48,14 @@ function startSolo(quick) {
   launchSolo($('screen-game'), {
     quick: typeof quick === 'string' ? quick : null,
     name: identity.name || $('name-input').value.trim(),
+    // a finished solo run goes on the shared leaderboard (when we're connected and have said hello)
+    submit: (entry) => { if (me) { net.send({ t: 'score', entry }); setTimeout(loadBoard, 1500); } },
     onExit: () => {
       playingSolo = false;
       $('screen-game').innerHTML = '';
       show(me ? 'lobby' : 'name');
       if (me) net.send({ t: 'hello', ...identity });
+      loadBoard();
     },
   });
 }
@@ -151,6 +169,41 @@ net.on('world', ({ world: w }) => {
   online.ctl.meta(w);
 });
 net.on('g', (m) => { if (online && !playingSolo) online.ctl.frame(m); });
+
+// ---------- leaderboard ----------
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let board = [];
+let openRow = null;
+async function loadBoard() {
+  try { const r = await fetch('api/leaderboard', { cache: 'no-store' }); if (r.ok) { board = await r.json(); drawBoard(); } } catch { /* offline: solo still works */ }
+}
+function drawBoard() {
+  const html = board.length ? board.slice(0, 25).map((e, i) => {
+    const who = e.players?.length ? e.players.join(', ') : e.host || '?';
+    const mins = Math.round((e.time || 0) / 60);
+    const open = openRow === i;
+    return `<li class="lb-row ${e.won ? 'won' : ''} ${open ? 'open' : ''}" data-i="${i}">
+      <div class="lb-head"><span class="rank">${i + 1}</span><b>${esc(e.ship)}</b><span class="lb-score">${(e.score || 0).toLocaleString()}</span></div>
+      <div class="lb-sub">${e.won ? (e.joe === 'saved' ? '💪🤝💪 ' : '☀ ') : ''}${esc(e.result || '')} · ${esc(who)} · ${e.solo ? 'solo' : 'online'} · ${ago(e.at)}</div>
+      ${open ? `<div class="lb-more">
+        <p>Reached <b>-${e.depthKm}km</b> (stop ${e.level}) in ${mins} min${e.path ? ` · ${e.path === 'brother' ? 'went after Joe' : 'took the main shaft'}` : ''}${e.online && e.run ? ` · run #${e.run}` : ''}</p>
+        <p>${e.stats?.kills || 0} kills · ${e.stats?.gems || 0} gem value · ${e.stats?.repairs || 0} repairs · ${e.stats?.meals || 0} meals · ${e.stats?.captures || 0} captures · ${e.stats?.insults || 0} insults</p>
+        <p class="muted">Ship: ${e.rooms || '?'} rooms · plating ${e.upgrades?.plating || 0}, bubble ${e.upgrades?.bubble || 0}, D-gun ${e.upgrades?.dgun || 0} · guns: ${(e.guns || []).join(', ') || 'D-gun'}</p>
+        <div class="lb-crew">${(e.crew || []).map((c) => `<span style="--c:${CLASSES[c.cls]?.color || '#888'}" title="${esc(CLASSES[c.cls]?.name || c.cls)}">${esc(c.name)}${c.player ? ` <i>(${esc(c.player)})</i>` : ''} <small>★${c.stars || 0}</small></span>`).join('')}</div>
+      </div>` : ''}
+    </li>`;
+  }).join('') : '<li class="muted">No finished runs yet. Be the first!</li>';
+  for (const el of document.querySelectorAll('[data-lb]')) el.innerHTML = html;
+}
+document.addEventListener('click', (e) => {
+  const row = e.target.closest?.('.lb-row');
+  if (!row) return;
+  const i = +row.dataset.i;
+  openRow = openRow === i ? null : i;
+  drawBoard();
+});
+loadBoard();
+setInterval(() => { if (!document.body.classList.contains('playing')) loadBoard(); }, 30000);
 
 function ago(ts) {
   const s = Math.round((Date.now() - ts) / 1000);

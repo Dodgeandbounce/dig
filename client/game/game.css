@@ -220,3 +220,50 @@
 .g-log .l-chat { color: #a8d8ff; }
 .g-log .l-crew { color: #c8e0a0; }
 .g-card h3 { margin: .8rem 0 .2rem; font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+/* ---- score, stamina, xp, respawn, burn ---- */
+.g-score { display: flex; flex-direction: column; align-items: center; line-height: 1; padding: 0 .4rem; border-left: 1px solid #3a2a20; border-right: 1px solid #3a2a20; }
+.g-score span { font-size: .6rem; letter-spacing: .12em; color: var(--muted); }
+.g-score b { font-size: .95rem; color: #f4c542; font-variant-numeric: tabular-nums; }
+.g-res small { color: var(--muted); }
+.g-me .stam { height: 5px; background: #0c0806; border-radius: 3px; overflow: hidden; margin: 0 0 .25rem; }
+.g-me .stam i { display: block; height: 100%; background: #80d0ff; transition: width .1s; }
+.g-me .stam.low i { background: #e08040; }
+.g-me .xp { color: #58b4ff; font-weight: 600; }
+.g-me .xp.ready { color: #9fd8ff; text-shadow: 0 0 6px #58b4ff; }
+.g-card .xp { color: #58b4ff; font-weight: 700; }
+.g-actions .g-burn { background: #6a2010; border-color: #ff6030; font-weight: 700; animation: blink 1s infinite; }
+.g-spawn { position: absolute; left: 50%; top: 22%; transform: translateX(-50%); z-index: 6; pointer-events: auto; text-align: center;
+  background: rgba(20,12,8,.92); border: 1px solid #6a4a30; border-radius: 12px; padding: .6rem 1rem; color: #f4e2c4; min-width: 260px; }
+.g-spawn .row { display: flex; gap: .6rem; align-items: center; justify-content: center; margin: .3rem 0; }
+.g-spawn button { background: #3a2818; color: #f4e2c4; border: 1px solid #6a4a30; border-radius: 8px; padding: .2rem .7rem; cursor: pointer; }
+.g-spawn small { color: var(--muted); }
+.g-spawn.hidden { display: none; }
+/* ---- briefing: lots of kinds, rare ones, and the solo 100% ---- */
+.g-banner .mix { flex-wrap: wrap; max-width: 900px; margin-left: auto; margin-right: auto; }
+.g-banner .foe.rare span { color: #ff80ff; font-size: 1.1rem; }
+.g-banner .foe small { color: #ff80ff; font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; }
+.g-banner .mix.solo .foe span { font-size: 3.4rem; color: #ff4030; }
+.g-banner .solo-note { color: #ff9070; font-size: 1.1rem; text-align: center; margin-top: -.6rem; }
+/* ---- panels ---- */
+.g-card .item.off { opacity: .55; }
+.g-card .dbar.off i, .g-duel .dbar.off i { background: #555 !important; }
+.g-duel .dbar.off label { color: #a08070; }
+.g-card .plot.wet { border-color: #4a7ab0; background: #1e1a18; }
+.g-card .plots { grid-template-columns: repeat(4, 1fr); }
+.g-card .plot button { font-size: .7rem; padding: .1rem .3rem; }
+.g-card .cells { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; margin: .3rem 0 .6rem; }
+.g-card .cells i, .g-card .pips i { width: 14px; height: 18px; border-radius: 3px; background: #1a1410; border: 1px solid #3a2e22; display: inline-block; }
+.g-card .cells i.on, .g-card .pips i.on { background: #9cff60; box-shadow: 0 0 6px #9cff6080; border-color: #6ab040; }
+.g-card .cells small { margin-left: .5rem; color: var(--muted); }
+.g-card .power { display: flex; flex-direction: column; gap: .35rem; }
+.g-card .prow { display: grid; grid-template-columns: 9rem auto auto auto 1fr; gap: .4rem; align-items: center; }
+.g-card .prow .pips { display: flex; gap: 2px; }
+.g-card .prow small { color: var(--muted); font-size: .72rem; }
+.g-card .prow button { padding: .1rem .55rem; }
+.g-card .ventmap { width: 100%; height: auto; background: #0e0906; border-radius: 10px; border: 1px solid #3a2a20; }
+.g-card .ventmap .vdot { cursor: pointer; }
+.g-card .ventmap .vdot:hover circle { stroke-width: 3; }
+.g-card .ventmap .vdot.sel circle { filter: drop-shadow(0 0 4px #fff); }
+.g-card .shipmap { grid-auto-rows: 34px; }
+.g-card .shipmap .cell { aspect-ratio: auto; }

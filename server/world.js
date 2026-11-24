@@ -29,8 +29,9 @@ export class World {
    * @param {object} data persisted shape (see toJSON)
    * @param {{speed?: number, rng?: () => number, gameData?: Buffer|null}} opts
    */
-  constructor(data, { speed = 1, rng = Math.random, gameData = null } = {}) {
+  constructor(data, { speed = 1, rng = Math.random, gameData = null, onRunEnd = null } = {}) {
     Object.assign(this, data);
+    this.onRunEnd = onRunEnd;            // (world, summary) when a run is won, lost or abandoned (for the leaderboard)
     this.seats ||= {};                   // playerId -> crew id in the Game
     this.starter ||= 'pilot';
     this.run = { ...newRun(this.run?.number || 1), ...this.run };
@@ -71,6 +72,10 @@ export class World {
     world.addMember(hostId, hostName);
     world.event('system', `${hostName} commissioned the ship.`);
     return world;
+  }
+
+  #reportRun() {
+    try { this.onRunEnd?.(this, this.game.runSummary()); } catch (err) { console.error(`[world ${this.id}] leaderboard:`, err.message); }
   }
 
   toJSON() {
@@ -214,6 +219,7 @@ export class World {
     this.run.endedAt = Date.now();
     this.run.score = this.game.finalScore();
     this.event('story', message);
+    this.#reportRun();
   }
 
   // ---------- crew actions ----------
@@ -260,7 +266,7 @@ export class World {
   /** End the current run (early or after win/loss) and start a fresh one. Crew stays. */
   restartRun() {
     const old = this.run;
-    if (old.status === RUN_STATUS.ACTIVE) { old.status = 'abandoned'; old.endedAt = Date.now(); }
+    if (old.status === RUN_STATUS.ACTIVE) { old.status = 'abandoned'; old.endedAt = Date.now(); if (this.game.level >= 3) this.#reportRun(); }
     this.history.unshift({ number: old.number, status: old.status, depthKm: Math.round(old.depthKm), level: old.level, score: old.score, endedAt: old.endedAt });
     this.history.length = Math.min(this.history.length, HISTORY_LIMIT);
     this.run = newRun(old.number + 1);

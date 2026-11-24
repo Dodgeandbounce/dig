@@ -32,7 +32,7 @@ test('every class can be played: abilities, stations and upgrades do not throw',
     for (const k of CLASS_ORDER) if (k !== 'urchid' && !g.crew.some((c) => c.cls === k)) { g.ensureRoomFor(k); g.addCrew(k); }
     g.player.human = false;
     const me = g.crew.find((c) => c.cls === cls);
-    me.human = true; g.player = me; me.wallet = 1000;
+    me.human = true; g.player = me; me.wallet = 1000; me.xp = 1000;
     g.startEncounter('ship');
     for (let i = 0; i < 30 * 30; i++) {
       const t = g.mobs.find((m) => m.alive && m.team === 'enemy');
@@ -41,8 +41,10 @@ test('every class can be played: abilities, stations and upgrades do not throw',
       g.update(1 / 30);
       if (g.storyOpen) g.command(me, { t: 'storyOk' });
     }
+    const before = me.upgrades.reduce((a, b) => a + b, 0);
+    me.xp = 1000;
     for (const k of [0, 1, 2]) g.command(me, { t: 'classUpgrade', track: k });
-    assert.equal(me.upgrades.reduce((a, b) => a + b, 0), 3, `${cls} upgrades`);
+    assert.equal(me.upgrades.reduce((a, b) => a + b, 0), before + 3, `${cls} upgrades (spent XP)`);
     assert.ok(CLASSES[cls].abilities, cls);
   }
 });

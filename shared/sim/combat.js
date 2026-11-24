@@ -1,7 +1,36 @@
 // Movement, weapons, projectiles, explosions, destructible tiles and systems, pickups.
-import { T, TILE, TILE_HP, WEAPONS, ENEMY_WEAPONS, CLASSES, SLOT_W, SLOT_H, BULLET_SLOW } from './data.js';
-import { idx, inMap } from './grid.js';
+import { T, TILE, TILE_HP, WEAPONS, ENEMY_WEAPONS, CLASSES, SLOT_W, SLOT_H, BULLET_SLOW, GEMS, GEM_ORDER, MAP_W, CLASS_UP_MAX, xpCost } from './data.js';
+import { idx, inMap, rw, rh, roomCenter } from './grid.js';
 import { clamp, norm, dist, dist2, angTo, angDiff, uid } from './util.js';
+
+// ---------------------------------------------------------------------------
+// experience: doing your job earns XP (blue "+xp" pops up now and then so you know it counted)
+export function gainXp(g, c, n) {
+  if (!c || !c.cls || !(n > 0)) return;
+  c.xp = (c.xp || 0) + n;
+  c.xpEarned = (c.xpEarned || 0) + n;
+  c.xpPop = (c.xpPop || 0) + n;
+  if (c.xpPop >= 1 && g.time - (c.xpPopAt || -9) > 0.7) {
+    g.fx({ t: 'xp', x: c.x + g.rng.range(-8, 8), y: c.y - 22, n: Math.round(c.xpPop), crew: c.id });
+    c.xpPop = 0; c.xpPopAt = g.time;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// gems: all sorts, worth different amounts (deeper = richer)
+export function gemType(g) {
+  const tier = g.tier || 0;
+  const w = {};
+  for (const k of GEM_ORDER) { const G = GEMS[k]; if (G.depth > tier + 1) continue; w[k] = G.depth > tier ? 0.4 : (1 + tier - G.depth * 0.5) / Math.sqrt(G.value); }
+  return g.rng.weighted(w);
+}
+/** Put n gems of random kinds in the vault (as many as fit). Returns how many went in. */
+export function addGems(g, n, sub) {
+  const s = g.ship;
+  const fit = Math.max(0, Math.min(n, s.gemCap - s.gems));
+  for (let k = 0; k < fit; k++) { const t = sub || gemType(g); s.gems++; s.gemValue = (s.gemValue || 0) + GEMS[t].value; g.stats.gems += GEMS[t].value; }
+  return fit;
+}
 
 // ---------------------------------------------------------------------------
 // stats & buffs
@@ -46,22 +75,39 @@ export function collides(g, a) {
   }
   return false;
 }
+/** Stuck inside something solid (a wall got rebuilt on top of you)? Get pushed out to the nearest free spot. */
+export function unstick(g, a) {
+  // (standing in a doorway doesn't count: the door opens for you)
+  const ghost = a.ghostDoors; a.ghostDoors = true;
+  const done = () => { a.ghostDoors = ghost; };
+  if (!collides(g, a)) { done(); return false; }
+  const x0 = a.x, y0 = a.y;
+  for (let r = 4; r <= 72; r += 4) for (let k = 0; k < 16; k++) {
+    const ang = k / 16 * Math.PI * 2;
+    a.x = x0 + Math.cos(ang) * r; a.y = y0 + Math.sin(ang) * r;
+    if (!collides(g, a)) { done(); return true; }
+  }
+  a.x = x0; a.y = y0;
+  done();
+  return false;
+}
 export const tileOf = (p) => ({ x: Math.floor(p.x / TILE), y: Math.floor(p.y / TILE) });
 export const roomAt = (g, p) => { const t = tileOf(p); return inMap(t.x, t.y) ? g.grid.room[idx(t.x, t.y)] : -1; };
 
 // ---------------------------------------------------------------------------
-// who can be hit
+// who can be hit. Three sides: our crew (and the trainer's monsters), the boarders, and the wild things
+// that crawl in through holes in the hull. The wild ones go for everybody, and the boarders fight back.
 export function hostiles(g, team) {
   if (team === 'crew') return g.mobs.filter((m) => m.alive && m.team === 'enemy');
   const out = [];
   for (const c of g.crew) if (c.alive && !c.phased && !c.invuln) out.push(c);
-  for (const m of g.mobs) if (m.alive && m.team === 'crew') out.push(m);
+  for (const m of g.mobs) if (m.alive && (m.team === 'crew' || (m.team === 'enemy' && (team === 'wild' ? !m.wild : m.wild)))) out.push(m);
   return out;
 }
 export function nearestHostile(g, from, team, maxD = Infinity, needLos = false) {
   let best = null, bd = maxD * maxD;
   for (const h of hostiles(g, team)) {
-    if (team === 'enemy' && h.cloaked && dist2(from, h) > 40 * 40) continue;
+    if (team !== 'crew' && h.cloaked && dist2(from, h) > 40 * 40) continue;
     const d = dist2(from, h);
     if (d < bd && (!needLos || g.grid.los(from.x, from.y, h.x, h.y, g.doors))) { bd = d; best = h; }
   }
@@ -133,14 +179,17 @@ export function killMob(g, m, src = {}) {
     killer.kills = (killer.kills || 0) + 1;
     if (killer.cls && g.rng.chance(0.3)) g.quip?.(killer, 'kill');
     g.stats.kills++;
+    gainXp(g, killer, 2 + type.tier * 1.2 + (m.marked ? 20 : 0) + (m.hoarder ? 60 : 0));
     if (killer.cls === 'dog' && src.kind === 'bite') { killer.hp = Math.min(killer.maxHp, killer.hp + 12); g.fx({ t: 'text', x: killer.x, y: killer.y - 20, text: 'nom', color: '#f0a030' }); }
   }
   g.stats.score += type.bounty * 10;
   // drops
-  if (m.carryGems) dropPickup(g, m.x, m.y, 'gem', m.carryGems);
+  if (m.carryGems) { const p = dropPickup(g, m.x, m.y, 'gem', m.carryGems); p.val = m.carryVal; }
+  if (m.loot) { g.ship.scrap += m.loot; g.log('loot', `The Hoarder drops our ${m.loot} scrap!`); g.fx({ t: 'text', x: m.x, y: m.y - 30, text: `+${m.loot} scrap back`, color: '#c0c0c0' }); }
+  if (m.hoarder) for (let k = 0; k < 8; k++) dropPickup(g, m.x + g.rng.range(-40, 40), m.y + g.rng.range(-40, 40), 'gem', 1, gemType(g));
   if (src.kind === 'fire') { addMess(g, m.x, m.y, 'ash', 1); g.fx({ t: 'die', x: m.x, y: m.y, color: type.color, size: m.r }); return; }
   if (src.kind === 'crush') { for (let i = 0; i < 6; i++) dropPickup(g, m.x + g.rng.range(-20, 20), m.y + g.rng.range(-20, 20), 'coin', 2); g.fx({ t: 'coins', x: m.x, y: m.y }); }
-  else if (g.rng.chance(0.35)) dropPickup(g, m.x, m.y, g.rng.chance(0.6) ? 'gem' : 'ore', 1 + type.tier);
+  else if (g.rng.chance(0.35)) { if (g.rng.chance(0.6)) dropPickup(g, m.x, m.y, 'gem', 1, gemType(g)); else dropPickup(g, m.x, m.y, 'ore', 1 + type.tier); }
   if (src.kind === 'jorbal') { dropPickup(g, m.x2 ?? m.x, m.y2 ?? m.y, 'food', 1, g.rng.pick(['grub', 'shroom', 'fish', 'spice'])); }
   addMess(g, m.x, m.y, 'gore', 1);
   g.fx({ t: 'die', x: m.x, y: m.y, color: type.color, size: m.r });
@@ -222,7 +271,7 @@ export function fireBullet(g, a, ang, w, team, extra = {}) {
 
 export function explode(g, x, y, radius, dmg, team, owner, opts = {}) {
   g.fx({ t: 'boom', x, y, r: radius });
-  const targets = team === 'crew' ? g.mobs.filter((m) => m.alive && m.team === 'enemy') : hostiles(g, 'enemy');
+  const targets = team === 'crew' ? g.mobs.filter((m) => m.alive && m.team === 'enemy') : hostiles(g, team);
   for (const t of targets) {
     const d = Math.hypot(t.x - x, t.y - y);
     if (d < radius + t.r) damage(g, t, dmg * (1 - 0.5 * d / (radius + t.r)), { owner, kind: opts.kind || 'boom', team });
@@ -236,16 +285,16 @@ export function explode(g, x, y, radius, dmg, team, owner, opts = {}) {
     if (Math.hypot((tx + .5) * TILE - x, (ty + .5) * TILE - y) > radius) continue;
     const ri = g.grid.room[idx(tx, ty)];
     const theirs = tileOwner(g, tx, ty) === 'them';
-    if (team === 'enemy' && !theirs) hitTile(g, tx, ty, (opts.wallDmg ?? dmg) * 0.6, { hull: opts.hull });
+    if (team !== 'crew' && !theirs) hitTile(g, tx, ty, (opts.wallDmg ?? dmg) * 0.6, { hull: opts.hull });
     if (team === 'crew' && theirs) hitTile(g, tx, ty, dmg * 0.5, { hull: false });
   }
   // enemy bombs and fireballs can start fires on our ship
-  if (team === 'enemy' && g.rng.chance(opts.kind === 'fireball' ? 0.25 : 0.1)) ignite(g, cx, cy, 0.3);
+  if (team !== 'crew' && g.rng.chance(opts.kind === 'fireball' ? 0.25 : 0.1)) ignite(g, cx, cy, 0.3);
   // systems in radius
   for (const room of g.rooms) {
     if (!room.sys || !room.alive) continue;
     if (team === 'crew' && room.owner !== 'them') continue;
-    if (team === 'enemy' && room.owner !== 'us') continue;
+    if (team !== 'crew' && room.owner !== 'us') continue;
     if (Math.hypot(room.station.x - x, room.station.y - y) < radius + 20) damageSystem(g, room, dmg * 0.5);
   }
 }
@@ -281,10 +330,10 @@ export function igniteRoom(g, room, n = 1) {
   if (!room || g.storyMode) return;
   const first = !g.objs.some((o) => o.kind === 'fire');
   for (let k = 0; k < n; k++) {
-    const tx = room.x0 + 1 + Math.floor(g.rng() * (SLOT_W - 1)), ty = room.y0 + 1 + Math.floor(g.rng() * (SLOT_H - 1));
+    const tx = room.x0 + 1 + Math.floor(g.rng() * (rw(room) - 1)), ty = room.y0 + 1 + Math.floor(g.rng() * (rh(room) - 1));
     ignite(g, tx, ty, 0.35);
   }
-  const at = { x: (room.x0 + SLOT_W / 2) * TILE, y: (room.y0 + SLOT_H / 2) * TILE };
+  const at = roomCenter(room);
   g.fx({ t: 'fire', x: at.x, y: at.y });
   if (first) {
     g.log('alert', `🔥 Fire in the ${room.name}! Hold E next to it to use your extinguisher (MrClean puts fires out fastest).`);
@@ -328,7 +377,11 @@ export function extinguish(g, c, dt) {
   best.f -= rate * dt;
   c.spraying = 0.2; c.sprayAt = { x: best.x, y: best.y };
   if (g.rng.chance(dt * 8)) g.fx({ t: 'spray', x: c.x, y: c.y, x2: best.x, y2: best.y });
-  if (best.f <= 0) { g.objs.splice(g.objs.indexOf(best), 1); g.fx({ t: 'text', x: best.x, y: best.y - 10, text: 'out!', color: '#a0e0ff' }); if (c.cls === 'mrclean') c.wallet += 1; }
+  if (best.f <= 0) {
+    g.objs.splice(g.objs.indexOf(best), 1); g.fx({ t: 'text', x: best.x, y: best.y - 10, text: 'out!', color: '#a0e0ff' });
+    if (c.cls === 'mrclean') c.wallet += 1;
+    if (c.id != null) gainXp(g, c, c.cls === 'mrclean' ? 4 : 3);
+  }
   return true;
 }
 
@@ -344,6 +397,13 @@ export function updateProjectiles(g, dt) {
       if (k >= 1) { landLob(g, p); continue; }
       keep.push(p); continue;
     }
+    if (p.kind === 'crow') { // the scarecrow's crows home in on the nearest thing that isn't us
+      let best = null, bd = 420 * 420;
+      for (const m of g.mobs) if (m.alive && m.team === 'enemy') { const d = dist2(m, p); if (d < bd) { bd = d; best = m; } }
+      const sp = 300;
+      if (best) { const n = norm(best.x - p.x, best.y - p.y); p.vx += (n.x * sp - p.vx) * Math.min(1, dt * 4); p.vy += (n.y * sp - p.vy) * Math.min(1, dt * 4); }
+      p.a = Math.atan2(p.vy, p.vx);
+    }
     const steps = Math.ceil(Math.hypot(p.vx, p.vy) * dt / 10);
     let dead = false;
     for (let s = 0; s < steps && !dead; s++) {
@@ -357,7 +417,8 @@ export function updateProjectiles(g, dt) {
           break;
         }
         if (p.kind === 'rocket' || p.kind === 'fireball') { explode(g, p.x, p.y, p.radius || 60, p.dmg, p.team, p.owner, { kind: p.kind, wallDmg: p.wallDmg }); dead = true; break; }
-        if (p.team === 'enemy') hitTile(g, tx, ty, p.dmg * 0.25);
+        if (p.kind === 'crow') { p.vx *= -0.7; p.vy *= -0.7; break; }   // crows flap off walls
+        if (p.team !== 'crew') hitTile(g, tx, ty, p.dmg * 0.25);
         else if (g.grid.get(tx, ty) === T.DOOR && g.doors[g.grid.doorAt[idx(tx, ty)]]?.owner === 'them') hitTile(g, tx, ty, p.dmg * 0.6);
         g.fx({ t: 'spark', x: p.x, y: p.y });
         dead = true; break;
@@ -365,15 +426,16 @@ export function updateProjectiles(g, dt) {
       p.x = nx; p.y = ny;
       if (p.kind === 'grenade') continue;
       // actor hits
-      const targets = p.team === 'crew' ? g.mobs : hostiles(g, 'enemy');
+      const targets = p.team === 'crew' ? g.mobs : hostiles(g, p.team);
       for (const t of targets) {
-        if (!t.alive || (p.team === 'crew' && t.team !== 'enemy')) continue;
+        if (!t.alive || t === p.owner || (p.team === 'crew' && t.team !== 'enemy')) continue;
         if (p.hit && p.hit.has(t.id)) continue;
         if ((t.x - p.x) ** 2 + (t.y - p.y) ** 2 > (t.r + p.r) ** 2) continue;
         if (p.kind === 'cube') { tryCapture(g, p, t); dead = true; break; }
         if (p.kind === 'rocket' || p.kind === 'fireball') { explode(g, p.x, p.y, p.radius || 60, p.dmg, p.team, p.owner, { kind: p.kind }); dead = true; break; }
         damage(g, t, p.dmg, { owner: p.owner, kind: p.kind, team: p.team });
         if (p.stun) t.stunT = Math.max(t.stunT || 0, p.stun);
+        if (p.acid) t.acidT = Math.max(t.acidT || 0, 2);
         if (p.pierce) { (p.hit ||= new Set()).add(t.id); continue; }
         dead = true; break;
       }
@@ -386,7 +448,7 @@ export function updateProjectiles(g, dt) {
 }
 
 function landLob(g, p) {
-  if (p.kind === 'bomb') { explode(g, p.x, p.y, p.radius || 60, p.dmg, 'enemy', p.owner, { wallDmg: p.dmg * 1.6, hull: false }); return; }
+  if (p.kind === 'bomb') { explode(g, p.x, p.y, p.radius || 60, p.dmg, p.team || 'enemy', p.owner, { wallDmg: p.dmg * 1.6, hull: false }); return; }
   if (p.kind === 'jar') {
     const pot = 1 + 0.3 * (p.owner?.upgrades?.[1] || 0);
     if (p.jar === 'explosive') { explode(g, p.x, p.y, 70, 38 * pot, 'crew', p.owner, { kind: 'jar' }); return; }
@@ -398,7 +460,7 @@ function landLob(g, p) {
 // ---------------------------------------------------------------------------
 // melee
 export function melee(g, a, w, ang, team, opts = {}) {
-  const targets = team === 'crew' ? g.mobs.filter((m) => m.alive && m.team === 'enemy') : hostiles(g, 'enemy');
+  const targets = team === 'crew' ? g.mobs.filter((m) => m.alive && m.team === 'enemy') : hostiles(g, team).filter((t) => t !== a);
   let hits = 0;
   const range = (w.range || 36) * (opts.rangeMul || 1);
   for (const t of targets) {
@@ -406,7 +468,12 @@ export function melee(g, a, w, ang, team, opts = {}) {
     if (d > range + t.r) continue;
     if (Math.abs(angDiff(ang, angTo(a, t))) > (w.arc || 1.2) / 2 && d > t.r + 6) continue;
     let dmg = w.dmg * (opts.mul || 1);
-    if (w.backstab && (a.cloaked || !t.target || t.target !== a)) dmg *= w.backstab * (opts.backstabMul || 1);
+    // a knife in the back: instant kill (bosses and the Hoarder just take a lot). From the front: a normal stab.
+    if (w.backstab && isBehind(a, t)) {
+      dmg = t.boss || t.hoarder ? dmg * 6 : t.hp + 1;
+      g.fx({ t: 'backstab', x: t.x, y: t.y });
+      if (a.cls) gainXp(g, a, 4);
+    }
     const type = t.type !== undefined ? g.roster[t.type] : null;
     if (opts.vsMeleeWeak && type && ENEMY_WEAPONS.find((x) => x.id === type.weapon)?.meleeWeak) dmg *= opts.vsMeleeWeak;
     damage(g, t, dmg, { owner: a, kind: opts.kind || 'melee', team });
@@ -416,6 +483,13 @@ export function melee(g, a, w, ang, team, opts = {}) {
     hits++;
   }
   return hits;
+}
+
+/** Is the attacker standing behind the target (in the back half, away from where it's looking)? */
+export function isBehind(a, t) {
+  const f = t.facing || 0;
+  const toA = Math.atan2(a.y - t.y, a.x - t.x);
+  return Math.abs(angDiff(f, toA)) > Math.PI * 0.62;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,24 +502,87 @@ function tryCapture(g, p, t) {
   if (owner.monsters.find((m) => m.type === t.type)) { g.fx({ t: 'text', x: t.x, y: t.y - 20, text: 'already have one', color: '#ccc' }); return; }
   if (t.hp / t.maxHp > thr) { g.fx({ t: 'text', x: t.x, y: t.y - 20, text: 'too healthy', color: '#ccc' }); return; }
   t.alive = false;
-  owner.monsters.push({ type: t.type, name: type.name, out: false, reviveT: 0, hpMul: 1 + g.rng.range(-0.2, 0.3), dmgMul: 1 + g.rng.range(-0.2, 0.3) });
+  // frenemies come out of the cube twice as tough and twice as mean as they went in
+  owner.monsters.push({ type: t.type, name: type.name, out: false, reviveT: 0, hpMul: 2 * (1 + g.rng.range(-0.15, 0.3)), dmgMul: 2 * (1 + g.rng.range(-0.15, 0.3)) });
   g.fx({ t: 'capture', x: t.x, y: t.y });
   g.log('loot', `${owner.name} captured a ${type.name}!`);
   g.stats.captures++;
+  gainXp(g, owner, 20);
 }
 
 // ---------------------------------------------------------------------------
-// Jorbal bubbles: drift on air currents, trap enemies, pop in chains.
-export function airAt(g, x, y) {
-  const a = g.air; if (!a) return { x: 0, y: 0 };
-  let vx = 0, vy = 0;
-  for (const v of a) { // vortex/flow sources
-    const dx = x - v.x, dy = y - v.y; const d2 = dx * dx + dy * dy + 900;
-    const f = v.s * 4000 / d2;
-    vx += -dy * f * v.spin + dx * f * v.out; vy += dx * f * v.spin + dy * f * v.out;
+// Jorbal bubbles: ride the air currents, trap enemies, pop in chains.
+//
+// The air currents are real streams you can see: one runs all the way round the outer walkway, and a
+// couple more wind from room to room through the doors. Anything floating in one (a bubble, and the
+// jorbal riding it) gets carried along; outside them the air barely moves.
+const AIR_R = 46, AIR_SPEED = 135;
+export function buildAir(g, rng) {
+  const paths = [];
+  const px = (i) => [((i % MAP_W) + 0.5) * TILE, (((i / MAP_W) | 0) + 0.5) * TILE];
+  // 1) the loop round the walkway's outer lane
+  const lane = g.ringOuter || [];
+  if (lane.length > 8) {
+    const S = new Set(lane), seen = new Set();
+    let cur = lane[0], dir = [1, 0];
+    const trail = [cur]; seen.add(cur);
+    for (let n = 0; n < lane.length; n++) {
+      const x = cur % MAP_W, y = (cur / MAP_W) | 0;
+      const opts = [[dir[0], dir[1]], [dir[1], -dir[0]], [-dir[1], dir[0]], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+      let next = null;
+      for (const [dx, dy] of opts) { const j = (y + dy) * MAP_W + x + dx; if (S.has(j) && !seen.has(j)) { next = j; dir = [Math.sign(dx), Math.sign(dy)]; break; } }
+      if (next == null) break;
+      seen.add(next); trail.push(next); cur = next;
+    }
+    const pts = [];
+    for (let k = 0; k < trail.length; k += 3) pts.push(...px(trail[k]));
+    const [lx, ly] = px(trail[trail.length - 1]), [fx, fy] = px(trail[0]);
+    const loop = Math.hypot(lx - fx, ly - fy) < 4 * TILE;
+    if (pts.length >= 6) paths.push({ pts: rng.chance(0.5) ? pts : reversePts(pts), loop });
   }
-  const n = norm(vx, vy);
-  return { x: n.x * 55 + a.drift.x, y: n.y * 55 + a.drift.y };
+  // 2) a couple of streams that wind through the rooms, door to door
+  const ours = g.rooms.map((r, i) => i).filter((i) => g.rooms[i].owner === 'us');
+  for (let s = 0; s < 2 && ours.length > 2; s++) {
+    let at = rng.pick(ours);
+    const visited = new Set([at]);
+    const c0 = roomCenter(g.rooms[at]);
+    const pts = [c0.x, c0.y];
+    for (let hop = 0; hop < 6; hop++) {
+      const exits = (g.doors || []).filter((d) => d.owner === 'us' && !d.blast && (d.a === at || d.b === at) && d.a >= 0 && d.b >= 0 && !visited.has(d.a === at ? d.b : d.a));
+      if (!exits.length) break;
+      const d = rng.pick(exits);
+      const nxt = d.a === at ? d.b : d.a;
+      // through the door, then on to the middle of the next room
+      pts.push((d.x + 0.5) * TILE, (d.y + 0.5) * TILE);
+      const c = roomCenter(g.rooms[nxt]);
+      pts.push(c.x, c.y);
+      visited.add(nxt); at = nxt;
+    }
+    if (pts.length >= 6) paths.push({ pts, loop: false });
+  }
+  return { paths, drift: { x: rng.range(-8, 8), y: rng.range(-8, 8) } };
+}
+function reversePts(p) { const out = []; for (let k = p.length - 2; k >= 0; k -= 2) out.push(p[k], p[k + 1]); return out; }
+
+/** The wind at a point: strong along a current, a lazy drift anywhere else. */
+export function airAt(g, x, y) {
+  const a = g.air; if (!a?.paths) return { x: 0, y: 0, on: false };
+  let best = null, bd = AIR_R * AIR_R;
+  for (const path of a.paths) {
+    const P = path.pts, n = P.length / 2;
+    for (let k = 0; k < n - (path.loop ? 0 : 1); k++) {
+      const ax = P[k * 2], ay = P[k * 2 + 1], j = (k + 1) % n, bx = P[j * 2], by = P[j * 2 + 1];
+      const sx = bx - ax, sy = by - ay, L2 = sx * sx + sy * sy || 1;
+      const f = Math.max(0, Math.min(1, ((x - ax) * sx + (y - ay) * sy) / L2));
+      const qx = ax + sx * f, qy = ay + sy * f, d2 = (x - qx) ** 2 + (y - qy) ** 2;
+      if (d2 < bd) { bd = d2; const L = Math.sqrt(L2); best = { dx: sx / L, dy: sy / L, qx, qy }; }
+    }
+  }
+  if (!best) return { x: a.drift.x, y: a.drift.y, on: false };
+  // along the stream, plus a gentle pull into the middle of it so you stay on
+  const d = Math.sqrt(bd) || 1;
+  const pull = Math.min(1, d / AIR_R) * 60;
+  return { x: best.dx * AIR_SPEED + (best.qx - x) / d * pull, y: best.dy * AIR_SPEED + (best.qy - y) / d * pull, on: true };
 }
 
 function updateBubble(g, p, dt) {
@@ -506,6 +643,7 @@ export function popBubble(g, p, byJorbal, chain = { n: 0, start: null }) {
       g.fx({ t: 'fling', x: e.x, y: e.y, x2: e.x2, y2: e.y2, color: g.roster[e.type].color });
       const bonus = chain.n * (1 + 0.5 * (chain.start.upgrades?.[1] || 0));
       chain.start.wallet += Math.round(4 * bonus);
+      gainXp(g, chain.start, 2 + chain.n);
       if (chain.n > 1) g.fx({ t: 'text', x: p.x, y: p.y - 24, text: `CHAIN x${chain.n}!`, color: '#80ff80' });
       e.hp = 0; killMob(g, e, { owner: chain.start, kind: 'jorbal' });
     }
@@ -520,10 +658,16 @@ export function popBubble(g, p, byJorbal, chain = { n: 0, start: null }) {
 // ---------------------------------------------------------------------------
 // pickups and messes
 export function dropPickup(g, x, y, kind, amt = 1, sub) {
-  g.pickups.push({ id: uid(), kind, sub, amt, x: x + g.rng.range(-6, 6), y: y + g.rng.range(-6, 6), z: 0, vz: 0, t: 0 });
+  if (kind === 'gem' && !sub) sub = gemType(g);
+  const p = { id: uid(), kind, sub, amt, x: x + g.rng.range(-6, 6), y: y + g.rng.range(-6, 6), z: 0, vz: 0, t: 0 };
+  g.pickups.push(p);
+  return p;
 }
 export function rainPickup(g, x, y, kind, amt, sub) {
-  g.pickups.push({ id: uid(), kind, sub, amt, x, y, z: 120, vz: 0, t: 0 });
+  if (kind === 'gem' && !sub) sub = gemType(g);
+  const p = { id: uid(), kind, sub, amt, x, y, z: 120, vz: 0, t: 0 };
+  g.pickups.push(p);
+  return p;
 }
 export function addMess(g, x, y, sub, amt = 1) {
   // merge with a nearby mess
@@ -556,8 +700,11 @@ function collect(g, c, p) {
     case 'gem': {
       const room = s.gemCap - s.gems;
       if (room <= 0) { g.fx({ t: 'text', x: p.x, y: p.y - 10, text: 'vault full!', color: '#e0533a' }); return false; }
-      const n = Math.min(room, Math.round(p.amt * mul)); s.gems += n; g.stats.gems += n;
-      g.fx({ t: 'text', x: p.x, y: p.y - 10, text: `+${n} gem`, color: '#5ec8e8' }); break;
+      const G = GEMS[p.sub] || GEMS.quartz;
+      const n = Math.min(room, Math.round(p.amt * mul));
+      const val = p.val ? Math.round(p.val * n / p.amt) : G.value * n;
+      s.gems += n; s.gemValue = (s.gemValue || 0) + val; g.stats.gems += val;
+      g.fx({ t: 'text', x: p.x, y: p.y - 10, text: p.val ? `+${n} gems back` : `+${n} ${G.name} (${val})`, color: G.color }); break;
     }
     case 'ore': s.scrap += Math.round(p.amt * 3 * mul); g.fx({ t: 'text', x: p.x, y: p.y - 10, text: `+${Math.round(p.amt * 3 * mul)} scrap`, color: '#c0c0c0' }); break;
     case 'food':

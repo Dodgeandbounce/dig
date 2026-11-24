@@ -48,6 +48,9 @@ The server runs `shared/sim/Game` at 30 steps a second and sends each ship's pla
 
 Saved online ships carry a game version. A save from an older version (different map) can't be continued: the ship stays in the lobby and starts a fresh run.
 
+### Leaderboard
+Every run that ends goes on a shared leaderboard (`data/leaderboard.json`, best 300 kept): online runs when they're won, lost or restarted past the first couple of stops, and solo runs posted by the browser when they end (if it's connected). `GET /api/leaderboard` returns the top 50; the first screen and the lobby show them, and clicking one shows who played, how deep they got, and the crew.
+
 ## Layout
 
 ```
@@ -56,7 +59,7 @@ server/
   game-server.js   HTTP static files, WebSocket protocol, lobby, tick/broadcast/save loops
   world.js         an online ship: host, players, seats (player -> crew member), the running Game, network frames
   persist.js       saving and restoring a running Game (node:v8)
-  store.js         file persistence (atomic writes)
+  store.js         file persistence (atomic writes), including the leaderboard
   ws.js            minimal zero-dependency WebSocket server
 shared/
   constants.js     layers, limits, statuses (imported by server AND browser)
@@ -87,12 +90,12 @@ test/              node:test unit + end-to-end tests
 
 ## Wire protocol (JSON over `/ws`) — online ships
 
-Client → server: `hello {name, playerId?, token?}`, `create {name, maxPlayers, allowPlayWithoutHost, playerClass}`, `join {worldId}`, `leave`, `in {i: {mx, my, ax, ay, fire, rmb, e, shift, pressed, seq}}` (controls), `cmd {c}` (any Game command except `pause`), `chat {text}`, `ping {c}` (heartbeat), and host-only `restart`, `shelve`, `destroy`.
+Client → server: `hello {name, playerId?, token?}`, `create {name, maxPlayers, allowPlayWithoutHost, playerClass}`, `join {worldId}`, `leave`, `in {i: {mx, my, ax, ay, fire, rmb, e, shift, pressed, seq}}` (controls), `cmd {c}` (any Game command except `pause`), `chat {text}`, `ping {c}` (heartbeat), `score {entry}` (a finished solo run, for the leaderboard), and host-only `restart`, `shelve`, `destroy`.
 
 Server → client: `welcome {playerId, token, name}`, `lobby {worlds[]}`, `world {world}` (ship info, when it changes), `g {s, keep?, grid?, d?, dr?, dd?, v?, seats, fx, join?}` (game frames, 10×/s), `pong {c}`, `left {reason}`, `error {message}`.
 
 ## Where to build next
 - **Smaller frames**: send only the entity fields that changed (positions, HP) instead of whole entities.
-- **Pick your class when you board** (right now you get a free crew member and can switch at ports).
+- **Pick your class when you board** (right now you get a free crew member and can switch any time with C).
 - **Saves for solo runs** (continue later): `server/persist.js` already does this for online ships.
 - **Art**: everything is procedural canvas drawing in `client/game/sprites.js`; swap in sprites any time.

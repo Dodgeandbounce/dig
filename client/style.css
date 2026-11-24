@@ -92,3 +92,22 @@ body.playing .bar { display: none; }
   .lobby, .ship { grid-template-columns: 1fr; height: auto; }
   .view { height: 55vh; }
 }
+
+/* ---- leaderboard ---- */
+.board { margin-top: 1rem; }
+.lb { list-style: none; padding: 0; margin: .4rem 0 0; display: flex; flex-direction: column; gap: .35rem; max-height: 420px; overflow-y: auto; }
+.lb-row { background: #1a120c; border: 1px solid #3a2a20; border-radius: 10px; padding: .45rem .7rem; cursor: pointer; }
+.lb-row:hover { border-color: #6a4a30; }
+.lb-row.won { border-color: #8a7020; }
+.lb-row.open { background: #22170f; }
+.lb-head { display: flex; gap: .6rem; align-items: baseline; }
+.lb-head .rank { color: var(--muted); min-width: 1.4rem; }
+.lb-head b { flex: 1; }
+.lb-score { color: #f4c542; font-weight: 700; font-variant-numeric: tabular-nums; }
+.lb-sub { font-size: .78rem; color: var(--muted); margin-left: 2rem; }
+.lb-more { margin: .4rem 0 0 2rem; font-size: .82rem; }
+.lb-more p { margin: .2rem 0; }
+.lb-crew { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .3rem; }
+.lb-crew span { border-left: 3px solid var(--c); background: #120c08; padding: .1rem .4rem; border-radius: 4px; font-size: .75rem; }
+.lb-crew i { color: #9fd0ff; font-style: normal; }
+.lb-crew small { color: #58b4ff; }

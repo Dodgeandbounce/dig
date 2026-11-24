@@ -145,19 +145,23 @@ export function slotRect(sx, sy) {
   return { x0: SHIP_OX + sx * SLOT_W, y0: SHIP_OY + sy * SLOT_H, w: SLOT_W, h: SLOT_H };
 }
 
+/** A room's size in tiles, walls included on one side (x0..x0+w is wall to wall). Most are one slot. */
+export const rw = (room) => room.w ?? SLOT_W;
+export const rh = (room) => room.h ?? SLOT_H;
+
 /**
- * Lay out a set of rooms (with x0,y0 tile corners, all SLOT_W x SLOT_H) into the grid.
- * Rooms that share an edge get a door in the middle of it. Outer edges become hull.
- * Returns the doors created.
+ * Lay out a set of rooms (each with x0,y0 tile corners and w,h) into the grid.
+ * Rooms that share a stretch of wall get a door in the middle of it. Outer edges become hull.
  */
 export function buildRooms(grid, rooms, roomIndexBase, doorList, owner) {
   // floors + walls
   for (let r = 0; r < rooms.length; r++) {
     const room = rooms[r];
     const ri = roomIndexBase + r;
-    for (let y = room.y0; y <= room.y0 + SLOT_H; y++) {
-      for (let x = room.x0; x <= room.x0 + SLOT_W; x++) {
-        const edge = x === room.x0 || y === room.y0 || x === room.x0 + SLOT_W || y === room.y0 + SLOT_H;
+    const W = rw(room), H = rh(room);
+    for (let y = room.y0; y <= room.y0 + H; y++) {
+      for (let x = room.x0; x <= room.x0 + W; x++) {
+        const edge = x === room.x0 || y === room.y0 || x === room.x0 + W || y === room.y0 + H;
         const i = idx(x, y);
         if (edge) {
           if (grid.tiles[i] === T.VOID) { grid.tiles[i] = T.HULL; grid.hp[i] = TILE_HP[T.HULL]; }
@@ -168,16 +172,26 @@ export function buildRooms(grid, rooms, roomIndexBase, doorList, owner) {
       }
     }
   }
-  // corners of shared walls that are surrounded by rooms stay walls; outer stay hull. Now doors.
-  const byPos = new Map(rooms.map((r, k) => [`${r.x0},${r.y0}`, k]));
-  for (let r = 0; r < rooms.length; r++) {
-    const room = rooms[r];
-    const right = byPos.get(`${room.x0 + SLOT_W},${room.y0}`);
-    const below = byPos.get(`${room.x0},${room.y0 + SLOT_H}`);
-    if (right !== undefined) addDoor(grid, doorList, room.x0 + SLOT_W, room.y0 + (SLOT_H >> 1), roomIndexBase + r, roomIndexBase + right, owner, 'v');
-    if (below !== undefined) addDoor(grid, doorList, room.x0 + (SLOT_W >> 1), room.y0 + SLOT_H, roomIndexBase + r, roomIndexBase + below, owner, 'h');
+  // a door in every shared stretch of wall (any sizes), as near the middle as it can be without
+  // crowding either room's console
+  const clear = (x, y, ...rs) => rs.every((r) => Math.abs(x - (r.x0 + 2)) + Math.abs(y - (r.y0 + 1)) > 2);
+  const spot = (lo, hi, at, ...rs) => {
+    const mid = (lo + hi) >> 1;
+    for (let d = 0; d <= hi - lo; d++) for (const p of [mid + d, mid - d]) if (p >= lo && p <= hi && at(p, rs)) return p;
+    return mid;
+  };
+  for (let a = 0; a < rooms.length; a++) for (let b = 0; b < rooms.length; b++) {
+    if (a === b) continue;
+    const A = rooms[a], B = rooms[b];
+    if (A.x0 + rw(A) === B.x0) { // A left of B
+      const y0 = Math.max(A.y0, B.y0) + 1, y1 = Math.min(A.y0 + rh(A), B.y0 + rh(B)) - 1;
+      if (y1 >= y0) addDoor(grid, doorList, B.x0, spot(y0, y1, (p) => clear(B.x0, p, A, B), A, B), roomIndexBase + a, roomIndexBase + b, owner, 'v');
+    }
+    if (A.y0 + rh(A) === B.y0) { // A above B
+      const x0 = Math.max(A.x0, B.x0) + 1, x1 = Math.min(A.x0 + rw(A), B.x0 + rw(B)) - 1;
+      if (x1 >= x0) addDoor(grid, doorList, spot(x0, x1, (p) => clear(p, B.y0, A, B), A, B), B.y0, roomIndexBase + a, roomIndexBase + b, owner, 'h');
+    }
   }
-  // interior walls between rooms are WALL, edge corners where two hulls meet but rooms touch only at a corner: keep hull
   grid.version++;
 }
 
@@ -200,7 +214,7 @@ export function buildRing(grid, rooms, doorList) {
   const N = MAP_W * MAP_H;
   const d = new Uint8Array(N).fill(255);
   const q = [];
-  for (const room of rooms) for (let y = room.y0; y <= room.y0 + SLOT_H; y++) for (let x = room.x0; x <= room.x0 + SLOT_W; x++) {
+  for (const room of rooms) for (let y = room.y0; y <= room.y0 + rh(room); y++) for (let x = room.x0; x <= room.x0 + rw(room); x++) {
     const i = idx(x, y); if (d[i] === 0) continue; d[i] = 0; q.push(i);
   }
   for (let h = 0; h < q.length; h++) {
@@ -212,31 +226,38 @@ export function buildRing(grid, rooms, doorList) {
       d[j] = d[i] + 1; q.push(j);
     }
   }
-  const ring = [];
+  const ring = [], outer = [];
   for (let i = 0; i < N; i++) {
     if (d[i] === 255 || d[i] === 0) continue;
-    if (d[i] < RING) { grid.tiles[i] = T.FLOOR; grid.hp[i] = 0; grid.room[i] = -1; ring.push(i); }
+    if (d[i] < RING) { grid.tiles[i] = T.FLOOR; grid.hp[i] = 0; grid.room[i] = -1; ring.push(i); if (d[i] === RING - 1) outer.push(i); }
     else { grid.tiles[i] = T.HULL; grid.hp[i] = TILE_HP[T.HULL]; }
   }
+  ring.outer = outer;   // the outside lane of the walkway (one tile wide): the air current runs along it
   // the rooms' old outer hull is now an inside wall
   for (const room of rooms) for (const w of wallTilesOf(room, true)) if (grid.tiles[w.i] === T.HULL) { grid.tiles[w.i] = T.WALL; grid.hp[w.i] = TILE_HP[T.WALL]; }
   // doors out to the walkway
   const floorAt = (x, y) => inMap(x, y) && grid.tiles[idx(x, y)] === T.FLOOR && grid.room[idx(x, y)] < 0;
   rooms.forEach((room, r) => {
-    const mx = room.x0 + (SLOT_W >> 1), my = room.y0 + (SLOT_H >> 1);
-    const sides = [[mx, room.y0, 0, -1, 'h'], [mx, room.y0 + SLOT_H, 0, 1, 'h'], [room.x0, my, -1, 0, 'v'], [room.x0 + SLOT_W, my, 1, 0, 'v']];
-    for (const [x, y, dx, dy, o] of sides) if (grid.tiles[idx(x, y)] === T.WALL && floorAt(x + dx, y + dy)) addDoor(grid, doorList, x, y, r, -1, 'us', o);
+    const W = rw(room), H = rh(room);
+    // big rooms get a door out of every slot's worth of wall that faces the walkway
+    const sides = [];
+    for (let sx = 0; sx < W; sx += SLOT_W) { const seg = Math.min(SLOT_W, W - sx); const mx = room.x0 + sx + Math.min(seg - 1, Math.max(4, seg >> 1)); sides.push([mx, room.y0, 0, -1, 'h'], [mx, room.y0 + H, 0, 1, 'h']); }
+    for (let sy = 0; sy < H; sy += SLOT_H) { const my = room.y0 + sy + (Math.min(SLOT_H, H - sy) >> 1); sides.push([room.x0, my, -1, 0, 'v'], [room.x0 + W, my, 1, 0, 'v']); }
+    for (const [x, y, dx, dy, o] of sides) if (grid.tiles[idx(x, y)] === T.WALL && floorAt(x + dx, y + dy) && grid.room[idx(x - dx, y - dy)] === r) addDoor(grid, doorList, x, y, r, -1, 'us', o);
   });
   grid.version++;
   return ring;
 }
 
 /** Room pixel helpers */
-export function roomCenter(room) { return { x: (room.x0 + SLOT_W / 2 + 0.5) * TILE, y: (room.y0 + SLOT_H / 2 + 0.5) * TILE }; }
+export function roomCenter(room) { return { x: (room.x0 + rw(room) / 2 + 0.5) * TILE, y: (room.y0 + rh(room) / 2 + 0.5) * TILE }; }
 /** A random point inside a room (away from the walls). */
-export function roomPoint(room, rng) { return { x: (room.x0 + 1.5 + rng() * (SLOT_W - 3)) * TILE, y: (room.y0 + 1.5 + rng() * (SLOT_H - 3)) * TILE }; }
+export function roomPoint(room, rng) {
+  const W = rw(room), H = rh(room);
+  return { x: (room.x0 + (W > 3 ? 1.5 + rng() * (W - 3) : W / 2 + 0.5)) * TILE, y: (room.y0 + (H > 3 ? 1.5 + rng() * (H - 3) : H / 2 + 0.5)) * TILE };
+}
 export function roomInterior(room) {
-  return { x0: (room.x0 + 1) * TILE, y0: (room.y0 + 1) * TILE, x1: (room.x0 + SLOT_W) * TILE, y1: (room.y0 + SLOT_H) * TILE };
+  return { x0: (room.x0 + 1) * TILE, y0: (room.y0 + 1) * TILE, x1: (room.x0 + rw(room)) * TILE, y1: (room.y0 + rh(room)) * TILE };
 }
 export function stationPos(room) {
   // the console sits against the back wall in the top-left corner, clear of every door
@@ -244,14 +265,15 @@ export function stationPos(room) {
 }
 export function roomTiles(room) {
   const out = [];
-  for (let y = room.y0 + 1; y < room.y0 + SLOT_H; y++) for (let x = room.x0 + 1; x < room.x0 + SLOT_W; x++) out.push(idx(x, y));
+  for (let y = room.y0 + 1; y < room.y0 + rh(room); y++) for (let x = room.x0 + 1; x < room.x0 + rw(room); x++) out.push(idx(x, y));
   return out;
 }
 export function wallTilesOf(room, corners = false) {
   const out = [];
-  for (let y = room.y0; y <= room.y0 + SLOT_H; y++) for (let x = room.x0; x <= room.x0 + SLOT_W; x++) {
-    const edge = x === room.x0 || y === room.y0 || x === room.x0 + SLOT_W || y === room.y0 + SLOT_H;
-    const corner = (x === room.x0 || x === room.x0 + SLOT_W) && (y === room.y0 || y === room.y0 + SLOT_H);
+  const W = rw(room), H = rh(room);
+  for (let y = room.y0; y <= room.y0 + H; y++) for (let x = room.x0; x <= room.x0 + W; x++) {
+    const edge = x === room.x0 || y === room.y0 || x === room.x0 + W || y === room.y0 + H;
+    const corner = (x === room.x0 || x === room.x0 + W) && (y === room.y0 || y === room.y0 + H);
     if (edge && (corners || !corner)) out.push({ x, y, i: idx(x, y) });
   }
   return out;
