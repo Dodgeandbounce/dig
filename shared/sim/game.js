@@ -7,7 +7,7 @@ import {
   TRANSPONDER_NOTE, JOURNAL_TEXT, BROTHER_NOTES, ENDINGS, AGENT_BRIEFS, CREW_HP_MUL, BLAST_DOOR_HP, RING,
   roomSize, BRIDGE_W, POWER_BASE, POWER_PER_CORE, POWER_SYS, POWER_DEFAULT, SHIP_GUNS, GUN_SLOTS, GEMS, xpCost, XP_JOIN_PER_LEVEL,
   EARLY_WARNINGS, TRANSPONDER_PILOT, HOARDER, BOSSES, EVENTS, CANDY, STARTER_MONSTERS, MISSION_PAPERS, THIEVES, DEATH_LINES, DISTRESS_LINES,
-  ENEMY_CREW, ENEMY_CORE_CREW, ENEMY_EXTRA_CREW,
+  ENEMY_CREW, ENEMY_CORE_CREW, ENEMY_EXTRA_CREW, FURNITURE, FURNITURE_SPOTS,
 } from './data.js';
 import { makeRng } from './rng.js';
 import { Grid, idx, inMap, buildRooms, buildRing, addDoor, slotRect, stationPos, roomTiles, wallTilesOf, roomCenter, roomPoint, rw, rh } from './grid.js';
@@ -510,7 +510,8 @@ export class Game {
       } else if (d.sealed) want = 0;
       else if (d.hold === 'open') want = 1;            // propped open: anyone can walk through, them too
       else if (d.hold !== 'closed') {
-        for (const c of this.crew) if (c.alive && Math.abs(c.x - cx) < 62 && Math.abs(c.y - cy) < 62) { want = 1; break; }
+        // (they start opening a step before you get there, so you don't bump into them)
+        for (const c of this.crew) if (c.alive && Math.abs(c.x - cx) < 78 && Math.abs(c.y - cy) < 78) { want = 1; break; }
         if (!want) for (const m of this.mobs) if (m.alive && m.team === 'crew' && Math.abs(m.x - cx) < 56 && Math.abs(m.y - cy) < 56) { want = 1; break; }
       }
       d.want = want;
@@ -521,8 +522,8 @@ export class Game {
     for (const d of this.doors) {
       if (d.broken) continue;
       const want = d.want || (d.pair != null && pairWant.get(d.pair)) ? 1 : 0;
-      // snappy: open in about a third of a second, close a bit slower (blast doors are heavier)
-      d.open = clamp(d.open + (want ? dt / (d.blast ? 0.7 : 0.32) : -dt / (d.blast ? 1.1 : 0.6)), 0, 1);
+      // snappy: open in about a sixth of a second, close a bit slower (blast doors are heavier)
+      d.open = clamp(d.open + (want ? dt / (d.blast ? 0.45 : 0.16) : -dt / (d.blast ? 1.0 : 0.5)), 0, 1);
     }
   }
 
@@ -1770,12 +1771,11 @@ const PHASES = {
       const anyHuman = g.crew.some((c) => c.human);
       // a vote is running: it closes 15 seconds after the first vote (or when everyone has voted)
       if (g.route.voteT != null) { if (g.route.t - g.route.voteT > 15) tallyRoute(g); return; }
-      const humans = g.crew.filter((c) => c.human).length;
-      if ((!humanPilot && g.route.t > (humans > 1 ? 20 : 8)) || g.route.t > 45 || (!anyHuman && g.route.t > 2.5)) {
-        // bots: prefer the transponder signal, then a port if hurt, else whatever's first
-        const open = g.route.nodes.filter((n) => !n.locked);
-        let pick = open.find((n) => n.derelict) || (g.ship.hull < g.ship.hullMax * 0.4 && open.find((n) => n.type === 'repair' || n.type === 'port')) || (g.ship.fuel < 30 && open.find((n) => n.type === 'fuel')) || open[g.rng.int(0, open.length - 1)];
-        g.arrive(pick);
+      // with players aboard, the bots don't get a say: only a long AFK timer picks for them (by what the ship needs)
+      if ((anyHuman && g.route.t > ROUTE_AFK) || (!anyHuman && g.route.t > 2.5)) {
+        const pick = bestRoute(g);
+        if (anyHuman && pick) g.log('ship', `⏱ Nobody picked. ${pilot?.name || 'The autopilot'} goes for ${pick.name || pick.type} (fuel ${Math.ceil(g.ship.fuel)}, hull ${Math.ceil(g.ship.hull)}).`);
+        if (pick) g.arrive(pick);
       }
     },
   },
@@ -1807,7 +1807,14 @@ const PHASES = {
     },
   },
   port: {
-    update(g) { if (!g.crew.some((c) => c.human) && g.phaseT > 3) COMMANDS.depart(g, g.crew[0], {}); },
+    update(g, dt) {
+      if (!g.crew.some((c) => c.human) && g.phaseT > 3) { COMMANDS.depart(g, g.crew[0], {}); return; }
+      // the pilot's undock warning runs out: everybody aboard, we go
+      if (g.port?.departT > 0) {
+        g.port.departT -= dt;
+        if (g.port.departT <= 0) { g.log('ship', `⚓ ${g.port.departBy} undocks. Back to the dirt!`); g.port = null; g.nextLevel(); }
+      }
+    },
   },
 };
 
@@ -2179,6 +2186,25 @@ export const RACK_MAX = 10;
 export const rackCost = (s) => 40 + 25 * (s.rackUp || 0);
 export const gunPrice = (id) => Math.max(40, Math.round((SHIP_GUNS[id]?.cost || 80) * 0.5));
 export const PILOT_VOTE = 3;
+/** With players aboard, how long the fork waits before the autopilot picks (somebody went AFK). */
+export const ROUTE_AFK = 75;
+/** The stop the ship needs most: the transponder signal, then fuel or repairs when low, then a port, else the richest-looking stop. */
+export function bestRoute(g) {
+  const open = (g.route?.nodes || []).filter((n) => !n.locked);
+  if (!open.length) return null;
+  const s = g.ship, fuel = s.fuel / s.fuelMax, hull = s.hull / s.hullMax;
+  const score = (n) => {
+    if (n.derelict) return 100;
+    let v = 1 + (n.type === 'city' ? 2 : 0) + (n.type === 'port' ? 1.5 : 0);
+    if (n.type === 'fuel') v += fuel < 0.35 ? 30 : fuel < 0.6 ? 6 : 0;
+    if (n.type === 'repair') v += hull < 0.4 ? 28 : hull < 0.7 ? 7 : 0;
+    if (n.type === 'port' || n.type === 'city') v += (fuel < 0.35 ? 12 : 0) + (hull < 0.4 ? 12 : 0);
+    // a fight is only a good idea when the ship is in shape for it
+    if (n.type === 'ship' || n.type === 'nest' || n.type === 'boss') v += hull > 0.7 && fuel > 0.4 ? 2 : -4;
+    return v;
+  };
+  return open.reduce((a, b) => (score(b) > score(a) ? b : a));
+}
 /** Votes for the next stop, weighted: the pilot's counts PILOT_VOTE times. Ties go to the pilot, then the first vote. */
 export function voteWeights(g) {
   const tally = {};
@@ -2247,7 +2273,8 @@ const COMMANDS = {
     const n = g.route.nodes[cmd.i];
     if (!n || n.locked) return;
     const humans = g.crew.filter((x) => x.human);
-    if (humans.length <= 1 || !c.human) { g.arrive(n); return; }
+    if (!c.human && humans.length) return;          // bots don't vote while players are aboard
+    if (humans.length <= 1) { g.arrive(n); return; }
     g.route.votes ||= {};
     g.route.votes[c.id] = cmd.i;
     if (!g.route.voteT) { g.route.voteT = g.route.t; g.log('ship', `🗳 ${c.name} votes for ${n.name || n.type}. Everyone vote! (the pilot's vote counts ${PILOT_VOTE}x, 15 seconds)`); }
@@ -2262,6 +2289,8 @@ const COMMANDS = {
     else g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'NO SIGNAL', color: '#e0533a' });
   },
   helm(g, c, cmd) { if (c.cls === 'pilot') c.atHelm = !!cmd.on; },
+  /** Urchid: stop looking through someone else's eyes. */
+  ghostOff(g, c) { c.ghost = null; },
   boost(g, c, cmd) { /* via shift */ },
   callFuel(g, c) {
     const d = g.descent;
@@ -2340,7 +2369,30 @@ const COMMANDS = {
     g.sealDoors(!!on);
     g.log('ship', on ? `🔒 ${c.name} sealed every door. Boarders have to smash through.` : `🔓 ${c.name} unsealed the doors.`);
   },
-  depart(g) { if (g.phase === 'port') { g.port = null; g.nextLevel(); } },
+  /**
+   * Undock from a port. Only the pilot does it (a bot pilot does it when a player asks). With other
+   * players aboard, it's a 15 second warning first so they can finish shopping; the pilot can go early.
+   */
+  depart(g, c, cmd = {}) {
+    if (g.phase !== 'port' || !g.port) return;
+    const pilot = g.crew.find((x) => x.cls === 'pilot');
+    if (pilot?.human && c !== pilot && c.human) {
+      g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'only the pilot can undock', color: '#ffb0a0' });
+      g.log('ship', `${c.player || c.name} asks ${pilot.player || pilot.name} to undock.`);
+      return { error: 'Only the pilot can undock' };
+    }
+    const by = pilot || c;
+    const others = g.crew.filter((x) => x.human && x !== c);
+    if (others.length && !(g.port.departT > 0)) {
+      g.port.departT = 15;
+      g.port.departBy = by.player || by.name;
+      g.log('alert', `⚓ Pilot, ${g.port.departBy} is preparing to UNDOCK, finish purchasing. Get ready to go! (15s)`);
+      if (pilot) say(g, pilot, 'Undocking in 15! Finish up!');
+      g.fx({ t: 'alarm' });
+      return { warn: true };
+    }
+    g.port = null; g.nextLevel();
+  },
   sell(g, c) {
     if (g.phase !== 'port' || g.ship.gems <= 0) return;
     const guard = g.crew.find((x) => x.cls === 'guard');
@@ -2460,6 +2512,24 @@ const COMMANDS = {
   buyMissile(g, c, cmd, s) { if (g.phase === 'port' && c.wallet >= 25 && s.missiles < s.missilesMax) { c.wallet -= 25; s.missiles++; } },
   buyScrap(g, c, cmd, s) { if (g.phase === 'port' && c.wallet >= 20) { c.wallet -= 20; s.scrap += 25; } },
   buyFood(g, c, cmd, s) { if (g.phase === 'port' && c.wallet >= 15) { c.wallet -= 15; for (const k of ['grub', 'shroom', 'fish', 'spice']) s.food[k] = (s.food[k] || 0) + 1; } },
+  /** Deep cities sell furniture: beds (lie down to heal) and a jukebox (music aboard). It goes in the room you pick. */
+  buyFurniture(g, c, cmd, s) {
+    if (g.phase !== 'port' || g.port?.kind !== 'city') return;
+    const F = FURNITURE[cmd.type]; if (!F) return;
+    const room = g.rooms[cmd.room];
+    if (!room || room.owner !== 'us' || room.gone || room.type === 'corridor') return { error: 'Pick one of our rooms' };
+    s.furniture ||= [];
+    if (s.furniture.filter((f) => f.type === cmd.type).length >= F.max) return { error: `That's all the ${F.name.toLowerCase()}s we have room for` };
+    const here = s.furniture.filter((f) => f.sx === room.sx && f.sy === room.sy);
+    if (here.length >= FURNITURE_SPOTS.length) return { error: 'That room is full' };
+    if (c.wallet < F.cost) return;
+    c.wallet -= F.cost;
+    const used = new Set(here.map((f) => f.k));
+    const k = FURNITURE_SPOTS.findIndex((_, i) => !used.has(i));
+    s.furniture.push({ id: uid(), type: cmd.type, sx: room.sx, sy: room.sy, k });
+    if (cmd.type === 'jukebox' && !s.jukebox) s.jukebox = 1;
+    g.log('loot', `${F.icon} ${c.name} bought a ${F.name.toLowerCase()} for the ${room.name}.`);
+  },
   buyRoom(g, c, cmd) {
     if (g.phase !== 'port' || !g.port.rooms) return;
     const def = BUYABLE_ROOMS.find((r) => r.type === cmd.type); if (!def) return;

@@ -56,8 +56,15 @@
 .g-phase.encounter { color: #fff; background: rgba(160,30,20,.75); animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { background: rgba(200,50,30,.85); } }
 
-.g-duel { position: absolute; top: 4.2rem; left: 50%; transform: translateX(-50%); display: flex; gap: .6rem; align-items: stretch;
-  background: rgba(14,9,6,.85); border: 1px solid #5a3a2a; border-radius: 10px; padding: .5rem .7rem; font-size: .75rem; pointer-events: none; }
+/* the fight: our ship's panel sits under the minimap (left), the enemy ships slide in on the right. See-through. */
+.g-duel { position: absolute; display: flex; gap: .6rem; align-items: stretch;
+  background: rgba(14,9,6,.38); border: 1px solid rgba(110,70,50,.45); border-radius: 10px; padding: .45rem .6rem; font-size: .75rem; pointer-events: none;
+  text-shadow: 0 1px 2px #000, 0 0 4px #000; }
+.g-ours { left: 8px; top: 214px; }
+.g-ours.nomap { top: 3.3rem; }
+.g-theirs { right: calc(200px + 1.5rem); top: 3rem; flex-direction: column; animation: slideRight .5s cubic-bezier(.2,.9,.3,1.1); }
+.g-theirs .ships { flex-direction: column; max-width: none; max-height: calc(100vh - 16rem); overflow: hidden; }
+@keyframes slideRight { from { transform: translateX(140%); opacity: 0; } to { transform: none; opacity: 1; } }
 .g-duel .side { width: 210px; display: flex; flex-direction: column; gap: .22rem; }
 .g-duel .side.wide { width: 420px; }
 .g-duel .side b { font-size: .82rem; }
@@ -82,6 +89,10 @@
 .g-actions .g-undock { background: #2f4a2a; border-color: #5a8a4a; font-weight: 700; }
 .g-actions .g-flee { background: #4a2420; border-color: #8a4a3a; }
 .g-actions button.hidden { display: none; }
+.g-actions .g-store { background: #2a3a4a; border-color: #6ab0e0; font-weight: 700; }
+.g-actions .g-store.urgent { background: #5a3a10; border-color: #f4c542; animation: blink 1s infinite; }
+.g-actions .g-ghostoff { background: #3a2a4a; border-color: #c080e0; font-weight: 700; }
+.g-card .warnline { font-weight: 700; animation: blink 1s infinite; }
 
 .g-me { position: absolute; left: .7rem; bottom: .7rem; width: min(520px, 46vw); background: rgba(14,9,6,.88); border: 1px solid #3a2a20;
   border-radius: 12px; padding: .55rem .7rem; font-size: .8rem; pointer-events: none; }

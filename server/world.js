@@ -239,7 +239,7 @@ export class World {
     this.game.setInput(c.id, {
       mx: Math.sign(num(raw.mx, 1)), my: Math.sign(num(raw.my, 1)),
       ax: num(raw.ax, 1e5), ay: num(raw.ay, 1e5),
-      fire: !!raw.fire, rmb: !!raw.rmb, e: !!raw.e, r: !!raw.r, shift: !!raw.shift, pressed,
+      fire: !!raw.fire, rmb: !!raw.rmb, e: !!raw.e, r: !!raw.r, v: !!raw.v, shift: !!raw.shift, pressed,
     });
   }
 

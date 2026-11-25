@@ -3,11 +3,11 @@
 import {
   CLASSES, ABILITIES, WEAPONS, CLASS_UPGRADES, UPGRADE_BASE_COST, SHIP_UPGRADES, BUYABLE_ROOMS, ROOMS, RECIPES, RESEARCH,
   NODE_TYPES, KM_PER_LEVEL, LEVELS, FOODS, SHIP_UP_MAX, CLASS_UP_MAX, xpCost, POWER_SYS, SHIP_GUNS, roomSize, SHIP_COLS, SHIP_ROWS,
-  TILE, SLOT_W, SLOT_H, STARTER_MONSTERS,
+  TILE, SLOT_W, SLOT_H, STARTER_MONSTERS, FURNITURE, FURNITURE_SPOTS,
 } from '../shared/sim/data.js';
-import { interactTarget, DASH_COST } from '../shared/sim/classes.js';
+import { interactTarget, DASH_COST, fixKey } from '../shared/sim/classes.js';
 import { speedFactor } from '../shared/sim/pilot.js';
-import { gunPeriod } from '../shared/sim/game.js';
+import { gunPeriod, ROUTE_AFK } from '../shared/sim/game.js';
 import { drawMob, drawCrew } from './sprites.js';
 
 /** "-1548km below Sea Level" */
@@ -30,7 +30,8 @@ export function createUI(root, api) {
       <div class="g-res"></div>
     </div>
     <div class="g-phase"></div>
-    <div class="g-duel hidden"></div>
+    <div class="g-duel g-ours hidden"></div>
+    <div class="g-duel g-theirs hidden"></div>
     <div class="g-me"></div>
     <div class="g-crew"></div>
     <div class="g-log"></div>
@@ -40,7 +41,7 @@ export function createUI(root, api) {
     <div class="g-toast hidden"></div>
     <div class="g-hold hidden"></div>
     <div class="g-credits hidden"></div>
-    <div class="g-actions"><button class="g-trader hidden"></button><button class="g-mission hidden"></button><button class="g-undock hidden"></button><button class="g-seal hidden"></button><button class="g-flee hidden"></button><button class="g-burn hidden" title="Redline an engine until it bursts: we tear free right now, guaranteed. Costs the engine (and sets it on fire).">🔥 Burn an engine: escape NOW</button></div>
+    <div class="g-actions"><button class="g-ghostoff hidden">👁 Back to my own eyes</button><button class="g-store hidden">⚓ Back to the market</button><button class="g-trader hidden"></button><button class="g-mission hidden"></button><button class="g-undock hidden"></button><button class="g-seal hidden"></button><button class="g-flee hidden"></button><button class="g-burn hidden" title="Redline an engine until it bursts: we tear free right now, guaranteed. Costs the engine (and sets it on fire).">🔥 Burn an engine: escape NOW</button></div>
     <div class="g-spawn hidden"></div>
     <form class="g-chat hidden"><input maxlength="200" placeholder="Say something to the crew… (Enter)"></form>
   `;
@@ -58,6 +59,8 @@ export function createUI(root, api) {
   let missionSeen = 0;         // the last secret mission report we showed (013)
   let starterSeen = false;     // the trainer's starter-pet pick
   let creditsSkipped = false;
+  let furnPick = null;         // a Deep City bed/jukebox waiting for its room
+  let portLeft = false;       // walked out of the store to roam the ship (the market button brings it back)
 
   // ---- click handling (delegated)
   card.addEventListener('click', (e) => {
@@ -69,16 +72,20 @@ export function createUI(root, api) {
     const g0 = api.game();
     if (act.ui === 'stay' || act.t === 'continue') aftermathSeen = g0 ? aftermathKey(g0) : null;
     if (act.ui === 'stay') { closeModal(); return; }
-    if (act.tab) { portTab = act.tab; roomPick = null; render(true); return; }
+    if (act.tab) { portTab = act.tab; roomPick = null; furnPick = null; render(true); return; }
     if (act.pick) { roomPick = act.pick; render(true); return; }
+    if ('pickF' in act) { furnPick = act.pickF; render(true); return; }
+    if (act.t === 'buyFurniture') furnPick = null;
     if (act.ui) { api.ui(act.ui, act); return; }
     api.cmd(act);
-    if (['route', 'storyOk', 'continue', 'depart', 'vent', 'switchClass', 'pickStarter', 'disguise'].includes(act.t)) closeModal();
+    if (['route', 'storyOk', 'continue', 'vent', 'switchClass', 'pickStarter', 'disguise'].includes(act.t)) closeModal();
     if (act.t === 'helm' && act.on) closeModal();
     if (act.t === 'buyRoom') roomPick = null;
     setTimeout(() => render(true), 30);
   });
   $('.g-undock').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'continue' }); });
+  $('.g-ghostoff').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'ghostOff' }); });
+  $('.g-store').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); portLeft = false; openModal('port'); });
   $('.g-seal').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'seal' }); });
   $('.g-flee').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'flee' }); });
   $('.g-burn').addEventListener('click', (e) => { e.currentTarget.blur(); api.sfx?.ui(); api.cmd({ t: 'burnEngine' }); });
@@ -94,7 +101,7 @@ export function createUI(root, api) {
 
   const aftermathKey = (g) => `${g.level}:${Math.round(g.time - g.phaseT)}`;
   function openModal(kind, data) { modalKind = kind; modalData = data; lastHtml = ''; modal.classList.remove('hidden'); modal.dataset.kind = kind; render(true); }
-  function closeModal() { modalKind = null; modalData = null; modal.classList.add('hidden'); api.onClose?.(); }
+  function closeModal() { if (modalKind === 'port' && api.game()?.phase === 'port') portLeft = true; modalKind = null; modalData = null; modal.classList.add('hidden'); api.onClose?.(); }
   const isOpen = () => !!modalKind;
 
   function toast(text) { const el = $('.g-toast'); el.textContent = text; el.classList.remove('hidden'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add('hidden'), 2600); }
@@ -126,21 +133,24 @@ export function createUI(root, api) {
     ph.className = 'g-phase ' + g.phase;
 
     // duel: us vs every ship that's docked (or on its way)
-    const duel = $('.g-duel');
+    // the fight: our ship's guns on the left under the minimap, every enemy ship on the right
+    const ours = $('.g-ours'), duel = $('.g-theirs');
+    ours.classList.toggle('nomap', !!view.minimapOff);   // (M hid the minimap: slide up into its spot)
     const ships = (g.enemyShips || []).filter((x) => !x.gone && x.kind !== 'derelict' && x.kind !== 'pod');
     if (g.phase === 'encounter' && ships.length) {
+      ours.classList.remove('hidden');
       duel.classList.remove('hidden');
       const mp = 9 / (1 + 0.1 * s.up.dmissile);
       const tgt = g.rooms[s.missileTarget];
       const guns = (s.guns || []).map((gun) => `<div class="dbar ${gun.on === false ? 'off' : ''}"><label>${esc(SHIP_GUNS[gun.id].name)}${gun.on === false ? ' (no power)' : ''}</label><div><i style="width:${gun.on === false ? 0 : pct(gun.t || 0, gunPeriod(s, gun.id))}"></i></div></div>`).join('');
-      duel.innerHTML = `
+      ours.innerHTML = `
         <div class="side us"><b>${esc(s.name)}</b>
           ${guns}
           <div class="dbar ${s.missileReady ? 'ready' : ''}"><label>D-Missile ${s.missiles ? '' : '(empty)'}</label><div><i style="width:${s.missileReady ? '100%' : pct(s.missileT, mp)}"></i></div></div>
           ${tgt && !tgt.gone ? `<small>⌖ ${esc(tgt.name)}</small>` : ''}
           ${s.evasiveT > 0 ? '<em class="good">EVASIVE!</em>' : ''}${g.fleeT > 0 ? `<em class="bad">ESCAPING ${Math.ceil(g.fleeT)}s</em>` : ''}
-        </div>
-        <div class="vs">VS</div>
+        </div>`;
+      duel.innerHTML = `
         <div class="ships">${ships.map((es) => es.docked ? `
         <div class="side them ${es.done ? 'beaten' : ''}"><b>${esc(es.name)}${es.surrendered ? ' 🏳' : es.destroyed ? ' 💥' : es.fled ? ' (fled)' : ''}</b>
           <div class="dbar hullb"><label>Hull</label><div><i style="width:${pct(es.hull, es.hullMax)}"></i></div></div>
@@ -150,9 +160,10 @@ export function createUI(root, api) {
           ${es.crewCls?.length ? `<small class="ecrew">crew: ${es.crewCls.map((cl) => { const up = g.mobs.some((m) => m.alive && m.officer === cl && m.esId === es.id); return `<span class="${up ? '' : 'down'}">${CLASSES[cl].name}${up ? '' : ' ✗'}</span>`; }).join(' · ')}</small>` : ''}`}
         </div>` : `<div class="side them incoming"><b>☠ ${esc(es.name)}</b><small>docking in ${Math.max(0, Math.ceil(es.approachT))}s</small></div>`).join('')}</div>`;
     } else if (g.phase === 'encounter' && g.boss && g.boss.alive) {
+      ours.classList.add('hidden');
       duel.classList.remove('hidden');
       duel.innerHTML = `<div class="side them wide"><b>☀ ${esc(g.boss.name)}</b><div class="dbar hullb"><label>HP</label><div><i style="width:${pct(g.boss.hp, g.boss.maxHp)}"></i></div></div></div>`;
-    } else duel.classList.add('hidden');
+    } else { duel.classList.add('hidden'); ours.classList.add('hidden'); }
 
     // me
     if (me) renderMe(g, me);
@@ -208,7 +219,8 @@ export function createUI(root, api) {
     if (modalKind === 'trader' && !g.trader) closeModal();
     if (!g.storyOpen && !over) {
       if (g.phase === 'route' && modalKind !== 'route') openModal('route');
-      if (g.phase === 'port' && modalKind !== 'port' && modalKind !== 'upgrades') openModal('port');
+      if (g.phase !== 'port') portLeft = false;
+      if (g.phase === 'port' && !portLeft && modalKind !== 'port' && modalKind !== 'upgrades') openModal('port');
       if (g.phase === 'aftermath' && modalKind !== 'aftermath' && aftermathSeen !== aftermathKey(g) && (!modalKind || modalKind === 'stranded')) openModal('aftermath');
       if (modalKind === 'route' && g.phase !== 'route') closeModal();
       if (modalKind === 'port' && g.phase !== 'port') closeModal();
@@ -222,6 +234,17 @@ export function createUI(root, api) {
     const showUndock = g.phase === 'aftermath' && modalKind !== 'aftermath';
     undock.classList.toggle('hidden', !showUndock);
     if (showUndock) undock.textContent = !pilot || me === pilot || !pilot.human ? (g.departWarnT > 0 ? '⏏ Undock anyway (they get yanked back)' : '⏏ Undock & keep digging') : `⏏ Ask ${pilot.name} to undock`;
+    // walked out of the port's store: a button back to the market (and the undock countdown)
+    const store = $('.g-store');
+    const showStore = g.phase === 'port' && modalKind !== 'port' && modalKind !== 'upgrades';
+    store.classList.toggle('hidden', !showStore);
+    if (showStore) store.textContent = g.port?.departT > 0 ? `⚓ Undocking in ${Math.ceil(g.port.departT)}s · back to the market` : '⚓ Back to the market';
+    store.classList.toggle('urgent', !!(showStore && g.port?.departT > 0));
+    // the urchid looking through someone else's eyes: a way back
+    const gh = $('.g-ghostoff');
+    const ghostOn = me?.cls === 'urchid' && me.ghost != null;
+    gh.classList.toggle('hidden', !ghostOn);
+    if (ghostOn) gh.textContent = `👁 Back to my own eyes (watching ${g.crew.find((c) => c.id === me.ghost)?.name || '?'})`;
     const docked = g.phase === 'encounter' && (g.enemyShips || []).some((es) => !es.gone);
     seal.classList.toggle('hidden', !docked);
     if (docked) seal.textContent = g.doorsSealed ? '🔓 Unseal doors (L)' : '🔒 Seal all doors (L)';
@@ -283,6 +306,7 @@ export function createUI(root, api) {
       slots.push(slot(k, label, me.cd[key] || 0, A.cd || 1, A.desc));
     }
     if (me.cls === 'chef') slots.push(slot('RMB', 'Fish slap', me.cd.f, 9));
+    if (me.cls !== 'urchid' && me.cls !== 'engineer') slots.push(slot(fixKey(me).toUpperCase(), 'Repair (hold)', 0, 1, 'Hold to fix the nearest broken system, wall, door or breach. Puts out fires too.'));
     const sm = me.stamMax || 100;
     if (me.cls !== 'urchid') slots.push(slot('SHIFT', 'Dash', (me.stam ?? sm) < DASH_COST ? (DASH_COST - (me.stam ?? sm)) / 26 : 0, DASH_COST / 26, 'A quick dash with a puff of smoke. Uses stamina.'));
     const buffs = (me.buffs || []).map((b) => `<span class="buff" title="${esc(JSON.stringify(b))}">${b.tag || 'buff'} ${Math.ceil(b.t)}s</span>`).join('');
@@ -393,9 +417,10 @@ export function createUI(root, api) {
     const left = g.route?.voteT != null ? Math.max(0, Math.ceil(15 - (g.route.t - g.route.voteT))) : null;
     const line = voting
       ? `🗳 Vote on where we stop (the pilot's vote counts 3x).${left != null ? ` Closes in ${left}s.` : ''} ${humans.filter((c) => votes[c.id] == null).length} still to vote.`
-      : pilot?.human ? 'You\'re the pilot. Pick where we stop next.' : `${esc(pilot?.name || 'The pilot')} is waiting for your call (picks in ${Math.max(0, Math.ceil(8 - (g.route?.t || 0)))}s).`;
+      : pilot?.human ? 'You\'re the pilot. Pick where we stop next.' : `${esc(pilot?.name || 'The pilot')} is waiting for your call.`;
+    const afk = Math.max(0, Math.ceil(ROUTE_AFK - (g.route?.t || 0)));
     return `<h2>The tunnel forks</h2>
-      <p class="muted">${line}
+      <p class="muted">${line} ${g.route?.voteT == null ? `<small>(nobody picks in ${afk}s: the autopilot goes where the ship needs)</small>` : ''}
       Fuel ${Math.ceil(g.ship.fuel)}/${g.ship.fuelMax} · Hull ${Math.ceil(g.ship.hull)}/${g.ship.hullMax}</p>
       <div class="nodes">${nodes.map((n, i) => `<button class="node ${n.locked ? 'locked' : ''} ${votes[me?.id] === i ? 'voted' : ''}" style="--c:${n.color}" ${n.locked ? 'disabled' : ''} data-act='${JSON.stringify({ t: 'route', i })}'>
         <span class="ic">${n.icon}</span><b>${esc(n.name)}</b><span>${esc(n.desc)}</span>${voting ? `<em class="votes">${tally[i] ? `${tally[i]} vote${tally[i] > 1 ? 's' : ''}` : ''}${votes[me?.id] === i ? ' · yours' : ''}</em>` : ''}</button>`).join('')}</div>
@@ -416,7 +441,7 @@ export function createUI(root, api) {
       ${g.breaches ? `<p class="bad">${g.breaches} hull breach${g.breaches > 1 ? 'es' : ''} still open. They leak dirt, drain the hull, and things crawl in through them.</p>` : ''}
       ${fires ? `<p class="bad">🔥 ${fires} fire${fires > 1 ? 's' : ''} still burning. Hold E next to them.</p>` : ''}
       ${bridge && bridge.sys.hp <= 0 ? '<p class="bad">The bridge is wrecked: we can\'t undock until it\'s repaired.</p>' : ''}
-      <p class="muted">Take a moment: loot, repair (hold E), put out fires, clean up, cook, research. ${iAmPilot ? 'You give the signal to undock once everyone is back aboard.' : `Only ${esc(pilot.name)} (the pilot) can undock.`}${!pilot?.human && pilot ? ` ${esc(pilot.name)} undocks on their own in about a minute.` : ''}</p>
+      <p class="muted">Take a moment: loot, repair (hold R), put out fires, clean up, cook, research. ${iAmPilot ? 'You give the signal to undock once everyone is back aboard.' : `Only ${esc(pilot.name)} (the pilot) can undock.`}${!pilot?.human && pilot ? ` ${esc(pilot.name)} undocks on their own in about a minute.` : ''}</p>
       <div class="row"><button data-act='{"t":"continue"}'>${iAmPilot ? (g.resume ? 'Back to the descent' : 'Undock & keep digging') : `Ask ${esc(pilot.name)} to undock`}</button><button class="ghost" data-act='{"ui":"stay"}'>Stay & loot</button></div>`;
   }
 
@@ -427,7 +452,13 @@ export function createUI(root, api) {
     const tabBtns = tabs.map((t) => `<button class="tab ${portTab === t ? 'on' : ''}" data-act='${JSON.stringify({ tab: t })}'>${{ market: 'Market', ship: 'Ship upgrades', rooms: 'Build rooms', crew: 'Crew & class' }[t]}</button>`).join('');
     let body = '';
     const btn = (label, act, ok = true) => `<button ${ok ? '' : 'disabled'} data-act='${JSON.stringify(act)}'>${label}</button>`;
-    if (portTab === 'market' || !tabs.includes(portTab)) {
+    if (furnPick && P.kind === 'city') {
+      const F = FURNITURE[furnPick];
+      const opts = g.rooms.map((r, i) => [r, i]).filter(([r]) => r.owner === 'us' && !r.gone && r.type !== 'corridor');
+      const full = (r) => (s.furniture || []).filter((f) => f.sx === r.sx && f.sy === r.sy).length >= FURNITURE_SPOTS.length;
+      body = `<p>Which room gets the new <b>${F.icon} ${F.name}</b>? (${F.cost})</p><div class="grid2">${opts.map(([r, i]) => btn(`${esc(r.name)}${full(r) ? ' (full)' : ''}`, { t: 'buyFurniture', type: furnPick, room: i }, !full(r) && me.wallet >= F.cost)).join('')}</div>
+        <div class="row"><button class="ghost" data-act='{"pickF":null}'>Cancel</button></div>`;
+    } else if (portTab === 'market' || !tabs.includes(portTab)) {
       const fuelNeed = Math.ceil(s.fuelMax - s.fuel), hullNeed = Math.ceil(s.hullMax - s.hull);
       body = `<div class="grid2">
         <div class="item"><b>💎 Sell gems</b><span>${s.gems} gems × ${P.gemPrice} = ${s.gems * P.gemPrice}, split between ${g.crew.length} crew</span>${btn('Sell all', { t: 'sell' }, s.gems > 0)}</div>
@@ -437,6 +468,8 @@ export function createUI(root, api) {
         ${P.shop ? `<div class="item"><b>🚀 D-missile</b><span>${s.missiles}/${s.missilesMax} in the rack</span>${btn('Buy (25)', { t: 'buyMissile' }, me.wallet >= 25 && s.missiles < s.missilesMax)}</div>
         <div class="item"><b>⚙ Scrap</b><span>25 scrap for repairs & gadgets</span>${btn('Buy (20)', { t: 'buyScrap' }, me.wallet >= 20)}</div>
         <div class="item"><b>🍖 Groceries</b><span>1 grub, shroom, fish, spice</span>${btn('Buy (15)', { t: 'buyFood' }, me.wallet >= 15)}</div>
+        ${P.kind === 'city' ? Object.entries(FURNITURE).map(([id, F]) => { const n = (s.furniture || []).filter((f) => f.type === id).length;
+          return `<div class="item city"><b>${F.icon} ${F.name} <small>${n}/${F.max}</small></b><span>${F.desc} Only in the Deep Cities.</span>${btn(`Buy (${F.cost}) · pick a room`, { pickF: id }, me.wallet >= F.cost && n < F.max)}</div>`; }).join('') : ''}
         ${s.items.map((it, i) => { const G = SHIP_GUNS[it.id]; const price = Math.max(40, Math.round((G.cost || 80) * 0.5)); return `<div class="item"><b>🔫 Sell ${G.name}</b><span>Sitting in storage, not in the rack</span>${btn(`Sell (${price})`, { t: 'sellGun', item: i })}</div>`; }).join('')}
         ${s.food.crops ? `<div class="item"><b>🌽 Sell crops</b><span>${s.food.crops} crops</span>${btn('Sell', { t: 'sellCrops' })}</div>` : ''}
         ${me.cls === 'agent' ? `<div class="item"><b>🍸 Meet a contact</b><span>Swap "knowledge" for "information": more marked targets</span>${btn('Buy intel (40)', { t: 'buyIntel' }, me.wallet >= 40)}</div>` : ''}` : ''}
@@ -461,7 +494,16 @@ export function createUI(root, api) {
     return `<div class="port"><h2>⚓ ${esc(P.name)}</h2><p class="muted">${esc(P.flavor)}</p>
       <div class="wallet-line">Your money: <b>💰 ${Math.floor(me.wallet)}</b> · Ship gems: 💎 ${s.gems} · Scrap ⚙ ${Math.floor(s.scrap)}</div>
       <div class="tabs">${tabBtns}</div>${body}
-      <div class="row end"><button class="ghost" data-act='{"ui":"upgrades"}'>My upgrades</button><button class="big" data-act='{"t":"depart"}'>Undock & dig →</button></div></div>`;
+      ${P.departT > 0 ? `<p class="bad warnline">⚓ Pilot ${esc(P.departBy || '')} is preparing to UNDOCK in ${Math.ceil(P.departT)}s. Finish purchasing. Get ready to go!</p>` : ''}
+      <div class="row end"><button class="ghost" data-act='{"ui":"upgrades"}'>My upgrades</button><button class="ghost" data-act='{"close":1}'>🚶 Leave the store (walk around)</button>${departBtn(g, me, P)}</div></div>`;
+  }
+  function departBtn(g, me, P) {
+    const pilot = g.crew.find((c) => c.cls === 'pilot');
+    const mine = !pilot || pilot === me || !pilot.human;
+    if (!mine) return `<button class="big" disabled title="Only the pilot can undock">Only ${esc(pilot.player || pilot.name)} (the pilot) can undock</button>`;
+    const others = g.crew.some((c) => c.human && c !== me);
+    const label = P.departT > 0 ? 'Undock now →' : others ? 'Undock & dig → (15s warning)' : 'Undock & dig →';
+    return `<button class="big" data-act='{"t":"depart"}'>${label}</button>`;
   }
 
   function shipMapHtml(g, pick) {
@@ -548,7 +590,8 @@ export function createUI(root, api) {
       <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>LMB</kbd> attack · <kbd>RMB</kbd> <kbd>Q</kbd> <kbd>F</kbd> <kbd>Space</kbd> abilities (the engineer's <kbd>R</kbd> is the repair wrench; 013 also has <kbd>R</kbd> and <kbd>G</kbd>) · <kbd>X</kbd> swap to/from a makeshift gun · <kbd>Shift</kbd> dash (uses stamina)</p>
       <p><b>Candy</b> turns up around the ship: green = faster, red = faster trigger, blue = longer range, yellow = double gold per kill, white = a lightning chain gun, rainbow = all of it. Every star you spend also adds health and stamina.</p>
       <p><b>Random events</b> happen on the way down (traders, fires, broken engines, storks, viruses, worms, strawberries...). The deeper you go, the nastier they get.</p>
-      <p><kbd>E</kbd> use a station, shut a door or prop it open, unseal doors (clearance). <b>Hold E</b> to repair breaches, walls, doors, wreckage and systems, and to spray your fire extinguisher.</p>
+      <p><kbd>E</kbd> use a station, shut a door or prop it open, unseal doors (clearance), lie down in a bed. <b>Hold <kbd>R</kbd></b> to repair the nearest broken system, wall, door, breach or wreckage, and to spray your fire extinguisher (013 uses <kbd>V</kbd>: his R is a mine). Holding E works too.</p>
+      <p><kbd>Esc</kbd> as the Urchid in ghost mode: back to your own eyes.</p>
       <p><kbd>L</kbd> seal / unseal every door during a docking. A walkway runs around the whole ship with 4 blast doors (open until someone shuts them; each one shuts as a whole).</p>
       <p><kbd>Tab</kbd> upgrades (spend XP: you earn it doing your job) · <kbd>C</kbd> switch crew member · <kbd>M</kbd> hide/show the minimap · <kbd>Mouse wheel</kbd> zoom · <kbd>Esc</kbd> menu</p>
       <p><b>Power:</b> the scientist routes the ship's power cells at the lab: engines (speed, dodging), bubbles (recharge), weapons (every gun needs power), systems (feeders, research) and the galley (better meals). Build Power Cores for more.</p>
@@ -628,7 +671,7 @@ export function createUI(root, api) {
     const room = d.room != null ? g.rooms[d.room] : null;
     const s = g.ship;
     const head = (t, sub = '') => `<h2>${t}</h2>${sub ? `<p class="muted">${sub}</p>` : ''}`;
-    const sysLine = room?.sys ? `<div class="sysline">System ${Math.ceil(room.sys.hp)}/${room.sys.max} ${room.sys.hp < room.sys.max ? '· hold <kbd>E</kbd> at the station to repair' : '· all good'}</div>` : '';
+    const sysLine = room?.sys ? `<div class="sysline">System ${Math.ceil(room.sys.hp)}/${room.sys.max} ${room.sys.hp < room.sys.max ? `· hold <kbd>${fixKey(me).toUpperCase()}</kbd> near it to repair` : '· all good'}</div>` : '';
     const owner = room ? CLASSES[ROOMS[room.type]?.cls] : null;
     const notMine = owner && me.cls !== ROOMS[room.type]?.cls;
     const close = `<div class="row end"><button data-act='{"close":1}'>Close</button></div>`;

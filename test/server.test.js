@@ -204,3 +204,20 @@ test('the leaderboard: solo runs are posted, online runs are recorded when they 
   board = await (await fetch(`http://localhost:${port2}/api/leaderboard`)).json();
   assert.equal(board.length, 2);
 });
+
+test('a ship that won leaves the lobby once everyone has left the island', async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'doigo-'));
+  const game = createGameServer({ dataDir, speed: 20, rng: () => 0.5 });
+  t.after(async () => { for (const ws of open) ws.close(); open.clear(); await game.close().catch(() => {}); rmSync(dataDir, { recursive: true, force: true }); });
+  const port = await game.listen(0);
+  const a = await client(port, { name: 'Winner' });
+  a.send({ t: 'create', name: 'Done Ship', maxPlayers: 2 });
+  await a.waitFor((m) => m.t === 'world');
+  const w = [...game.worlds.values()][0];
+  w.run.status = 'won';
+  assert.equal(game.worlds.size, 1, 'still there while someone is aboard');
+  a.send({ t: 'leave' });
+  const lobby = await a.waitFor((m) => m.t === 'lobby' && !m.worlds.some((x) => x.id === w.id), 4000);
+  assert.ok(lobby);
+  assert.equal(game.worlds.size, 0);
+});

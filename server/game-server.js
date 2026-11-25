@@ -254,6 +254,17 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     socket.on('close', () => { conns.delete(conn); if (conn.worldId) leaveWorld(conn); });
   }
 
+  /** A ship that won its run is done: once everyone has left the island, it leaves the lobby for good (its score is on the leaderboard). */
+  function pruneWon() {
+    for (const w of [...worlds.values()]) {
+      if (w.run.status !== 'won' || w.online.size) continue;
+      worlds.delete(w.id);
+      store.deleteWorld(w.id);
+      lastLobbyJson = '';
+    }
+  }
+  pruneWon();
+
   // ---------- loops ----------
   let last = Date.now();
   let idleT = 0;
@@ -275,7 +286,7 @@ export function createGameServer({ dataDir = join(ROOT, 'data'), speed = 1, rng,
     setInterval(guard('meta', () => {
       for (const w of worlds.values()) if (w.online.size && metaKey(w) !== w.lastMeta) broadcastWorld(w);
     }), META_MS),
-    setInterval(guard('lobby', () => broadcastLobby()), LOBBY_MS),
+    setInterval(guard('lobby', () => { pruneWon(); broadcastLobby(); }), LOBBY_MS),
     // a connection that has said nothing (not even a heartbeat) for 30s is dead: free its seat
     setInterval(guard('heartbeat', () => { const now = Date.now(); for (const c of conns) if (now - (c.socket.lastSeen || now) > 30000) c.socket.close(1001, 'timeout'); }), 5000),
     setInterval(guard('save', () => saveAll()), SAVE_MS),

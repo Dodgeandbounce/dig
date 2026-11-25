@@ -246,7 +246,15 @@ export const sfx = {
   /** Menus: a shovel clanking on rock. */
   ui() { const was = place; place = null; metal(pick([1050, 1150, 1250]), 0.22, 0.05); nz({ f: 800, f2: 300, dur: 0.06, vol: 0.05, filter: 'lowpass' }); place = was; },
   /** Hovering a button: a little scoop of dirt. */
-  uiHover() { if (!throttle('hover', 70)) return; const was = place; place = null; nz({ f: pick([500, 650, 800]), f2: 200, dur: 0.07, vol: 0.035, filter: 'lowpass', j: 0.2 }); nz({ f: 2500, dur: 0.01, vol: 0.012, filter: 'bandpass', q: 3, delay: 0.03 }); place = was; },
+  // hovering a button: a soft wooden "tok" with a little bell on top (two notes a fifth apart, picked at random)
+  uiHover() {
+    if (!throttle('hover', 60)) return; const was = place; place = null;
+    const f = pick([660, 740, 880, 990]);
+    tone({ f, f2: f * 0.98, type: 'sine', dur: 0.09, vol: 0.06, attack: 0.003, j: 0.02 });
+    tone({ f: f * 1.5, type: 'triangle', dur: 0.06, vol: 0.022, attack: 0.002, delay: 0.012, j: 0.02 });
+    nz({ f: 1800, dur: 0.012, vol: 0.015, filter: 'bandpass', q: 4 });
+    place = was;
+  },
   dfire(who, w) {
     if (w === 'missile') { // launch thump, then the rocket motor screaming away through the dirt
       tone({ f: who === 'us' ? 70 : 55, f2: 30, type: 'sine', dur: 0.4, vol: 0.25 });
@@ -294,8 +302,32 @@ export const sfx = {
 // ---------------------------------------------------------------------------
 // music: a drone that follows the depth, and a beat that speeds up in fights. The song moves
 // between sections, and every layer of the earth has its own scale, so it keeps changing.
-let intensity = 0, depth = 0, beatTimer = null, step = 0, section = 0;
+let intensity = 0, depth = 0, beatTimer = null, step = 0, section = 0, jukebox = 0;
 export function setIntensity(v, tier) { intensity = v; if (tier != null) depth = Math.max(0, Math.min(4, tier)); }
+/** The jukebox from a Deep City: 0 off, else which song. It plays over the calm music (a fight drowns it out). */
+export function setJukebox(song) { jukebox = song | 0; }
+// the jukebox songs: [bass line, chord roots, swing?, beat] in semitones over A (110 Hz)
+const SONGS = [null,
+  { name: 'Deep City Swing', bass: [0, 4, 7, 9, 12, 9, 7, 4], chords: [0, 0, 5, 5, 7, 5, 0, 7], third: 4, swing: true, kick: 8, snare: [4, 12] },
+  { name: 'Mole Disco', bass: [0, 12, 0, 12, 3, 15, 5, 17], chords: [0, 0, 3, 3, 5, 5, 3, 3], third: 3, swing: false, kick: 4, snare: [4, 12], hats: true },
+  { name: 'Lava Lounge', bass: [0, 7, 10, 7, 5, 12, 3, 7], chords: [0, 0, 5, 5, 3, 3, 7, 7], third: 3, swing: false, kick: 16, snare: [10], bossa: true },
+];
+function jukeboxTick() {
+  const S = SONGS[jukebox]; if (!S) return false;
+  const A = 110, bar = (step >> 4) % 8, b = step % 16;
+  // bass on the beat (and the off-beat for the disco)
+  if (b % 4 === 0 || (S.hats && b % 4 === 2)) mtone(hz(A / 2, S.bass[(step >> 2) % S.bass.length]), 0.22, 'triangle', 0.22);
+  if (b % S.kick === 0) mtone(55, 0.14, 'sine', 0.45);
+  if (S.snare.includes(b)) mtone(1800, 0.08, 'square', 0.08, true);
+  if (S.hats && b % 2 === 1) mtone(7000, 0.02, 'square', 0.04, true);
+  if (S.bossa && [0, 3, 6, 10, 12].includes(b)) mtone(1200, 0.03, 'square', 0.05, true);
+  // chords: stabs on 2 and 4 for the swing, pads for the others
+  const root = S.chords[bar], tri = [0, S.third, 7];
+  if (S.swing ? (b === 4 || b === 12) : b === 0) for (const s of tri) mtone(hz(A * 2, root + s), S.swing ? 0.25 : 1.6, S.swing ? 'square' : 'sine', S.swing ? 0.035 : 0.05);
+  // a little tune on top, from the chord
+  if ((S.swing ? [0, 3, 6, 10] : [0, 6, 8, 14]).includes(b) && R() < 0.75) mtone(hz(A * 4, root + tri[(R() * 3) | 0] + (R() < 0.3 ? 12 : 0)), 0.18, 'triangle', 0.07);
+  return true;
+}
 // shallow: bright minor pentatonic; deeper: darker modes; the core: tense phrygian with a flat second
 const SCALES = [
   [0, 3, 5, 7, 10, 12], [0, 2, 3, 7, 8, 12], [0, 3, 5, 6, 7, 10], [0, 1, 4, 5, 7, 8], [0, 1, 3, 6, 7, 10],
@@ -325,6 +357,8 @@ function startMusic() {
         if (step % 2 === 1 && R() < 0.7) mtone(6000, 0.02, 'square', 0.05, true); // hats
         if (step % 4 === 0) mtone(hz(root, scale[[0, 0, 3, 4][section] % scale.length]), 0.18, 'sawtooth', 0.12); // bass line
         if (section % 2 === 1 && step % 2 === 0) mtone(hz(root * 4, scale[motif[(step / 2) % motif.length | 0] % scale.length]), 0.1, 'square', 0.05);
+      } else if (jukeboxTick()) {
+        // (the jukebox is playing: it replaces the calm music)
       } else {
         // calm: a slow melody from the motif, sometimes a soft chord
         if (step % 8 === 0) mtone(hz(root * 2, scale[motif[(step / 8) % motif.length | 0] % scale.length]), 0.7, 'triangle', 0.2);
@@ -332,7 +366,7 @@ function startMusic() {
         if (section === 3 && step % 4 === 2 && R() < 0.4) mtone(hz(root * 8, scale[(R() * scale.length) | 0]), 0.15, 'triangle', 0.04);
       }
     }
-    beatTimer = setTimeout(tick, intensity > 0.5 ? 140 - depth * 6 : 260 - depth * 10);
+    beatTimer = setTimeout(tick, intensity > 0.5 ? 140 - depth * 6 : jukebox ? (jukebox === 3 ? 150 : jukebox === 2 ? 118 : 135) : 260 - depth * 10);
   };
   tick();
 }

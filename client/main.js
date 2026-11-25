@@ -6,7 +6,7 @@ import { CLASSES } from './shared/sim/data.js';   // (main.js sits at the site r
 // menus sound like digging: hover a button for a scoop of dirt, click it for a shovel clank
 let hovered = null;
 document.addEventListener('mouseover', (e) => {
-  const b = e.target.closest?.('button, .node, .cls, .lb-row');
+  const b = e.target.closest?.('button, [data-act], .node, .cls, .lb-row, .tab');
   if (b && b !== hovered && !b.disabled) sfx.uiHover();
   hovered = b;
 });

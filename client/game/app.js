@@ -10,7 +10,7 @@ import { moveActor } from '../shared/sim/combat.js';
 import { norm } from '../shared/sim/util.js';
 import { createRenderer } from './render.js';
 import { createUI } from './ui.js';
-import { initAudio, sfx, setIntensity, toggleMute, setListener, at } from './audio.js';
+import { initAudio, sfx, setIntensity, setJukebox, toggleMute, setListener, at } from './audio.js';
 import { roomCenter } from '../shared/sim/grid.js';
 import { drawCrew } from './sprites.js';
 
@@ -345,7 +345,8 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
     if (down && !e.repeat) {
       if (k === 'Escape') {
         if (view.pilot) { session.cmd({ t: 'helm', on: false }); return; }
-        if (ui.isOpen()) { if (['panel', 'upgrades', 'help', 'pause', 'crew'].includes(ui.kind())) { ui.closeModal(); session.setPaused(false); } }
+        if (ui.isOpen()) { if (['panel', 'upgrades', 'help', 'pause', 'crew', 'port'].includes(ui.kind())) { ui.closeModal(); session.setPaused(false); } }
+        else if (me.cls === 'urchid' && me.ghost != null) session.cmd({ t: 'ghostOff' });   // ghost mode: Esc brings the camera home first
         else { ui.openModal('pause'); session.setPaused(true); }
         e.preventDefault(); return;
       }
@@ -353,7 +354,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
       if (k === 'Tab') { e.preventDefault(); if (ui.kind() === 'upgrades') ui.closeModal(); else if (!ui.isOpen() || ui.kind() === 'panel') ui.openModal('upgrades'); return; }
       if (k === 'KeyH' && !ui.isOpen()) { ui.openModal('help'); return; }
       if (k === 'KeyC') { if (ui.kind() === 'crew') ui.closeModal(); else if (!ui.isOpen() || ui.kind() === 'panel') ui.openModal('crew'); return; }
-      if (k === 'KeyM') { renderer.cam.minimap = renderer.cam.minimap === false; return; }   // (the minimap: no more whole-ship overview)
+      if (k === 'KeyM') { renderer.cam.minimap = renderer.cam.minimap === false; view.minimapOff = renderer.cam.minimap === false; return; }   // (the minimap: no more whole-ship overview)
       if (k === 'KeyL' && !ui.isOpen()) { session.cmd({ t: 'seal' }); return; }
       if (k === 'KeyE' && view.pilot) { session.cmd({ t: 'helm', on: false }); return; }
       if (k === 'KeyE' && ui.kind() === 'panel') { ui.closeModal(); return; }
@@ -387,7 +388,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
       my: (k('KeyS', 'ArrowDown') ? 1 : 0) - (k('KeyW', 'ArrowUp') ? 1 : 0),
       ax: Math.round(aim.x), ay: Math.round(aim.y),
       fire: mouse.l && !ui.isOpen(), rmb: mouse.r && !ui.isOpen(),
-      e: keys.has('KeyE') && !view.pilot, r: keys.has('KeyR') && !view.pilot, shift: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+      e: keys.has('KeyE') && !view.pilot, r: keys.has('KeyR') && !view.pilot, v: keys.has('KeyV') && !view.pilot, shift: keys.has('ShiftLeft') || keys.has('ShiftRight'),
       pressed: ui.isOpen() ? {} : { ...pressed },
     };
     for (const key in pressed) delete pressed[key];
@@ -424,6 +425,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
     uiT -= dt;
     if (uiT <= 0) { uiT = 0.1; ui.update(cur, me, view); }
     setIntensity(cur.phase === 'encounter' || cur.mobs.some((m) => m.alive && m.team === 'enemy') ? 1 : 0, cur.tier);
+    setJukebox(cur.ship?.jukebox || 0);
   }
   requestAnimationFrame(loop);
 

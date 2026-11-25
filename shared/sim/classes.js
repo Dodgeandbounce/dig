@@ -1,5 +1,5 @@
 // Every class's kit: primary fire, abilities, passives, and E-interactions.
-import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES, LINES, CLASS_UP_MAX, xpCost, CREW_HP_MUL, LIGHTNING } from './data.js';
+import { T, TILE, TILE_HP, CLASSES, WEAPONS, ABILITIES, INSULTS, JARGON, DOG_BARKS, CHEF_LINES, LINES, CLASS_UP_MAX, xpCost, CREW_HP_MUL, LIGHTNING, FURNITURE_SPOTS, JUKEBOX_SONGS } from './data.js';
 import { idx, inMap } from './grid.js';
 import {
   moveActor, melee, fireBullet, spawnProj, explode, damage, stat, addBuff, healActor, roomAt,
@@ -179,6 +179,8 @@ export function crewTick(g, c, inp, dt) {
   // ---- interact
   if (P.e) interactPress(g, c);
   if (inp.e) interactHold(g, c, dt);
+  // ---- repair: hold R (V when R is one of your abilities): fixes the nearest broken thing, no panels in the way
+  if (inp[fixKey(c)] && !inp.e && c.cls !== 'urchid' && !c.phased) repairHold(g, c, dt);
 
   // ---- passives
   passive(g, c, dt);
@@ -237,6 +239,8 @@ function primary(g, c, w, inp) {
       if (c.cls === 'agent') c.cd.fire /= 1 + 0.3 * up[1];
       let ww = w;
       if (c.cls === 'farmer') ww = { ...w, pellets: w.pellets + 2 * up[1] };
+      // the guard's Long Barrels: every star shoots further (and tighter)
+      if (c.cls === 'guard' && up[1]) ww = { ...w, range: w.range * (1 + 0.25 * up[1]), spread: w.spread * Math.max(0.4, 1 - 0.18 * up[1]) };
       if (c.cls === 'slots') { if (c.wallet < 1) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'no coins!', color: '#ccc' }); c.cd.fire = 0.5; return; } c.wallet -= 1; }
       const kind = c.cls === 'slots' ? 'coin' : c.cls === 'agent' ? 'ppk' : 'bullet';
       // 013 with enough missions under his belt gets the laser: straight through everything in a line
@@ -617,10 +621,29 @@ export function spinSlots(g, c) {
   g.fx({ t: 'slots', crew: c.id, reels, win, x: c.x, y: c.y });
 }
 
+/** Where each bought bed and jukebox stands (they live with the room's slot, so they survive rebuilds). */
+export function furniturePlaces(g) {
+  const out = [];
+  for (const f of g.ship?.furniture || []) {
+    const room = g.rooms.find((r) => r.owner === 'us' && !r.gone && r.sx === f.sx && r.sy === f.sy && r.type !== 'corridor');
+    if (!room) continue;
+    const [ox, oy] = FURNITURE_SPOTS[f.k] || FURNITURE_SPOTS[0];
+    const w = room.w ?? 10, h = room.h ?? 7;
+    out.push({ ...f, room, x: (room.x0 + Math.min(ox, w - 1.2)) * TILE, y: (room.y0 + Math.min(oy, h - 1.2)) * TILE });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // E: interactions
 export function interactTarget(g, c) {
   const r = g.rooms[roomAt(g, c)];
+  // furniture from the Deep Cities
+  if (g.ship?.furniture?.length) for (const f of furniturePlaces(g)) {
+    if (dist(f, c) > 34) continue;
+    if (f.type === 'bed') return { kind: 'bed', obj: f, label: c.resting ? 'Get up' : 'Lie down in the bed (heals fast)' };
+    if (f.type === 'jukebox') return { kind: 'jukebox', obj: f, label: `Jukebox: ${JUKEBOX_SONGS[g.ship.jukebox || 0]} → ${JUKEBOX_SONGS[((g.ship.jukebox || 0) + 1) % JUKEBOX_SONGS.length]}` };
+  }
   // journal / Joe / crates
   for (const o of g.objs) {
     if ((o.kind === 'journal' || o.kind === 'crate') && dist(o, c) < 40) {
@@ -634,12 +657,13 @@ export function interactTarget(g, c) {
     if (c.aim) for (const o of g.objs) if (o.kind === 'vent' && !o.broken && dist(o, c.aim) < 22 && dist(o, c) < 5 * TILE && g.grid.los(c.x, c.y, o.x, o.y, g.doors)) return { kind: 'vent', obj: o, label: 'Crawl into that vent (pick where to come out)' };
   }
   if (c.cls === 'farmer' && (c.carrying || 0) < 5) for (const o of g.objs) if (o.kind === 'mess' && o.sub === 'dirt' && dist(o, c) < 34) return { kind: 'dirt', obj: o, label: 'Scoop dirt' };
-  if (r && r.sys && r.alive && dist(r.station, c) < 46) {
+  const FK = fixKey(c).toUpperCase();
+  if (r && r.sys && r.alive && dist(r.station, c) < 56) {
     const dmg = r.sys.hp < r.sys.max;
-    return { kind: 'station', obj: r, label: r.owner === 'them' ? `Smash their ${r.name}` : (dmg ? `${stationLabel(r)} · hold E to repair` : stationLabel(r)), damaged: dmg };
+    return { kind: 'station', obj: r, label: r.owner === 'them' ? `Smash their ${r.name}` : (dmg ? `${stationLabel(r)} · hold ${FK} to repair it` : stationLabel(r)), damaged: dmg };
   }
   const rt = repairTarget(g, c);
-  if (rt) return { kind: 'repair', obj: rt, label: `Hold E: repair ${rt.label}` };
+  if (rt) return { kind: 'repair', obj: rt, label: `Hold ${FK} (or E): repair ${rt.label}` };
   for (const o of g.objs) if (o.kind === 'fire' && dist(o, c) < 48) return { kind: 'fire', obj: o, label: c.cls === 'mrclean' ? 'Hold E: put out the fire (fast)' : 'Hold E: fire extinguisher' };
   if (c.cls === 'mrclean' || !nearDoor(g, c)) for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) return { kind: 'mess', obj: o, label: c.cls === 'mrclean' ? 'Hold E: sweep' : 'Hold E: sweep (slowly: the janitor is quicker)' };
   const d = nearDoor(g, c);
@@ -700,6 +724,15 @@ function interactPress(g, c) {
   const it = interactTarget(g, c);
   if (!it) return;
   switch (it.kind) {
+    case 'bed':
+      if (c.resting) { c.resting = null; break; }
+      c.resting = { x: it.obj.x, y: it.obj.y }; c.x = it.obj.x; c.y = it.obj.y;
+      g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'zzz', color: '#c0d0ff' });
+      break;
+    case 'jukebox':
+      g.ship.jukebox = ((g.ship.jukebox || 0) + 1) % JUKEBOX_SONGS.length;
+      g.fx({ t: 'text', x: c.x, y: c.y - 20, text: g.ship.jukebox ? `♪ ${JUKEBOX_SONGS[g.ship.jukebox]}` : 'music off', color: '#f4c542' });
+      break;
     case 'journal': g.readJournal(c, it.obj); break;
     case 'crate': g.lootCrate(c, it.obj); break;
     case 'vent':
@@ -734,6 +767,24 @@ function interactPress(g, c) {
   }
 }
 
+/** The repair key for this class: R, unless R is already one of its abilities (then V). The engineer's R wrench does both. */
+export function fixKey(c) { const r = CLASSES[c.cls]?.abilities?.r; return r && r !== 'wrenchhit' ? 'v' : 'r'; }
+
+/** Hold the repair key: put out a fire, fix the nearest damaged system in sight (at any station nearby), else a wall, door or breach. */
+export function repairHold(g, c, dt) {
+  if (extinguish(g, c, dt)) return true;
+  let best = null, bd = 72 * 72;
+  for (const r of g.rooms) {
+    if (r.owner !== 'us' || !r.sys || r.gone || r.alive === false || r.sys.hp >= r.sys.max || !r.station) continue;
+    const d = (r.station.x - c.x) ** 2 + (r.station.y - c.y) ** 2;
+    if (d < bd && g.grid.los(c.x, c.y, r.station.x, r.station.y, g.doors)) { bd = d; best = r; }
+  }
+  if (best) { repairSystem(g, c, best, dt); return true; }
+  const t = repairTarget(g, c, 58);
+  if (t) { repairTile(g, c, t, repairRate(c) * dt); return true; }
+  return false;
+}
+
 function interactHold(g, c, dt) {
   // fires come first: everyone carries an extinguisher
   if (extinguish(g, c, dt)) return;
@@ -742,7 +793,7 @@ function interactHold(g, c, dt) {
   if (c.cls === 'mrclean' && sweep(g, c, dt)) return;
   // station repair (own ship) or smashing their systems
   const r = g.rooms[roomAt(g, c)];
-  if (r && r.sys && dist(r.station, c) < 46) {
+  if (r && r.sys && dist(r.station, c) < 56) {
     if (r.owner === 'them') { c.smashT = (c.smashT || 0) - dt; if (c.smashT <= 0) { c.smashT = 0.4; damageSystem(g, r, 8); g.fx({ t: 'spark', x: r.station.x, y: r.station.y }); } return; }
     if (r.sys.hp < r.sys.max) { repairSystem(g, c, r, dt); return; }
   }
@@ -890,6 +941,11 @@ function passive(g, c, dt) {
   if (c.repairing > 0) c.repairing -= dt;
   // everyone heals very slowly on their own: 1 health every 10 seconds
   if (c.alive && c.hp < c.maxHp) c.hp = Math.min(c.maxHp, c.hp + dt * 0.1);
+  // lying in a bed: heal fast (walking off gets you up)
+  if (c.resting) {
+    if (!c.alive || c.moving || Math.hypot(c.x - c.resting.x, c.y - c.resting.y) > 10) c.resting = null;
+    else { c.hp = Math.min(c.maxHp, c.hp + dt * 9); if (c.stam != null) c.stam = Math.min(c.stamMax || 100, c.stam + dt * 20); }
+  }
   if (c.spinT > 0) { // whirlwind
     c.spinT -= dt; c.spinTick -= dt;
     if (c.spinTick <= 0) { c.spinTick = 0.2; melee(g, c, { dmg: 18 * (1 + 0.2 * c.upgrades[0]), range: 58, arc: 7 }, 0, 'crew', { knock: 90 }); g.fx({ t: 'swing', x: c.x, y: c.y, a: g.time * 20, r: 58, cls: 'mrclean' }); }

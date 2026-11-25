@@ -3,8 +3,16 @@
 import { T, TILE, MAP_W, MAP_H, ROOMS, SLOT_W, SLOT_H, CLASSES, GEMS, TILE_HP } from '../shared/sim/data.js';
 import { idx, rw, rh } from '../shared/sim/grid.js';
 import { isBehind } from '../shared/sim/combat.js';
-import { drawCrew, drawMob, drawStation, shade, roundRect } from './sprites.js';
+import { drawCrew, drawMob, drawStation, drawRoomDecor, drawFurniture, shade, roundRect } from './sprites.js';
+import { furniturePlaces } from '../shared/sim/classes.js';
 // (T.SAND is the island's beach)
+
+// the minimap's symbol for each kind of room
+const ROOM_SYMBOLS = {
+  bridge: '🧭', engine: '⚙', weapons: '🚀', shield: '🛡', hall: '⛏', feeder: '⛏', lounge: '🌴', vault: '💎', kitchen: '🍳',
+  closet: '🧹', armory: '🔫', farm: '🌽', lab: '⚗', kennel: '🦴', pen: '🐾', den: '🦎', bubbler: '💨', office: '🕶',
+  casino: '🎰', guardpost: '❄', storage: '📦', quarters: '🛏', power: '⚡', core: '☀', pod: '♥',
+};
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
@@ -338,6 +346,9 @@ export function createRenderer(canvas) {
       else if (rh(room) >= 5 && !room.sys) { ctxs.save(); ctxs.translate(x + TILE * 1.3, y + TILE * 1.2); ctxs.rotate(Math.PI / 2); ctxs.fillText(room.name.toUpperCase(), 0, 0); ctxs.restore(); }
       // the raised rooms (observatory lounge, bridge): a platform up a few steps, stairs at every door
       if (room.owner === 'us' && (room.type === 'lounge' || room.type === 'bridge')) drawRaised(ctxs, g, room, ri);
+      // furniture: the engine's turbine, the janitor's closet, bunk beds, the urchid's palms and pool
+      if (room.owner === 'us') drawRoomDecor(ctxs, room, t, room.type === 'quarters' ? { colors: g.crew.map((c) => shade(CLASSES[c.cls].color, -25)) } : {});
+      if (room.owner === 'us' && room.type === 'bridge') drawBridgeWindow(ctxs, g, room, t);
       if (room.sys || room.type === 'core' || room.type === 'pod') {
         const active = me && Math.hypot(me.x - room.station.x, me.y - room.station.y) < 46;
         const broken = room.sys && room.sys.hp <= 0;
@@ -366,6 +377,8 @@ export function createRenderer(canvas) {
     // the air currents (only the jorbal sees them)
     drawAir(ctxs, g, me, tx0, ty0, tx1, ty1);
 
+    // furniture from the Deep Cities (beds, the jukebox)
+    if (g.ship.furniture?.length) for (const f of furniturePlaces(g)) if (f.x > vx0 - 40 && f.x < vx1 + 40 && f.y > vy0 - 40 && f.y < vy1 + 40) drawFurniture(ctxs, f, t, g.ship.jukebox || 0);
     // objects
     for (const o of g.objs) {
       if (o.x < vx0 || o.x > vx1 || o.y < vy0 || o.y > vy1) continue;
@@ -395,6 +408,15 @@ export function createRenderer(canvas) {
         // lounging: stretched out in the chair, feet up, looking out over everything
         const lr = g.rooms.find((r) => r.type === 'lounge' && r.owner === 'us' && !r.gone);
         if (lr && Math.hypot(a.x - lr.station.x, a.y - lr.station.y) < 20) { drawCrew(ctxs, { ...a, x: lr.station.x - 3, y: lr.station.y + 4, facing: 0 }, t, { own: a === me }); continue; }
+      }
+      if (a.team === 'crew' && a.cls && a.resting && a.alive) {
+        // asleep in a bed: tucked in, a few z's floating up
+        drawCrew(ctxs, { ...a, facing: -Math.PI / 2 }, t, { own: a === me });
+        ctxs.fillStyle = '#5a7ab0'; ctxs.fillRect(a.x - 12, a.y - 2, 24, 24);
+        ctxs.fillStyle = 'rgba(200,215,255,.9)'; ctxs.font = 'bold 10px system-ui'; ctxs.textAlign = 'center';
+        for (let k = 0; k < 3; k++) { const ph = (t * 0.6 + k / 3) % 1; ctxs.globalAlpha = 1 - ph; ctxs.fillText('z', a.x + 8 + ph * 10, a.y - 16 - ph * 18); }
+        ctxs.globalAlpha = 1; ctxs.textAlign = 'left';
+        continue;
       }
       if (a.team === 'enemy' && a.officer && a.alive) {
         // their crew: foxes like ours, in their class colours, with a red armband and a red ring
@@ -565,6 +587,18 @@ export function createRenderer(canvas) {
       if (r.owner === 'us' && (r.type === 'lounge' || r.type === 'bridge') && !down && !hurt) c.fillStyle = 'rgba(150,170,200,.55)';
       c.fillRect(px(r.x0 * TILE), py(r.y0 * TILE), rw(r) * TILE * s - dpr, rh(r) * TILE * s - dpr);
     });
+    // one symbol per room, so you can tell them apart at a glance
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    g.rooms.forEach((r) => {
+      const sym = ROOM_SYMBOLS[r.type];
+      if (r.gone || !sym) return;
+      const bw = rw(r) * TILE * s, bh = rh(r) * TILE * s;
+      if (bw < 9 * dpr || bh < 7 * dpr) return;
+      c.font = `${Math.round(Math.min(16, Math.min(bw, bh) * 0.8 / dpr)) * dpr}px system-ui, "Segoe UI Emoji", sans-serif`;
+      c.globalAlpha = r.owner === 'us' ? 0.95 : 0.6;
+      c.fillText(sym, px((r.x0 + rw(r) / 2) * TILE), py((r.y0 + rh(r) / 2) * TILE));
+    });
+    c.globalAlpha = 1; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
     // fires and breaches, blinking
     c.fillStyle = `rgba(255,140,40,${0.4 + 0.6 * blink})`;
     for (const o of g.objs) if (o.kind === 'fire') c.fillRect(px(o.x) - 1.5 * dpr, py(o.y) - 1.5 * dpr, 3 * dpr, 3 * dpr);
@@ -803,22 +837,114 @@ export function createRenderer(canvas) {
     c.fillStyle = room.type === 'lounge' ? 'rgba(220,170,240,.10)' : 'rgba(170,210,255,.08)'; c.fillRect(x, y, w, h);
     c.strokeStyle = 'rgba(0,0,0,.45)'; c.lineWidth = 6; c.strokeRect(x + 3, y + 3, w - 6, h - 6);           // the platform's edge
     c.strokeStyle = 'rgba(255,255,255,.12)'; c.lineWidth = 2; c.strokeRect(x + 7, y + 7, w - 14, h - 14);
-    // stairs on the inside of every door
+    // stairs out in front of every door: you climb up them into the room (it's raised a little)
     for (const d of g.doors) {
       if (d.broken || (d.a !== ri && d.b !== ri)) continue;
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const sx = d.x + dx, sy = d.y + dy;
-        if (g.grid.room[idx(sx, sy)] !== ri) continue;
+        if (g.grid.room[idx(d.x + dx, d.y + dy)] !== ri) continue;     // (dx,dy) points into the room...
+        const sx = d.x - dx, sy = d.y - dy;                               // ...so the stairs go on the other side
+        if (g.grid.get(sx, sy) !== T.DOOR && g.grid.solidAt(sx, sy, g.doors)) continue;
+        const X = sx * TILE, Y = sy * TILE;
+        // a shadow where the stairs meet the floor, four steps getting lighter toward the door, side rails
+        c.fillStyle = 'rgba(0,0,0,.35)';
+        if (dx) c.fillRect(X + (dx > 0 ? -4 : TILE), Y - 2, 4, TILE + 4); else c.fillRect(X - 2, Y + (dy > 0 ? -4 : TILE), TILE + 4, 4);
         for (let k = 0; k < 4; k++) {
-          c.fillStyle = `rgba(${200 - k * 30},${190 - k * 30},${175 - k * 30},.5)`;
-          if (dx) c.fillRect(sx * TILE + (dx > 0 ? k * 8 : TILE - (k + 1) * 8), sy * TILE + 2, 7, TILE - 4);
-          else c.fillRect(sx * TILE + 2, sy * TILE + (dy > 0 ? k * 8 : TILE - (k + 1) * 8), TILE - 4, 7);
+          const lit = 110 + k * 30;
+          c.fillStyle = `rgb(${lit},${lit - 8},${lit - 20})`;
+          // step k=0 is furthest from the door, k=3 right at it
+          if (dx) c.fillRect(X + (dx > 0 ? k * 8 : TILE - (k + 1) * 8), Y + 3, 8, TILE - 6);
+          else c.fillRect(X + 3, Y + (dy > 0 ? k * 8 : TILE - (k + 1) * 8), TILE - 6, 8);
+          c.fillStyle = 'rgba(255,255,255,.25)';
+          if (dx) c.fillRect(X + (dx > 0 ? k * 8 + 6 : TILE - (k + 1) * 8), Y + 3, 2, TILE - 6);
+          else c.fillRect(X + 3, Y + (dy > 0 ? k * 8 + 6 : TILE - (k + 1) * 8), TILE - 6, 2);
         }
+        c.fillStyle = '#4a4038';
+        if (dx) { c.fillRect(X, Y + 1, TILE, 2); c.fillRect(X, Y + TILE - 3, TILE, 2); } else { c.fillRect(X + 1, Y, 2, TILE); c.fillRect(X + TILE - 3, Y, 2, TILE); }
       }
     }
     if (room.type === 'lounge') { c.fillStyle = 'rgba(255,230,255,.5)'; c.font = 'bold 8px system-ui'; c.textAlign = 'center'; c.textBaseline = 'top'; c.fillText('OBSERVATORY', x + w / 2, y + 4); c.textAlign = 'left'; }
     c.restore();
   }
+
+  /**
+   * The bridge's viewing window: along the wall facing out of the ship (the one closest to where we're
+   * digging), the dirt streaming past outside, and under it the engine panel (a light for every engine).
+   */
+  function drawBridgeWindow(c, g, room, t) {
+    const W = rw(room), H = rh(room);
+    const sides = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    let best = null, bs = -1e9;
+    for (const [dx, dy] of sides) {
+      const tiles = [];
+      if (dy) { const wy = dy < 0 ? room.y0 : room.y0 + H; for (let x = room.x0 + 1; x < room.x0 + W; x++) tiles.push([x, wy]); }
+      else { const wx = dx < 0 ? room.x0 : room.x0 + W; for (let y = room.y0 + 1; y < room.y0 + H; y++) tiles.push([wx, y]); }
+      let out = 0;
+      for (const [x, y] of tiles) { const ri = G0(g, x + dx, y + dy); if (ri < 0 || g.rooms[ri]?.owner !== 'us') out++; }
+      // an outside wall if there is one (the more of it outside the better); else the wall behind the helm (the top one)
+      const sc = out / tiles.length + (dy < 0 ? 0.01 : 0);
+      if (sc > bs) { bs = sc; best = { dx, dy, tiles }; }
+    }
+    if (!best) return;
+    const { dx, dy, tiles } = best;
+    // window segments between the doors
+    const segs = []; let cur = [];
+    for (const tl of tiles) { if (g.grid.get(tl[0], tl[1]) === T.DOOR) { if (cur.length) segs.push(cur); cur = []; } else cur.push(tl); }
+    if (cur.length) segs.push(cur);
+    const moving = g.phase === 'descent' && !g.descent?.stranded;
+    const D = 17;   // window depth, just inside the wall
+    c.save();
+    for (const seg of segs) {
+      if (seg.length < 2) continue;
+      const [ax, ay] = seg[0], [bx, by] = seg[seg.length - 1];
+      let x, y, w, h;
+      if (dy) { x = ax * TILE + 4; w = (bx - ax + 1) * TILE - 8; y = dy < 0 ? (ay + 1) * TILE + 1 : ay * TILE - D - 1; h = D; }
+      else { y = ay * TILE + 4; h = (by - ay + 1) * TILE - 8; x = dx < 0 ? (ax + 1) * TILE + 1 : ax * TILE - D - 1; w = D; }
+      c.fillStyle = '#6a7480'; c.fillRect(x - 3, y - 3, w + 6, h + 6);                    // the frame
+      c.fillStyle = '#2a3038'; c.fillRect(x - 1, y - 1, w + 2, h + 2);
+      c.save(); c.beginPath(); c.rect(x, y, w, h); c.clip();
+      const gr = c.createLinearGradient(x, y, x + (dy ? 0 : w), y + (dy ? h : 0));
+      gr.addColorStop(0, '#2a1a10'); gr.addColorStop(1, '#140c08');
+      c.fillStyle = gr; c.fillRect(x, y, w, h);
+      // rock and ore streaming past (fast while we dig, barely drifting otherwise)
+      const len = dy ? w : h, sp = moving ? 260 : 6;
+      for (let k = 0; k < Math.ceil(len / 14); k++) {
+        const o = ((k * 37 + t * sp) % (len + 20)) - 10;
+        const across = ((k * 53) % 10) / 10 * (dy ? h : w);
+        const col = k % 7 === 0 ? '#f4c542' : k % 3 ? '#5a4030' : '#7a5a40';
+        c.fillStyle = col;
+        const sl = moving ? 9 : 3;
+        if (dy) c.fillRect(x + len - o, y + across, sl, 2); else c.fillRect(x + across, y + len - o, 2, sl);
+      }
+      // glass: a cool tint and a couple of glare stripes
+      c.fillStyle = 'rgba(120,190,255,.10)'; c.fillRect(x, y, w, h);
+      c.fillStyle = 'rgba(255,255,255,.18)';
+      for (let k = 0; k < len; k += 46) { if (dy) c.fillRect(x + k + 8, y, 6, h); else c.fillRect(x, y + k + 8, w, 6); }
+      c.restore();
+      c.strokeStyle = 'rgba(150,200,255,.45)'; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    }
+    // the engine panel under the window: one light per engine, and a throttle bar
+    const engines = g.rooms.filter((r) => r.owner === 'us' && r.type === 'engine' && !r.gone);
+    const s0 = segs.find((s) => s.length >= 2);
+    if (s0) {
+      const [ax, ay] = s0[0], [bx2] = s0[s0.length - 1];
+      let px, py;
+      // (for the top wall: off to the right of the helm console)
+      if (dy) { px = Math.max(ax * TILE + 6, (bx2 + 1) * TILE - 8 - (engines.length * 11 + 46)); py = dy < 0 ? (ay + 1) * TILE + D + 5 : ay * TILE - D - 12; }
+      else { px = dx < 0 ? (ax + 1) * TILE + D + 5 : ax * TILE - D - 12; py = ay * TILE + 6; }
+      engines.forEach((r, k) => {
+        const ok = r.sys.hp > 0, hurt = r.sys.hp < r.sys.max * 0.6;
+        const on = ok ? (hurt ? `rgba(255,170,40,${0.6 + 0.4 * Math.sin(t * 6)})` : '#60e070') : (Math.sin(t * 9) > 0 ? '#ff3a2a' : '#5a1a14');
+        c.fillStyle = '#1a1816'; c.fillRect(px + (dy ? k * 11 : 0) - 1, py + (dy ? 0 : k * 11) - 1, 8, 8);
+        c.fillStyle = on; c.fillRect(px + (dy ? k * 11 : 0), py + (dy ? 0 : k * 11), 6, 6);
+      });
+      const thr = moving ? 0.6 + 0.3 * Math.sin(t * 2.1) : 0.08;
+      const n = engines.length;
+      c.fillStyle = '#1a1816'; if (dy) c.fillRect(px + n * 11 + 4, py, 40, 6); else c.fillRect(px, py + n * 11 + 4, 6, 40);
+      c.fillStyle = '#f4a340'; if (dy) c.fillRect(px + n * 11 + 5, py + 1, 38 * thr, 4); else c.fillRect(px + 1, py + n * 11 + 5, 4, 38 * thr);
+    }
+    c.restore();
+  }
+  const G0 = (g, x, y) => (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H ? -1 : g.grid.room[idx(x, y)]);
 
   /** The raised rooms (up a few steps): the Urchid's observatory lounge and the bridge. */
   function raisedRoom(g, a) {

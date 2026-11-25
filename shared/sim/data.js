@@ -61,6 +61,14 @@ export const ROOMS = {
   corridor: { name: 'Corridor',          cls: null,         sys: null,       hp: 60,  color: '#2b2521', icon: null },
 };
 export const roomSize = (type) => ROOMS[type]?.size || [1, 1];
+// Furniture from the Deep Cities, put in a room of your choice.
+export const FURNITURE = {
+  bed:     { name: 'Bed',     icon: '🛏', cost: 45,  max: 10, desc: 'A real bed for one of your rooms. Lie down in it (E) to heal fast.' },
+  jukebox: { name: 'Jukebox', icon: '🎵', cost: 140, max: 1,  desc: 'Live music aboard! Press E at it to change the song (or turn it off).' },
+};
+// where furniture goes in a room (tile offsets from its top-left wall corner), clear of the doors and the console
+export const FURNITURE_SPOTS = [[3.2, 4.6], [6.8, 4.6], [7.8, 2.0], [1.9, 4.6], [8.3, 4.6], [6.6, 2.0]];
+export const JUKEBOX_SONGS = ['Off', 'Deep City Swing', 'Mole Disco', 'Lava Lounge'];
 export const BRIDGE_W = 6;          // the bridge is 6 tiles wide; a 4-wide hallway fills the rest of its slot
 
 // Rooms the crew can buy at ports to expand the ship.
@@ -260,7 +268,7 @@ export const CLASS_UPGRADES = {
   pilot:       [['Steady Hands', 'Steering is smoother, obstacle hits hurt less'], ['Afterburner', 'Boost burns less fuel'], ['Blaster', '+20% pistol damage']],
   engineer:    [['Heavy Wrench', '+25% wrench repair and damage'], ['Turret Mk', 'Turrets: +1 max, +damage'], ['Tesla Traps', 'Traps stun longer, shock more']],
   urchid:      [['Lounge Chair', 'Unlocks the lounge chair in your lounge, then makes it ever more ridiculous (cushions, footrest, umbrella, massage). Nothing else.'], ['Sharper Tongue', 'Unlocks meaner insults'], ['Fancier Drink', 'The coconut juice gets bigger and fancier: a straw, an umbrella, a sparkler. Sipping it heals you, not that you can die.']],
-  guard:       [['Vault Mastery', '+50% vault capacity per level'], ['Hollow Points', '+20% pistol damage'], ['Sprint', '+8% move speed']],
+  guard:       [['Vault Mastery', '+50% vault capacity per level'], ['Long Barrels', '+20% pistol damage, +25% range, tighter aim'], ['Sprint', '+8% move speed']],
   chef:        [['Recipe Book', 'Meals last longer'], ['Sharper Knives', '+1 knife per volley, +damage'], ['Bigger Fridge', 'Cook two portions at once']],
   mrclean:     [['Biceps', '+20% axe damage'], ['Super Broom', 'Sweep 2x faster'], ['Squeaky Clean', 'Clean-ship buff is stronger']],
   missiletech: [['Warheads', '+25% D-missile damage'], ['Fast Assembly', 'Build missiles faster'], ['Bigger Rockets', '+blast radius']],

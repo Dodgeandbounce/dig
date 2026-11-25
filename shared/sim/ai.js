@@ -4,7 +4,7 @@ import { T, TILE, CLASSES, ENEMY_WEAPONS, RECIPES, RESEARCH, WEAPONS, ENEMY_TAUN
 import { idx, inMap, roomCenter, roomPoint } from './grid.js';
 import {
   moveActor, damage, explode, spawnProj, fireBullet, melee, hitTile, damageSystem, roomAt, tileOf,
-  hostiles, nearestHostile, stat, tileOwner, addBuff, healActor, unstick, ignite,
+  hostiles, nearestHostile, stat, tileOwner, addBuff, healActor, unstick, ignite, collides,
 } from './combat.js';
 import { interactTarget, repairTarget, weaponOf, DASH_COST } from './classes.js';
 import { clamp, norm, dist, dist2, angTo, uid } from './util.js';
@@ -442,9 +442,38 @@ export function pickMissileTarget(g) {
 
 // ---------------------------------------------------------------------------
 // enemies, creatures and allied monsters
+/** Deep in the rock: look further out (up to ~8 tiles) for somewhere it fits. */
+function unstickFar(g, m) {
+  const x0 = m.x, y0 = m.y;
+  for (let r = 80; r <= 260; r += 12) for (let k = 0; k < 24; k++) {
+    const a = k / 24 * Math.PI * 2;
+    m.x = x0 + Math.cos(a) * r; m.y = y0 + Math.sin(a) * r;
+    if (inMap(Math.floor(m.x / TILE), Math.floor(m.y / TILE)) && !collides(g, m)) return true;
+  }
+  m.x = x0; m.y = y0;
+  return false;
+}
+
 export function mobTick(g, m, dt) {
   if (!m.alive) return;
   if (m.hurtT > 0) m.hurtT -= dt;
+  // stuck inside a wall (one got rebuilt on it, it got knocked or spawned into rock) where bullets can't reach it:
+  // it pops out to the nearest free spot, and if there's nowhere to go, the wall crushes it
+  if (!m.hoarder && !(m.walker && m.boss)) {
+    m.wallT = (m.wallT || 0) - dt;
+    if (m.wallT <= 0) {
+      m.wallT = 0.5;
+      const tx = Math.floor(m.x / TILE), ty = Math.floor(m.y / TILE);
+      const inRock = !inMap(tx, ty) || (g.grid.solidAt(tx, ty, g.doors) && g.grid.get(tx, ty) !== T.DOOR);
+      if (inRock || collides(g, { x: m.x, y: m.y, r: m.r * 0.5, ghostDoors: true })) {   // (waiting at a shut door doesn't count)
+        m.stuckN = (m.stuckN || 0) + 1;
+        const r0 = m.r; m.r = Math.min(r0, 12);
+        const freed = unstick(g, m) || unstickFar(g, m);
+        m.r = r0;
+        if (!freed && m.stuckN >= 4) { damage(g, m, 1e6, { kind: 'crush' }); if (m.alive) m.alive = false; g.fx({ t: 'poof', x: m.x, y: m.y }); return; }
+      } else m.stuckN = 0;
+    }
+  }
   if (m.trapped) return;
   if (m.kx || m.ky) { moveActor(g, m, m.kx * dt, m.ky * dt); m.kx *= 0.85; m.ky *= 0.85; if (Math.abs(m.kx) + Math.abs(m.ky) < 5) m.kx = m.ky = 0; }
   if (m.poisonT > 0) { m.poisonT -= dt; damage(g, m, m.poisonDps * dt, { owner: m.poisonBy, kind: 'poison' }); }

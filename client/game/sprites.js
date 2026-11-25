@@ -434,7 +434,22 @@ export function drawStation(ctx, room, t, active, lux) {
   const glow = broken ? 0 : 0.6 + 0.4 * Math.sin(t * 3 + x);
   switch (icon) {
     case 'helm': ctx.strokeStyle = '#c8a060'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(0, 0, 8, 0, 7); ctx.stroke(); for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2 + t * 0.3; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * 11, Math.sin(a) * 11); ctx.stroke(); } ctx.fillStyle = `rgba(90,200,255,${glow})`; ctx.fillRect(-20, -7, 6, 12); ctx.fillRect(14, -7, 6, 12); break;
-    case 'engine': ctx.fillStyle = '#7a6040'; ctx.beginPath(); ctx.arc(0, 0, 9, 0, 7); ctx.fill(); ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = 2; for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2 + t * (broken ? 0 : 8); ctx.beginPath(); ctx.moveTo(Math.cos(a) * 3, Math.sin(a) * 3); ctx.lineTo(Math.cos(a) * 9, Math.sin(a) * 9); ctx.stroke(); } ctx.fillStyle = `rgba(255,140,40,${glow})`; ctx.fillRect(-21, -5, 7, 10); ctx.fillRect(14, -5, 7, 10); break;
+    case 'engine': { // the engine console: two meshing gears turning against each other, and a rev gauge that bounces
+      const sp = broken ? 0 : t * 6;
+      for (const [gx, dir] of [[-12, 1], [3, -1]]) {
+        ctx.save(); ctx.translate(gx, 0); ctx.rotate(sp * dir + (dir < 0 ? 0.3 : 0));
+        ctx.fillStyle = dir > 0 ? '#8a7048' : '#a08a58';
+        ctx.beginPath(); for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2, rr = k % 2 ? 6 : 8.5; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#2a2018'; ctx.beginPath(); ctx.arc(0, 0, 2.5, 0, 7); ctx.fill();
+        ctx.restore();
+      }
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(16, 0, 6.5, 0, 7); ctx.fill();
+      ctx.strokeStyle = broken ? '#555' : '#ff9a3a'; ctx.lineWidth = 1.5; const nd = Math.PI * (0.8 + (broken ? 0 : 0.5 + 0.25 * Math.sin(t * 9) + 0.1 * Math.sin(t * 23)));
+      ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(16 + Math.cos(nd) * 5.5, Math.sin(nd) * 5.5); ctx.stroke();
+      ctx.fillStyle = `rgba(255,140,40,${glow})`; ctx.fillRect(-23, -8, 3, 16);
+      break;
+    }
+    case 'locker': ctx.fillStyle = '#4a5a6a'; for (let k = -1; k <= 1; k++) { ctx.fillRect(k * 13 - 5.5, -8, 11, 16); ctx.fillStyle = '#2a3440'; ctx.fillRect(k * 13 - 1, -5, 2, 3); ctx.fillStyle = '#4a5a6a'; } break;
     case 'missile': ctx.fillStyle = '#c04020'; for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.moveTo(-14, k * 6 - 2); ctx.lineTo(10, k * 6 - 2); ctx.lineTo(16, k * 6); ctx.lineTo(10, k * 6 + 2); ctx.lineTo(-14, k * 6 + 2); ctx.fill(); } break;
     case 'bubble': ctx.strokeStyle = `rgba(120,220,255,${glow})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, 9 + Math.sin(t * 4) * 1.5, 0, 7); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 0, 4, 0, 7); ctx.stroke(); break;
     case 'feeder': ctx.fillStyle = '#6a6050'; ctx.beginPath(); ctx.moveTo(-14, -8); ctx.lineTo(14, -8); ctx.lineTo(5, 8); ctx.lineTo(-5, 8); ctx.fill(); ctx.fillStyle = '#5ec8e8'; ctx.beginPath(); ctx.arc(0, -2 + ((t * 20) % 8), 2, 0, 7); ctx.fill(); break;
@@ -499,6 +514,186 @@ function drawLounge(ctx, room, t, active, lux) {
   ctx.restore();
   if (active) { ctx.strokeStyle = '#f4a340'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y + 4, 30, 0, 7); ctx.stroke(); }
 }
+// ---------------------------------------------------------------------------
+// room furniture: drawn on the floor before the station. Rooms are 10x7 tiles wall to wall: doors sit
+// in the middle of each wall and the console in the top-left corner, so the furniture keeps to the
+// other corners. (Purely looks: nothing here blocks anyone.)
+const DT = 32;
+export function drawRoomDecor(ctx, room, t, opts = {}) {
+  const X = (room.x0 + 1) * DT, Y = (room.y0 + 1) * DT, W = ((room.w ?? 10) - 1) * DT, H = ((room.h ?? 7) - 1) * DT;
+  if (W < 6 * DT || H < 4 * DT) return;   // (crawlways and odd shapes stay bare)
+  const broken = room.sys && room.sys.hp <= 0;
+  ctx.save();
+  switch (room.type) {
+    case 'engine': engineDecor(ctx, X, Y, W, H, t, broken); break;
+    case 'closet': closetDecor(ctx, X, Y, W, H, t); break;
+    case 'quarters': bunksDecor(ctx, X, Y, W, H, opts.colors || []); break;
+    case 'lounge': loungeDecor(ctx, X, Y, W, H, t); break;
+  }
+  ctx.restore();
+}
+
+/** A bed or the jukebox from a Deep City (a bed is 1 tile wide, 2 long; the jukebox lights up with the music). */
+export function drawFurniture(c, f, t, song) {
+  c.save(); c.translate(f.x, f.y);
+  if (f.type === 'bed') {
+    c.fillStyle = 'rgba(0,0,0,.3)'; c.fillRect(-12, -26, 28, 56);
+    c.fillStyle = '#6a4a2a'; c.fillRect(-15, -30, 30, 60);                 // frame
+    c.fillStyle = '#e8e0d0'; c.fillRect(-12, -27, 24, 54);                 // sheet
+    c.fillStyle = '#5a7ab0'; c.fillRect(-12, -6, 24, 33);                  // quilt
+    c.fillStyle = 'rgba(255,255,255,.2)'; for (let k = 0; k < 3; k++) c.fillRect(-12, -2 + k * 10, 24, 2);
+    c.fillStyle = '#fff'; c.beginPath(); c.ellipse(0, -19, 9, 5, 0, 0, 7); c.fill();   // pillow
+  } else if (f.type === 'jukebox') {
+    const on = song > 0;
+    c.fillStyle = '#5a2a1a'; c.beginPath(); c.moveTo(-15, 14); c.lineTo(-15, -6); c.arc(0, -6, 15, Math.PI, 0); c.lineTo(15, 14); c.closePath(); c.fill();
+    const hue = (t * 90) % 360;
+    c.strokeStyle = on ? `hsl(${hue},90%,65%)` : '#7a5a40'; c.lineWidth = 3; c.beginPath(); c.arc(0, -6, 11, Math.PI, 0); c.stroke();
+    c.fillStyle = on ? `hsl(${(hue + 120) % 360},80%,60%)` : '#3a2a20'; c.fillRect(-9, 0, 18, 8);
+    c.fillStyle = '#d0a050'; for (let k = -1; k <= 1; k++) c.fillRect(k * 6 - 1.5, 10, 3, 3);
+    if (on) { c.fillStyle = `hsla(${hue},90%,70%,.9)`; c.font = 'bold 11px system-ui'; c.textAlign = 'center'; c.fillText('♪', Math.sin(t * 3) * 10, -26 - ((t * 20) % 12)); c.fillText('♫', -Math.sin(t * 2.4) * 12, -30 - ((t * 16 + 6) % 12)); }
+  }
+  c.restore();
+}
+
+/** A turbine in the far corner, pipes along the wall, a flywheel and a bank of pumping pistons. */
+function engineDecor(c, X, Y, W, H, t, broken) {
+  const spin = broken ? 0 : t;
+  // pipes along the top wall, from the console to the turbine
+  // (from just past the top door to the corner, then down to the turbine below the side door's height)
+  c.fillStyle = '#4a4036'; c.fillRect(X + 5.2 * DT, Y + 6, W - 5.2 * DT - 8, 9); c.fillRect(X + W - 18, Y + 6, 9, 1.6 * DT);
+  c.fillStyle = '#6a5c4c'; c.fillRect(X + 5.2 * DT, Y + 6, W - 5.2 * DT - 8, 3);
+  for (let k = 0; k < 3; k++) { c.fillStyle = '#2a241e'; c.fillRect(X + 5.6 * DT + k * 1.1 * DT, Y + 4, 4, 13); }
+  // the turbine (bottom right): a housing, spinning blades, a hot core
+  const tx = X + W - 2.0 * DT, ty = Y + H - 1.75 * DT, R = 1.35 * DT;
+  c.fillStyle = '#2c2824'; c.beginPath(); c.arc(tx, ty, R + 7, 0, 7); c.fill();
+  c.strokeStyle = '#5a5044'; c.lineWidth = 3; c.stroke();
+  const hot = broken ? 0 : 0.55 + 0.25 * Math.sin(t * 7);
+  const gr = c.createRadialGradient(tx, ty, 2, tx, ty, R);
+  gr.addColorStop(0, `rgba(255,190,90,${hot})`); gr.addColorStop(1, 'rgba(120,40,10,0)');
+  c.fillStyle = gr; c.beginPath(); c.arc(tx, ty, R, 0, 7); c.fill();
+  c.save(); c.translate(tx, ty); c.rotate(spin * 9);
+  for (let k = 0; k < 9; k++) {
+    c.rotate(Math.PI * 2 / 9);
+    c.fillStyle = k % 2 ? '#8a8072' : '#a49886';
+    c.beginPath(); c.moveTo(5, -3); c.quadraticCurveTo(R * 0.6, -R * 0.35, R - 2, -2); c.lineTo(R - 2, 4); c.quadraticCurveTo(R * 0.5, 0, 5, 3); c.fill();
+  }
+  c.restore();
+  c.fillStyle = '#3a342c'; c.beginPath(); c.arc(tx, ty, 7, 0, 7); c.fill();
+  c.fillStyle = broken ? '#444' : '#f4c542'; c.beginPath(); c.arc(tx, ty, 3, 0, 7); c.fill();
+  // flywheel + pistons (bottom left)
+  const fx = X + 1.3 * DT, fy = Y + H - 1.3 * DT;
+  c.fillStyle = '#3a342c'; c.beginPath(); c.arc(fx, fy, 22, 0, 7); c.fill();
+  c.strokeStyle = '#7a6e60'; c.lineWidth = 4; c.beginPath(); c.arc(fx, fy, 18, 0, 7); c.stroke();
+  c.save(); c.translate(fx, fy); c.rotate(spin * 5); c.lineWidth = 3; c.strokeStyle = '#9a8c7a';
+  for (let k = 0; k < 4; k++) { c.rotate(Math.PI / 2); c.beginPath(); c.moveTo(0, 0); c.lineTo(17, 0); c.stroke(); }
+  c.restore();
+  for (let k = 0; k < 3; k++) {
+    const px = fx + 32 + k * 15, stroke = broken ? 0 : Math.sin(spin * 10 + k * 2.1) * 7;
+    c.fillStyle = '#2a2622'; c.fillRect(px - 5, fy - 24, 10, 40);
+    c.fillStyle = '#b0a898'; c.fillRect(px - 3.5, fy - 16 + stroke, 7, 14);
+    c.fillStyle = '#6a6052'; c.fillRect(px - 5, fy - 24, 10, 4);
+  }
+  // exhaust flicker
+  if (!broken) { c.fillStyle = `rgba(255,140,40,${0.2 + 0.2 * Math.abs(Math.sin(t * 13))})`; c.fillRect(X + W - 14, Y + H - 0.6 * DT, 10, 13); }
+}
+
+/** An actual janitor's closet: shelves of cleaning bottles, a mop in a bucket, brooms on a rack, a sink. */
+function closetDecor(c, X, Y, W, H, t) {
+  // shelves along the top right wall
+  const sx = X + W - 3.6 * DT, sy = Y + 4;
+  for (let row = 0; row < 2; row++) {
+    c.fillStyle = '#5a4430'; c.fillRect(sx, sy + row * 18 + 13, 3.3 * DT, 4);
+    for (let k = 0; k < 9; k++) {
+      const col = ['#40a0d0', '#e0d040', '#d04040', '#60c060', '#c070d0'][(k + row * 2) % 5];
+      const bx = sx + 4 + k * 11.5, h = 9 + ((k * 7 + row * 3) % 4);
+      c.fillStyle = col; c.fillRect(bx, sy + row * 18 + 13 - h, 7, h);
+      c.fillStyle = '#eee'; c.fillRect(bx + 2, sy + row * 18 + 13 - h - 3, 3, 3);
+    }
+  }
+  // mop bucket (bottom right), the water sloshing a little
+  const bx = X + W - 1.6 * DT, by = Y + H - 1.3 * DT;
+  c.fillStyle = '#e0c020'; c.beginPath(); c.ellipse(bx, by, 17, 14, 0, 0, 7); c.fill();
+  c.fillStyle = '#6a8a90'; c.beginPath(); c.ellipse(bx, by, 12 + Math.sin(t * 2) * 0.8, 9, 0, 0, 7); c.fill();
+  c.fillStyle = '#3a3a3a'; c.fillRect(bx - 20, by - 3, 6, 6);
+  c.strokeStyle = '#a07a40'; c.lineWidth = 3; c.beginPath(); c.moveTo(bx, by); c.lineTo(bx - 30, by - 36); c.stroke();   // mop handle
+  c.fillStyle = '#ddd8c8'; for (let k = 0; k < 6; k++) { c.beginPath(); c.arc(bx - 3 + (k % 3) * 3, by - 2 + (k >> 1) * 2, 3, 0, 7); c.fill(); }
+  // broom rack (bottom left wall)
+  const rx = X + 6, ry = Y + H - 2.4 * DT;
+  c.fillStyle = '#4a3a2a'; c.fillRect(rx, ry, 6, 2 * DT);
+  for (let k = 0; k < 3; k++) {
+    const yy = ry + 8 + k * 20;
+    c.strokeStyle = '#a07a40'; c.lineWidth = 2.5; c.beginPath(); c.moveTo(rx + 4, yy); c.lineTo(rx + 40, yy + 4); c.stroke();
+    c.fillStyle = '#d0b060'; c.fillRect(rx + 38, yy - 3, 10, 12);
+  }
+  // a little sink with a dripping tap
+  const kx = X + W - 3.1 * DT, ky = Y + H - 0.9 * DT;
+  c.fillStyle = '#c8ccd0'; c.fillRect(kx - 14, ky - 10, 28, 20); c.fillStyle = '#8a9aa0'; c.fillRect(kx - 10, ky - 6, 20, 13);
+  c.fillStyle = '#9aa0a8'; c.fillRect(kx - 2, ky - 13, 4, 6);
+  const drip = (t * 1.3) % 1; if (drip < 0.7) { c.fillStyle = '#80c8ff'; c.fillRect(kx - 1, ky - 7 + drip * 10, 2, 3); }
+}
+
+/** Bunk beds: two mattresses each (the top bunk offset with its shadow), a ladder, pillows, blankets in crew colours. */
+function bunksDecor(c, X, Y, W, H, colors) {
+  const spots = [   // [x, y, vertical] in tiles from the inside corner
+    [0.1, 3.05, true], [1.05, 3.05, true], [W / DT - 1.95, 3.05, true], [W / DT - 0.95, 3.05, true],
+    [W / DT - 3.85, 0.1, false], [W / DT - 1.9, 0.1, false],
+  ];
+  // the big (two-slot) bunk room: more bunks between its doors
+  if (W > 12 * DT) spots.push([6.0, 3.05, true], [7.0, 3.05, true], [11.2, 3.05, true], [12.2, 3.05, true], [6.3, 0.1, false], [9.4, 0.1, false]);
+  spots.forEach(([sx, sy, vert], k) => {
+    const x = X + sx * DT, y = Y + sy * DT, w = vert ? 0.85 * DT : 1.8 * DT, h = vert ? 1.9 * DT : 0.8 * DT;
+    const blanket = colors[k * 2] || '#5a4a6a', top = colors[k * 2 + 1] || '#6a5a7a';
+    c.fillStyle = '#3a2c22'; c.fillRect(x - 2, y - 2, w + 4, h + 4);                      // frame
+    c.fillStyle = blanket; c.fillRect(x, y, w, h);                                       // bottom bunk
+    c.fillStyle = 'rgba(0,0,0,.35)'; c.fillRect(x + 4, y + 4, w, h);                     // the top bunk's shadow
+    const ox = vert ? -3 : 0, oy = vert ? 0 : -3;
+    c.fillStyle = top; c.fillRect(x + ox, y + oy, w, h);                                 // top bunk
+    c.fillStyle = 'rgba(255,255,255,.12)'; c.fillRect(x + ox, y + oy, w, 3);
+    c.fillStyle = '#f2ece0';                                                             // pillows
+    if (vert) c.fillRect(x + ox + 3, y + 3, w - 6, 8); else c.fillRect(x + 3, y + oy + 3, 9, h - 6);
+    c.strokeStyle = '#8a6a4a'; c.lineWidth = 2;                                          // ladder
+    if (vert) { c.beginPath(); c.moveTo(x + w + 3, y + 8); c.lineTo(x + w + 3, y + h - 6); c.stroke(); for (let r = 0; r < 4; r++) { c.beginPath(); c.moveTo(x + w, y + 14 + r * 11); c.lineTo(x + w + 5, y + 14 + r * 11); c.stroke(); } }
+    else { c.beginPath(); c.moveTo(x + w - 8, y + h + 3); c.lineTo(x + 10, y + h + 3); c.stroke(); for (let r = 0; r < 4; r++) { c.beginPath(); c.moveTo(x + 14 + r * 12, y + h); c.lineTo(x + 14 + r * 12, y + h + 5); c.stroke(); } }
+  });
+}
+
+/** The Urchid's palm trees, swaying over a little reflecting pool. */
+function loungeDecor(c, X, Y, W, H, t) {
+  // the pool (bottom left), stone rim, rippling water, a palm's reflection in it
+  const px = X + 2.2 * DT, py = Y + H - 1.35 * DT;
+  c.fillStyle = '#b8a890'; c.beginPath(); c.ellipse(px, py, 58, 26, 0, 0, 7); c.fill();
+  const gr = c.createLinearGradient(px, py - 22, px, py + 22); gr.addColorStop(0, '#3aa8d8'); gr.addColorStop(1, '#1a6aa0');
+  c.fillStyle = gr; c.beginPath(); c.ellipse(px, py, 52, 21, 0, 0, 7); c.fill();
+  c.save(); c.beginPath(); c.ellipse(px, py, 52, 21, 0, 0, 7); c.clip();
+  c.globalAlpha = 0.35; palm(c, px - 30, py - 4 + Math.sin(t * 2) * 1.5, t, 0.8, true); c.globalAlpha = 1;   // its reflection
+  c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = 1;
+  for (let k = 0; k < 3; k++) { const ph = (t * 0.4 + k / 3) % 1; c.globalAlpha = 1 - ph; c.beginPath(); c.ellipse(px + 14 - k * 18, py + 2, 4 + ph * 18, 2 + ph * 7, 0, 0, 7); c.stroke(); }
+  c.globalAlpha = 1;
+  c.fillStyle = 'rgba(255,255,255,.5)'; for (let k = 0; k < 4; k++) c.fillRect(px - 30 + k * 17 + Math.sin(t * 3 + k) * 3, py - 9 + (k % 2) * 6, 7, 1.5);
+  c.restore();
+  // palms in the corners (clear of the doors), and one by the pool
+  palm(c, X + W - 1.2 * DT, Y + 1.0 * DT, t, 1.0);
+  palm(c, X + W - 1.1 * DT, Y + H - 1.0 * DT, t + 1.7, 1.1);
+  palm(c, X + 1.0 * DT, Y + 1.1 * DT, t + 3.1, 0.85);
+  palm(c, px - 46, py - 18, t + 0.6, 0.75);
+}
+function palm(c, x, y, t, s = 1, flat = false) {
+  c.save(); c.translate(x, y); c.scale(s, flat ? s * 0.5 : s);
+  if (!flat) { c.fillStyle = 'rgba(0,0,0,.25)'; c.beginPath(); c.ellipse(6, 8, 26, 12, 0.3, 0, 7); c.fill(); }   // shadow
+  c.fillStyle = '#7a5a34'; c.beginPath(); c.arc(0, 0, 6, 0, 7); c.fill();                                       // trunk top
+  const sway = Math.sin(t * 1.3) * 0.08;
+  for (let k = 0; k < 7; k++) {
+    const a = k / 7 * Math.PI * 2 + sway + k * 0.2;
+    c.save(); c.rotate(a);
+    c.fillStyle = k % 2 ? '#3a9a40' : '#4cb050';
+    c.beginPath(); c.moveTo(2, 0); c.quadraticCurveTo(14, -9, 30, -2); c.quadraticCurveTo(16, 4, 2, 2); c.fill();
+    c.strokeStyle = 'rgba(20,60,20,.6)'; c.lineWidth = 1; c.beginPath(); c.moveTo(3, 1); c.quadraticCurveTo(15, -3, 29, -2); c.stroke();
+    c.restore();
+  }
+  c.fillStyle = '#6a4a20'; for (const [cx, cy] of [[-3, -2], [3, -3], [0, 3]]) { c.beginPath(); c.arc(cx, cy, 3, 0, 7); c.fill(); }   // coconuts
+  c.restore();
+}
+
 const ICONS = { bridge: 'helm', engine: 'engine', weapons: 'missile', shield: 'bubble', hall: 'feeder', lounge: 'chair', vault: 'vault', kitchen: 'pot',
   closet: 'broom', armory: 'crate', farm: 'crop', lab: 'flask', kennel: 'bone', pen: 'cube', den: 'vent', bubbler: 'bubble', office: 'watch',
-  casino: 'slot', guardpost: 'staff', storage: 'crate', quarters: 'bed', corridor: null, power: 'power' };
+  casino: 'slot', guardpost: 'staff', storage: 'crate', quarters: 'locker', corridor: null, power: 'power' };
