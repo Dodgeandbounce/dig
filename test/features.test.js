@@ -219,7 +219,7 @@ test('staying to loot is a gamble: wait too long and a bigger ship comes', () =>
   let t = 0;
   while (g.phase === 'aftermath' && t < 200) { g.update(1 / 30); t += 1 / 30; }
   assert.equal(g.phase, 'encounter', `still waiting after ${t.toFixed(0)}s`);
-  assert.ok(g.enemyShips.some((s) => /Big/.test(s.name)), 'a bigger one');
+  assert.ok(g.enemyShips.some((s) => /Huge/.test(s.name)), 'a bigger one');
 });
 
 test('the pilot can burn an engine to escape right now', () => {

@@ -139,19 +139,19 @@ export function botInput(g, c, dt) {
         point = null; inp.e = goal.hold || false; stationWork(g, c, goal.room, inp);
         // a damaged console gets fixed by whoever is standing at it (hold E; the engineer whacks it too)
         const r = goal.room;
-        if (r.owner === 'us' && r.sys && r.sys.hp < r.sys.max) { inp.e = true; inp.ax = r.station.x; inp.ay = r.station.y; if (c.cls === 'engineer') inp.fire = true; }
+        if (r.owner === 'us' && r.sys && r.sys.hp < r.sys.max) { inp.e = true; inp.ax = r.station.x; inp.ay = r.station.y; if (c.cls === 'engineer') inp.r = true; }
       }
       else point = { x: goal.room.station.x, y: goal.room.station.y + 22 };
       break;
     case 'repairSys': {
       const r = goal.room; point = { x: r.station.x, y: r.station.y + 22 }; field = fieldTo(g, stationTile(r), clear);
-      if (dist(c, point) < 24) { point = null; inp.ax = r.station.x; inp.ay = r.station.y; if (c.cls === 'engineer') inp.fire = true; inp.e = true; }
+      if (dist(c, point) < 24) { point = null; inp.ax = r.station.x; inp.ay = r.station.y; if (c.cls === 'engineer') inp.r = true; inp.e = true; }
       break;
     }
     case 'repair': {
       field = g.fields[`repair${+clear}`];
       const t = repairTarget(g, c);
-      if (t) { point = null; inp.ax = (t.tx + .5) * TILE; inp.ay = (t.ty + .5) * TILE; inp.e = true; if (c.cls === 'engineer') inp.fire = true; }
+      if (t) { point = null; inp.ax = (t.tx + .5) * TILE; inp.ay = (t.ty + .5) * TILE; inp.e = true; if (c.cls === 'engineer') inp.r = true; }
       break;
     }
     case 'pickup': point = goal.p; field = fieldTo(g, idx(Math.floor(goal.p.x / TILE), Math.floor(goal.p.y / TILE)), clear); break;
@@ -423,6 +423,7 @@ function stationWork(g, c, room, inp) {
     case 'weapons':
       // guns in storage go into the rack
       if (c.cls === 'missiletech' && g.ship.items.length && g.ship.guns.length < g.ship.gunSlots) g.command(c, { t: 'install', item: 0 });
+      else if (c.cls === 'missiletech' && g.ship.items.length && g.ship.scrap > 120 + 25 * (g.ship.rackUp || 0)) g.command(c, { t: 'expandRack' });
       if (g.phase === 'encounter' && g.enemyShip) { if (g.ship.missileTarget == null || !g.rooms[g.ship.missileTarget]?.sys?.hp) g.command(c, { t: 'target', room: pickMissileTarget(g) }); if (g.ship.missileReady) g.command(c, { t: 'fireMissile' }); }
       else if (g.ship.missiles < g.ship.missilesMax && g.ship.scrap >= 12) g.command(c, { t: 'buildMissile' }); break;
     case 'bridge': if (g.phase === 'encounter' && c.cd.q <= 0 && g.enemyShip && g.enemyShip.missileT < 1.2 && g.rng.chance(0.3)) inp.pressed.q = true; break;
@@ -970,6 +971,27 @@ export function updateObjects(g, dt) {
         break;
       }
       case 'wallbones': o.t -= dt; if (o.t <= 0) remove.add(o); break;
+      case 'iceslide': {
+        // a kicked ice block: scoops up whatever it hits and carries it; at a wall, everything aboard gets smashed
+        o.t -= dt;
+        const owner = g.crew.find((c) => c.id === o.owner);
+        const nx = o.x + o.vx * dt, ny = o.y + o.vy * dt;
+        const ahead = { x: nx + Math.sign(o.vx) * 15, y: ny + Math.sign(o.vy) * 15 };
+        const wall = g.grid.blocksShot(Math.floor(ahead.x / TILE), Math.floor(ahead.y / TILE), g.doors);
+        for (const m of g.mobs) if (m.alive && m.team === 'enemy' && !o.carry.includes(m.id) && Math.hypot(m.x - nx, m.y - ny) < m.r + 15 && !m.boss && !m.hoarder) { o.carry.push(m.id); damage(g, m, o.dmg * 0.25, { owner, kind: 'ice' }); }
+        const carried = o.carry.map((id) => g.mobs.find((m) => m.id === id && m.alive)).filter(Boolean);
+        if (wall || o.t <= 0) {
+          g.fx({ t: 'boom', x: nx, y: ny, r: 26 }); g.fx({ t: 'text', x: nx, y: ny - 20, text: carried.length ? `SMASH ×${carried.length}` : 'crack', color: '#bfefff' });
+          for (const m of carried) { damage(g, m, wall ? o.dmg * (1.6 + 0.4 * carried.length) : o.dmg * 0.4, { owner, kind: 'ice' }); m.stunT = Math.max(m.stunT || 0, 1.2); unstick(g, m); }
+          if (owner && carried.length) owner.xp = (owner.xp || 0) + 2 * carried.length;
+          remove.add(o);
+          break;
+        }
+        o.x = nx; o.y = ny;
+        // they ride on the front of the block, piled up side by side
+        carried.forEach((m, k) => { const off = (k - (carried.length - 1) / 2) * 9; m.x = nx + Math.sign(o.vx) * 6 + (o.vy ? off : 0); m.y = ny + Math.sign(o.vy) * 6 + (o.vx ? off : 0); m.stunT = Math.max(m.stunT || 0, 0.3); });
+        break;
+      }
       case 'ice': o.t -= dt; if (o.t <= 0) { if (g.grid.tiles[o.i] === T.ICE) { g.grid.tiles[o.i] = g.iceUnder.get(o.i) ?? T.FLOOR; g.grid.version++; } g.iceUnder.delete(o.i); remove.add(o); } break;
     }
     if (o.dead) remove.add(o);   // (trampled by something huge)

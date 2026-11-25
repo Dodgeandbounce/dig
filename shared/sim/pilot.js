@@ -50,23 +50,25 @@ export function descentTick(g, dt, pilotInput) {
   if (pilotInput && (pilotInput.mx || pilotInput.my)) { ix = pilotInput.mx; iy = pilotInput.my; }
   else if (!pilotInput) { const a = botSteer(g, d); ix = a.x; iy = a.y; }
   const steady = pilot ? pilot.upgrades[0] : 0;
-  const acc = 3.4 + 0.3 * steady;
-  d.vel.x += (ix * 1.4 - d.vel.x) * Math.min(1, dt * acc) + (g.rng() - 0.5) * wobble * dt;
-  d.vel.y += (iy * 1.4 - d.vel.y) * Math.min(1, dt * acc) + (g.rng() - 0.5) * wobble * dt;
+  // (a gentler, more responsive ship: lower top speed, snappier response)
+  const acc = 5 + 0.4 * steady;
+  d.vel.x += (ix * 1.15 - d.vel.x) * Math.min(1, dt * acc) + (g.rng() - 0.5) * wobble * dt;
+  d.vel.y += (iy * 1.15 - d.vel.y) * Math.min(1, dt * acc) + (g.rng() - 0.5) * wobble * dt;
   d.steer.x = clamp(d.steer.x + d.vel.x * dt, -1, 1);
   d.steer.y = clamp(d.steer.y + d.vel.y * dt, -1, 1);
 
   // obstacles
   d.spawnT -= dt * spd;
   if (d.spawnT <= 0) {
-    d.spawnT = Math.max(0.28, 0.9 - g.tier * 0.12) * g.rng.range(0.6, 1.3);
+    d.spawnT = Math.max(0.34, 1.05 - g.tier * 0.13) * g.rng.range(0.6, 1.3);
     const r = g.rng();
     let kind = r < 0.55 ? 'rock' : r < 0.7 ? 'boulder' : r < 0.82 ? 'creature' : r < 0.95 ? 'gems' : 'fuel';
     if (g.tier === 0 && kind === 'creature') kind = 'rock';
-    d.obstacles.push({ kind, x: g.rng.range(-1, 1), y: g.rng.range(-1, 1), z: 1, r: kind === 'boulder' ? 0.42 : kind === 'rock' ? 0.24 : kind === 'creature' ? 0.22 : 0.2,
+    // they appear further out (z 1.5) so the pilot sees them coming
+    d.obstacles.push({ kind, x: g.rng.range(-1, 1), y: g.rng.range(-1, 1), z: 1.5, r: kind === 'boulder' ? 0.42 : kind === 'rock' ? 0.24 : kind === 'creature' ? 0.22 : 0.2,
       vx: kind === 'creature' ? g.rng.range(-0.4, 0.4) : 0, vy: kind === 'creature' ? g.rng.range(-0.3, 0.3) : 0, spin: g.rng() * 6 });
   }
-  const dz = dt * 0.55 * spd;
+  const dz = dt * 0.42 * spd;   // (slower than it was: room to dodge)
   for (const o of d.obstacles) {
     o.z -= dz; o.x += o.vx * dt; o.y += o.vy * dt;
     if (o.kind === 'creature') { // creatures home in a little

@@ -54,6 +54,7 @@ test('deep down several ships dock, you see them coming, and each one leaves its
   for (const m of g.mobs) if (m.team === 'enemy') m.alive = false;
   step(g, 1);
   assert.equal(g.phase, 'aftermath');
+  g.pendingRecruit = false;   // (a recruit's new room rebuilds the hull, which can swallow a hole)
   COMMANDS.continue(g, g.crew[0], { force: true });
   assert.equal(g.rooms.filter((r) => r.owner === 'them').length, 0);
   for (const s of ships) assert.equal(g.grid.tiles[idx(s.dock.x, s.dock.y)], T.BREACH, 'the hole they blew stays');

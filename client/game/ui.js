@@ -145,7 +145,9 @@ export function createUI(root, api) {
         <div class="side them ${es.done ? 'beaten' : ''}"><b>${esc(es.name)}${es.surrendered ? ' 🏳' : es.destroyed ? ' 💥' : es.fled ? ' (fled)' : ''}</b>
           <div class="dbar hullb"><label>Hull</label><div><i style="width:${pct(es.hull, es.hullMax)}"></i></div></div>
           ${es.done ? '' : `<div class="dbar"><label>Gun</label><div><i style="width:${pct(es.gunT, es.gunPeriod)}"></i></div></div>
-          <small>bubble ${'●'.repeat(es.bubble)}${'○'.repeat(Math.max(0, es.bubbleMax - es.bubble))} · ${es.crewLeft} more boarders${es.fleeT > 6 ? ' · <b class="bad">fleeing!</b>' : ''}</small>`}
+          <small>bubble ${'●'.repeat(es.bubble)}${'○'.repeat(Math.max(0, es.bubbleMax - es.bubble))} · ${es.crewLeft} more boarders${es.fleeT > 6 ? ' · <b class="bad">fleeing!</b>' : ''}</small>
+          ${es.guns?.length ? `<small>rack: ${es.guns.map((gn) => `<span class="${gn.on ? '' : 'off'}">${SHIP_GUNS[gn.id]?.name || gn.id}${gn.on ? '' : ' (dark)'}</span>`).join(', ')}</small>` : ''}
+          ${es.crewCls?.length ? `<small class="ecrew">crew: ${es.crewCls.map((cl) => { const up = g.mobs.some((m) => m.alive && m.officer === cl && m.esId === es.id); return `<span class="${up ? '' : 'down'}">${CLASSES[cl].name}${up ? '' : ' ✗'}</span>`; }).join(' · ')}</small>` : ''}`}
         </div>` : `<div class="side them incoming"><b>☠ ${esc(es.name)}</b><small>docking in ${Math.max(0, Math.ceil(es.approachT))}s</small></div>`).join('')}</div>`;
     } else if (g.phase === 'encounter' && g.boss && g.boss.alive) {
       duel.classList.remove('hidden');
@@ -289,7 +291,7 @@ export function createUI(root, api) {
     if (me.cls === 'engineer') { const n = g.objs.filter((o) => o.kind === 'turret' && o.owner === me.id).length, max = 2 + me.upgrades[1]; extra.push(`<b class="${n >= max ? 'good' : ''}">Turrets ${n}/${max}</b>`); }
     if (me.cls === 'agent') extra.push(`Mission rank ${me.missionRank || 0}${me.disguise != null ? ` · <b class="good">disguised as ${esc(g.roster[me.disguise]?.name || '?')}</b>` : ''}${(me.missionRank || 0) >= 4 ? ' · laser' : ''}`);
     if (me.cls === 'slots' && me.coinWinT > 0) extra.push(`<b class="good">WINNING STREAK ×${me.coinWinMul} (${Math.ceil(me.coinWinT)}s)</b>`);
-    if (me.makeshift?.ammo > 0) extra.push(`<b class="good">Makeshift gun: ${me.makeshift.ammo} shots (LMB)</b>`);
+    if (me.makeshift?.ammo > 0) extra.push(`<b class="good">Makeshift gun: ${me.makeshift.ammo} shots ${me.makeshift.away ? "(put away: X to draw it)" : "(LMB · X to swap back)"}</b>`);
     if (me.cls === 'urchid') extra.push('Contributes nothing. Cannot die. Living the dream.');
     const ready = [0, 1, 2].some((k) => me.upgrades[k] < CLASS_UP_MAX && (me.xp || 0) >= xpCost(me.upgrades[k]));
     el.innerHTML = `
@@ -383,11 +385,20 @@ export function createUI(root, api) {
     const nodes = g.route?.nodes || [];
     const pilot = g.crew.find((c) => c.cls === 'pilot');
     const locked = nodes.find((n) => n.locked);
+    const humans = g.crew.filter((c) => c.human);
+    const voting = humans.length > 1;
+    const votes = g.route?.votes || {};
+    const tally = {};
+    for (const [id, i] of Object.entries(votes)) { const c = g.crew.find((x) => x.id === id); if (c?.human) tally[i] = (tally[i] || 0) + (c.cls === 'pilot' ? 3 : 1); }
+    const left = g.route?.voteT != null ? Math.max(0, Math.ceil(15 - (g.route.t - g.route.voteT))) : null;
+    const line = voting
+      ? `🗳 Vote on where we stop (the pilot's vote counts 3x).${left != null ? ` Closes in ${left}s.` : ''} ${humans.filter((c) => votes[c.id] == null).length} still to vote.`
+      : pilot?.human ? 'You\'re the pilot. Pick where we stop next.' : `${esc(pilot?.name || 'The pilot')} is waiting for your call (picks in ${Math.max(0, Math.ceil(8 - (g.route?.t || 0)))}s).`;
     return `<h2>The tunnel forks</h2>
-      <p class="muted">${pilot?.human ? 'You\'re the pilot. Pick where we stop next.' : `${esc(pilot?.name || 'The pilot')} is waiting for your call (picks in ${Math.max(0, Math.ceil(6 - (g.route?.t || 0)))}s).`}
+      <p class="muted">${line}
       Fuel ${Math.ceil(g.ship.fuel)}/${g.ship.fuelMax} · Hull ${Math.ceil(g.ship.hull)}/${g.ship.hullMax}</p>
-      <div class="nodes">${nodes.map((n, i) => `<button class="node ${n.locked ? 'locked' : ''}" style="--c:${n.color}" ${n.locked ? 'disabled' : ''} data-act='${JSON.stringify({ t: 'route', i })}'>
-        <span class="ic">${n.icon}</span><b>${esc(n.name)}</b><span>${esc(n.desc)}</span></button>`).join('')}</div>
+      <div class="nodes">${nodes.map((n, i) => `<button class="node ${n.locked ? 'locked' : ''} ${votes[me?.id] === i ? 'voted' : ''}" style="--c:${n.color}" ${n.locked ? 'disabled' : ''} data-act='${JSON.stringify({ t: 'route', i })}'>
+        <span class="ic">${n.icon}</span><b>${esc(n.name)}</b><span>${esc(n.desc)}</span>${voting ? `<em class="votes">${tally[i] ? `${tally[i]} vote${tally[i] > 1 ? 's' : ''}` : ''}${votes[me?.id] === i ? ' · yours' : ''}</em>` : ''}</button>`).join('')}</div>
       ${locked ? `<form data-form="transponder" class="tp"><label>Targeting computer — transponder ID</label><div class="row"><input name="code" maxlength="6" autocomplete="off" placeholder="####"><button>Lock on</button></div></form>` : ''}`;
   }
 
@@ -426,6 +437,7 @@ export function createUI(root, api) {
         ${P.shop ? `<div class="item"><b>🚀 D-missile</b><span>${s.missiles}/${s.missilesMax} in the rack</span>${btn('Buy (25)', { t: 'buyMissile' }, me.wallet >= 25 && s.missiles < s.missilesMax)}</div>
         <div class="item"><b>⚙ Scrap</b><span>25 scrap for repairs & gadgets</span>${btn('Buy (20)', { t: 'buyScrap' }, me.wallet >= 20)}</div>
         <div class="item"><b>🍖 Groceries</b><span>1 grub, shroom, fish, spice</span>${btn('Buy (15)', { t: 'buyFood' }, me.wallet >= 15)}</div>
+        ${s.items.map((it, i) => { const G = SHIP_GUNS[it.id]; const price = Math.max(40, Math.round((G.cost || 80) * 0.5)); return `<div class="item"><b>🔫 Sell ${G.name}</b><span>Sitting in storage, not in the rack</span>${btn(`Sell (${price})`, { t: 'sellGun', item: i })}</div>`; }).join('')}
         ${s.food.crops ? `<div class="item"><b>🌽 Sell crops</b><span>${s.food.crops} crops</span>${btn('Sell', { t: 'sellCrops' })}</div>` : ''}
         ${me.cls === 'agent' ? `<div class="item"><b>🍸 Meet a contact</b><span>Swap "knowledge" for "information": more marked targets</span>${btn('Buy intel (40)', { t: 'buyIntel' }, me.wallet >= 40)}</div>` : ''}` : ''}
       </div>`;
@@ -533,12 +545,12 @@ export function createUI(root, api) {
 
   function helpHtml() {
     return `<h2>How to dig</h2><div class="help">
-      <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>LMB</kbd> attack · <kbd>RMB</kbd> <kbd>Q</kbd> <kbd>F</kbd> <kbd>Space</kbd> abilities (013 also has <kbd>R</kbd> and <kbd>G</kbd>) · <kbd>Shift</kbd> dash (uses stamina)</p>
+      <p><kbd>WASD</kbd> move · <kbd>Mouse</kbd> aim · <kbd>LMB</kbd> attack · <kbd>RMB</kbd> <kbd>Q</kbd> <kbd>F</kbd> <kbd>Space</kbd> abilities (the engineer's <kbd>R</kbd> is the repair wrench; 013 also has <kbd>R</kbd> and <kbd>G</kbd>) · <kbd>X</kbd> swap to/from a makeshift gun · <kbd>Shift</kbd> dash (uses stamina)</p>
       <p><b>Candy</b> turns up around the ship: green = faster, red = faster trigger, blue = longer range, yellow = double gold per kill, white = a lightning chain gun, rainbow = all of it. Every star you spend also adds health and stamina.</p>
       <p><b>Random events</b> happen on the way down (traders, fires, broken engines, storks, viruses, worms, strawberries...). The deeper you go, the nastier they get.</p>
       <p><kbd>E</kbd> use a station, shut a door or prop it open, unseal doors (clearance). <b>Hold E</b> to repair breaches, walls, doors, wreckage and systems, and to spray your fire extinguisher.</p>
       <p><kbd>L</kbd> seal / unseal every door during a docking. A walkway runs around the whole ship with 4 blast doors (open until someone shuts them; each one shuts as a whole).</p>
-      <p><kbd>Tab</kbd> upgrades (spend XP: you earn it doing your job) · <kbd>C</kbd> switch crew member · <kbd>M</kbd> whole-ship view · <kbd>Mouse wheel</kbd> zoom · <kbd>Esc</kbd> menu</p>
+      <p><kbd>Tab</kbd> upgrades (spend XP: you earn it doing your job) · <kbd>C</kbd> switch crew member · <kbd>M</kbd> hide/show the minimap · <kbd>Mouse wheel</kbd> zoom · <kbd>Esc</kbd> menu</p>
       <p><b>Power:</b> the scientist routes the ship's power cells at the lab: engines (speed, dodging), bubbles (recharge), weapons (every gun needs power), systems (feeders, research) and the galley (better meals). Build Power Cores for more.</p>
       <p><b>Guns:</b> found in wrecks or bought at ports, installed by the missile technician at the weapons bay.</p>
       <p><b>The loop:</b> “Sea Level” → enemy mix → <b>DIG!</b> → the pilot steers the descent (rocks hurt, gem veins pay) → pick a stop → fight, shop, or find Joe's notes.</p>
@@ -649,7 +661,8 @@ export function createUI(root, api) {
           return `<div class="item ${on ? '' : 'off'}"><b>${i + 1}. ${G.name} <small>⚡${G.power}${on ? '' : ' · NO POWER'}</small></b><span>${G.desc}</span>${tech ? `<div class="row">${i > 0 ? btn('▲', { t: 'gunUp', gun: i }) : ''}${btn('Remove', { t: 'uninstall', gun: i })}</div>` : ''}</div>`; }).join('');
         const store = s.items.map((it, i) => { const G = SHIP_GUNS[it.id]; return `<div class="item"><b>${G.name} <small>⚡${G.power}</small></b><span>${G.desc}</span>${tech ? btn('Install', { t: 'install', item: i }, s.guns.length < s.gunSlots) : '<em>missile tech installs</em>'}</div>`; }).join('');
         return head('D-Weapons Bay', 'Pick the enemy room our guns and D-missiles hit. Bubbles stop most guns, not missiles. Lose this room and we can\'t fire at all.') + sysLine +
-          `<p>Weapons power: ⚡${g.pw('weapons')} (the first guns in the rack get it first) · rack ${s.guns.length}/${s.gunSlots}</p>
+          `<p>Weapons power: ⚡${g.pw('weapons')} (the first guns in the rack get it first) · rack ${s.guns.length}/${s.gunSlots}
+          ${tech && s.gunSlots < 10 ? btn(`Extend the rack (+1 slot, ${40 + 25 * (s.rackUp || 0)} scrap)`, { t: 'expandRack' }, s.scrap >= 40 + 25 * (s.rackUp || 0)) : ''}</p>
           <div class="grid2">${rack}</div>
           ${s.items.length ? `<h3>In storage</h3><div class="grid2">${store}</div>` : ''}
           <p>Missiles ${s.missiles}/${s.missilesMax} ${s.buildT > 0 ? `· building (${s.buildT.toFixed(1)}s)` : ''}</p>

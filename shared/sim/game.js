@@ -7,6 +7,7 @@ import {
   TRANSPONDER_NOTE, JOURNAL_TEXT, BROTHER_NOTES, ENDINGS, AGENT_BRIEFS, CREW_HP_MUL, BLAST_DOOR_HP, RING,
   roomSize, BRIDGE_W, POWER_BASE, POWER_PER_CORE, POWER_SYS, POWER_DEFAULT, SHIP_GUNS, GUN_SLOTS, GEMS, xpCost, XP_JOIN_PER_LEVEL,
   EARLY_WARNINGS, TRANSPONDER_PILOT, HOARDER, BOSSES, EVENTS, CANDY, STARTER_MONSTERS, MISSION_PAPERS, THIEVES, DEATH_LINES, DISTRESS_LINES,
+  ENEMY_CREW, ENEMY_CORE_CREW, ENEMY_EXTRA_CREW,
 } from './data.js';
 import { makeRng } from './rng.js';
 import { Grid, idx, inMap, buildRooms, buildRing, addDoor, slotRect, stationPos, roomTiles, wallTilesOf, roomCenter, roomPoint, rw, rh } from './grid.js';
@@ -28,7 +29,7 @@ const START_LAYOUT = [
   { type: 'shield', sx: 5, sy: 3 },
 ];
 
-export const GAME_VERSION = 4;   // bump when saved games can't be loaded any more (map size, layout)
+export const GAME_VERSION = 5;   // bump when saved games can't be loaded any more (map size, layout)
 
 export class Game {
   constructor({ seed, playerClass = 'pilot', playerName, shipName, speed = 1 } = {}) {
@@ -81,8 +82,8 @@ export class Game {
       rooms: {}, buildT: 0,
     };
     this.ourRooms = START_LAYOUT.map((r) => ({ ...r }));
-    // the Urchid gets a lounge right in the middle of the ship (the laziest spot there is)
-    if (playerClass === 'urchid') this.ourRooms.push({ type: 'lounge', sx: 6, sy: 3 });
+    // the Urchid gets an observatory lounge right behind the bridge (raised: it sees over everything)
+    if (playerClass === 'urchid') this.ourRooms.push({ type: 'lounge', sx: 6, sy: 1 });
     this.layoutShip();
     this.ship.hull = this.ship.hullMax;
 
@@ -157,7 +158,10 @@ export class Game {
   ensureRoomFor(cls) {
     const type = CLASSES[cls].room;
     if (this.ourRooms.some((r) => r.type === type)) return true;
-    const slot = this.freeSlotNear(type);
+    // the observatory goes right behind the bridge, so the bridge is always in front of it (line of sight)
+    const br = this.ourRooms.find((r) => r.type === 'bridge');
+    const behind = type === 'lounge' && br && this.freeSlots(type).find((s) => s.sx === br.sx && s.sy === br.sy - 1);
+    const slot = behind || this.freeSlotNear(type);
     if (!slot) return false;
     this.ourRooms.push({ type, sx: slot.sx, sy: slot.sy });
     this.layoutShip();
@@ -350,7 +354,7 @@ export class Game {
     const cores = this.rooms.filter((r) => r.owner === 'us' && r.type === 'power');
     s.power.cells = POWER_BASE + POWER_PER_CORE * cores.filter((r) => r.sys.hp > 0).length;
     trimPower(s);
-    s.gunSlots = GUN_SLOTS + Math.max(0, (counts.weapons || 0) - 1);
+    s.gunSlots = Math.min(RACK_MAX, GUN_SLOTS + Math.max(0, (counts.weapons || 0) - 1) + (s.rackUp || 0));
     while (s.guns.length > s.gunSlots) s.items.push({ id: s.guns.pop().id });
   }
   /** Cells handed out right now. */
@@ -385,6 +389,7 @@ export class Game {
     if (ty.hoarder) { m.hoarder = true; m.hp = m.maxHp = m.hp * (1 + 0.05 * this.level); m.fed = 0; }
     if (ty.thief) { m.thief = ty.thiefId; m.hacker = !!ty.hacker; }
     if (ty.event) m.event = ty.event;
+    if (ty.officer) { m.officer = ty.officer; m.r = 11; }
     if (ty.walker) m.walker = true;
     if (m.team === 'enemy' && !m.boss && !m.wild && opts.markable !== false) {
       const agent = this.crew.find((c) => c.cls === 'agent');
@@ -505,10 +510,19 @@ export class Game {
       } else if (d.sealed) want = 0;
       else if (d.hold === 'open') want = 1;            // propped open: anyone can walk through, them too
       else if (d.hold !== 'closed') {
-        for (const c of this.crew) if (c.alive && Math.abs(c.x - cx) < 50 && Math.abs(c.y - cy) < 50) { want = 1; break; }
-        if (!want) for (const m of this.mobs) if (m.alive && m.team === 'crew' && Math.abs(m.x - cx) < 46 && Math.abs(m.y - cy) < 46) { want = 1; break; }
+        for (const c of this.crew) if (c.alive && Math.abs(c.x - cx) < 62 && Math.abs(c.y - cy) < 62) { want = 1; break; }
+        if (!want) for (const m of this.mobs) if (m.alive && m.team === 'crew' && Math.abs(m.x - cx) < 56 && Math.abs(m.y - cy) < 56) { want = 1; break; }
       }
-      d.open = clamp(d.open + (want ? 1 : -1) * dt / (d.blast ? 1.4 : 1.1), 0, 1); // they open and close slowly (blast doors a bit slower)
+      d.want = want;
+    }
+    // both leaves of a double door move as one: they part in the middle and slide off to the sides
+    const pairWant = new Map();
+    for (const d of this.doors) if (d.pair != null && !d.broken && d.want) pairWant.set(d.pair, 1);
+    for (const d of this.doors) {
+      if (d.broken) continue;
+      const want = d.want || (d.pair != null && pairWant.get(d.pair)) ? 1 : 0;
+      // snappy: open in about a third of a second, close a bit slower (blast doors are heavier)
+      d.open = clamp(d.open + (want ? dt / (d.blast ? 0.7 : 0.32) : -dt / (d.blast ? 1.1 : 0.6)), 0, 1);
     }
   }
 
@@ -631,7 +645,8 @@ export class Game {
     this.descent = newDescent();
     this.drops = 0;                           // feeder drops so far this level (there's a limit)
     // something might happen on the way down this layer (likelier, and nastier, the deeper we go)
-    this.eventAt = this.level > 1 && this.rng.chance(0.45 + 0.012 * this.level) ? this.rng.range(0.2, 0.75) : null;
+    this.eventAt = this.level > 1 && this.rng.chance(0.65 + 0.012 * this.level) ? this.rng.range(0.15, 0.6) : null;
+    this.eventsThisLayer = 0;
     // the air currents settle into new paths for the dig
     this.air = buildAir(this, this.rng);
     this.setPhase('briefing');
@@ -867,7 +882,13 @@ export class Game {
       this.hoarderSeen = true;
       const layout = enemyLayout('ship', tier, rng, this.ship.name, 0);
       layout.name = 'The Ship-Eater\'s Shell'; layout.boarders = 1; layout.wave = 1; layout.solo = true;
-      this.planEnemyShip(layout, 'ship', rng.range(6, 8));
+      if (!this.planEnemyShip(layout, 'ship', rng.range(6, 8))) {
+        // nowhere for its shell to dock: it doesn't need one. It digs straight through our hull.
+        const at = this.burrowPoint();
+        const m = this.spawnMob(this.roster.findIndex((x) => x.hoarder), at.x, at.y, {});
+        this.fx({ t: 'boom', x: at.x, y: at.y, r: 60 });
+        this.nest = { waves: 0, waveT: 99, left: 0, eater: m.id };
+      }
       if (noHumans) this.sealDoors(true);
       this.log('alert', '☠ One ship. One passenger. 100%. THE SHIP-EATER. It chews through walls and swallows whole rooms, ours or anybody\'s. Everybody on it!');
       this.fx({ t: 'mainevent', name: HOARDER.name });
@@ -878,6 +899,26 @@ export class Game {
       this.nest = { waves: 4 + tier * 2, waveT: 2, left: 4 + tier * 2 };
       this.log('alert', '♨ Creatures! They\'re burrowing into the hull!');
       if (noHumans) this.sealDoors(true);
+      return;
+    }
+    // a swarm: ships packed to the rafters with one kind of thing (the stork armada, a pirate raid)
+    if (kind === 'ship' && opts.swarm) {
+      const sw = opts.swarm;
+      let delay = rng.range(5, 7);
+      for (let k = 0; k < sw.ships; k++) {
+        const layout = enemyLayout('ship', Math.min(tier, 2), rng, this.ship.name, k, this.level);
+        layout.name = sw.names[k % sw.names.length];
+        layout.boardType = sw.type; layout.swarm = true;
+        layout.rooms.forEach((r) => { if (!['bridge', 'weapons'].includes(r.type) && !r.thin) r.type = 'quarters'; });
+        layout.boarders = Math.round(sw.each * (0.8 + 0.07 * this.crew.length)); layout.wave = sw.wave;
+        layout.hull = Math.round(layout.hull * 0.6); layout.guns = []; layout.bubble = 0;
+        layout.gunPeriod *= 1.6; layout.missilePeriod *= 2;
+        if (!this.planEnemyShip(layout, 'ship', delay)) break;
+        delay += rng.range(5, 9);
+      }
+      if (!this.enemyShips.length) { eventSpawn(this, 'stork', sw.each); return; }
+      if (noHumans) this.sealDoors(true);
+      this.log('alert', sw.msg(this.enemyShips.length));
       return;
     }
     // how many ships come for us: one up top, up to four deep down
@@ -896,7 +937,7 @@ export class Game {
     for (let k = 0; k < n; k++) {
       const layout = enemyLayout(kind, tier, rng, this.ship.name, k, this.level);
       if (this.path === 'brother' && kind === 'ship') layout.boarders = Math.round(layout.boarders * 1.3);
-      if (opts.harder) { layout.boarders = Math.round(layout.boarders * 1.3); layout.hull = Math.round(layout.hull * 1.3); layout.name = layout.name.replace(/^The |^/, 'The Big '); }
+      if (opts.harder) { layout.boarders = Math.round(layout.boarders * 1.3); layout.hull = Math.round(layout.hull * 1.3); layout.name = 'The Huge ' + layout.name.replace(/^(The|Big) /, ''); }
       // bigger crew, bigger fights: lots of enemies (split between the ships)
       const crewN = this.crew.length;
       layout.boarders = Math.round(layout.boarders * (0.8 + 0.07 * crewN) / Math.sqrt(n));
@@ -906,6 +947,14 @@ export class Game {
       const es = this.planEnemyShip(layout, kind, delay);
       if (!es) break;
       delay += rng.range(14, 26);
+    }
+    // no room for anyone to dock (the ship is huge): they send their crews down the tunnels instead
+    if (!this.enemyShips.length && kind === 'ship') {
+      this.log('alert', '☠ No room to dock, so they dig in! Boarders are burrowing through the hull!');
+      const waves = 3 + tier;
+      this.nest = { waves, waveT: 3, left: waves, boarders: true };
+      if (noHumans) this.sealDoors(true);
+      return;
     }
     if (noHumans && kind !== 'derelict' && kind !== 'pod') this.sealDoors(true);
     if (kind === 'ship') {
@@ -932,24 +981,34 @@ export class Game {
    * It's drawn coming in while `approachT` counts down, then docks (rooms built, tunnel blown).
    */
   planEnemyShip(layout, kind, approach) {
-    const cols = Math.max(...layout.rooms.map((r) => r.c + (r.cw || 1)));
-    const rows = Math.max(...layout.rooms.map((r) => r.r + (r.rh || 1)));
-    const w = cols * SLOT_W + 1, h = rows * SLOT_H + 1;
     const B = this.box;
     const taken = this.enemyShips.filter((s) => !s.gone).map((s) => s.rect);
     const overlaps = (r) => taken.some((t) => r.x0 < t.x0 + t.w + 2 && t.x0 < r.x0 + r.w + 2 && r.y0 < t.y0 + t.h + 2 && t.y0 < r.y0 + r.h + 2);
-    const spots = [];
-    const topY = B.y0 - ENEMY_GAP - h, botY = B.y1 + ENEMY_GAP + 1;
     const mid = Math.round((B.x0 + B.x1) / 2);
-    for (const side of ['top', 'bottom']) {
-      const y0 = side === 'top' ? topY : botY;
-      if (y0 < ENEMY_OY || y0 + h > MAP_H - 2) continue;
-      const xs = [mid - (w >> 1), B.x0 - 4, B.x1 - w + 4, mid - w - 2, mid + 2, B.x0 + 6, B.x1 - w - 6];
-      for (let x = 2; x + w < MAP_W - 2; x += 5) xs.push(x);   // (deep down, six can crowd in)
-      for (const x0 of xs) {
-        const r = { x0: clamp(x0, 2, MAP_W - w - 2), y0, w, h };
-        if (!overlaps(r)) spots.push({ side, rect: r });
+    let cols, rows, w, h, spots;
+    // our ship grows until there's no room above or below it for a tall ship: then the ship that
+    // comes is a lower one (its bottom deck stays home), and the tunnel gets shorter
+    for (let attempt = 0; ; attempt++) {
+      cols = Math.max(...layout.rooms.map((r) => r.c + (r.cw || 1)));
+      rows = Math.max(...layout.rooms.map((r) => r.r + (r.rh || 1)));
+      w = cols * SLOT_W + 1; h = rows * SLOT_H + 1;
+      spots = [];
+      for (const gap of [ENEMY_GAP, 3]) {
+        const topY = B.y0 - gap - h, botY = B.y1 + gap + 1;
+        for (const side of ['top', 'bottom']) {
+          const y0 = side === 'top' ? topY : botY;
+          if (y0 < ENEMY_OY || y0 + h > MAP_H - 2) continue;
+          const xs = [mid - (w >> 1), B.x0 - 4, B.x1 - w + 4, mid - w - 2, mid + 2, B.x0 + 6, B.x1 - w - 6];
+          for (let x = 2; x + w < MAP_W - 2; x += 5) xs.push(x);   // (deep down, six can crowd in)
+          for (const x0 of xs) {
+            const r = { x0: clamp(x0, 2, MAP_W - w - 2), y0, w, h };
+            if (!overlaps(r)) spots.push({ side, rect: r });
+          }
+        }
+        if (spots.length) break;
       }
+      if (spots.length || rows <= 1 || attempt > 3) break;
+      trimLayout(layout, rows - 1);
     }
     if (!spots.length) return null;
     // from above or below (toward the core), wherever there's room. The first one lines up with the middle.
@@ -962,6 +1021,7 @@ export class Game {
       hull: layout.hull, hullMax: layout.hull, bubble: layout.bubble, bubbleMax: layout.bubble, bubbleT: 0,
       gunT: this.rng.range(0, 2), gunPeriod: layout.gunPeriod, gunDmg: layout.gunDmg, missileT: 0, missilePeriod: layout.missilePeriod, missileDmg: layout.missileDmg,
       crewLeft: layout.boarders, spawnT: 2, wave: layout.wave, done: false, stolen: 0, surrendered: false, inbound: [],
+      guns: (layout.guns || []).map((id) => ({ id, t: this.rng.range(0, 3), on: true })), rerouteT: 0,
     };
     this.enemyShips.push(es);
     return es;
@@ -1027,7 +1087,7 @@ export class Game {
 
     // once there's an agent with C4 aboard, their ships start keeping a vault behind armoured doors that
     // only C4 can open. The loot inside is heavy: the chameleon can vent in and out, but can't carry it.
-    if (kind === 'ship' && !layout.solo && this.crew.some((c) => c.cls === 'agent') && this.rng.chance(0.4 + 0.12 * tier)) {
+    if (kind === 'ship' && !layout.solo && !layout.swarm && this.crew.some((c) => c.cls === 'agent') && this.rng.chance(0.4 + 0.12 * tier)) {
       const cand = rooms.filter((r) => !r.thin && r !== airRoom && !['bridge', 'weapons', 'engine', 'shield'].includes(r.type));
       const v = cand.length ? this.rng.pick(cand) : null;
       if (v) {
@@ -1042,8 +1102,9 @@ export class Game {
     // defenders, decorations, crates
     for (const r of rooms) {
       const p = roomCenter(r);
-      if ((kind === 'ship' || kind === 'boss') && !layout.solo) {
-        const n = r.type === 'bridge' ? 1 + (tier >= 3 ? 1 : 0) : r.type === 'weapons' ? 1 + Math.floor(tier / 2) : r.type === 'shield' && tier >= 2 ? 1 : r.type === 'engine' && tier >= 3 ? 1 : 0;
+      if ((kind === 'ship' || kind === 'boss') && !layout.solo && !layout.swarm) {
+        // (their officers man the stations now; a few hired guns stand with them deeper down)
+        const n = r.type === 'bridge' ? (tier >= 3 ? 1 : 0) : r.type === 'weapons' ? Math.floor(tier / 2) : r.type === 'shield' && tier >= 3 ? 1 : 0;
         for (let k = 0; k < n; k++) this.spawnMob(this.pickType(true), p.x - 40 + k * 40, p.y, { defender: true, esId: es.id });
       }
       if (kind === 'derelict') {
@@ -1067,6 +1128,7 @@ export class Game {
         if (walker) this.log('alert', '☠ THE LEVIATHAN is climbing out of its hive. It is walking straight at us. Through the walls.');
       }
     }
+    if (kind === 'ship' && !layout.solo && !layout.swarm) this.crewEnemyShip(es, rooms);
     if (this.crew.some((c) => c.cls === 'chameleon')) this.addVents(rooms, 'them');
     this.air = buildAir(this, this.rng, false);   // the docking stirs up the air (and it reaches into their ship now)
     if (kind === 'ship') {
@@ -1074,6 +1136,58 @@ export class Game {
       const talkers = this.rng.shuffle(this.crew.filter((c) => c.alive)).slice(0, 2);
       for (const c of talkers) quip(this, c, 'dock', true);
     }
+  }
+
+  /**
+   * Their crew: a pilot on the bridge, an engineer in the engine room, a missile tech on the guns, a
+   * scientist on the bubbles (if they have those rooms), and the bigger the ship, the more extras.
+   */
+  crewEnemyShip(es, rooms) {
+    const rng = this.rng, tier = this.tier;
+    const real = rooms.filter((r) => !r.thin);
+    const has = (t) => real.find((r) => r.type === t);
+    const jobs = ENEMY_CORE_CREW.filter((cls) => cls === 'pilot' || has(ENEMY_CREW[cls].post));
+    const extras = clamp(Math.floor((real.length - 4) / 2) + Math.floor(tier / 2) + rng.int(0, 1), 0, 4);
+    const pool = ENEMY_EXTRA_CREW.filter((cls) => cls !== 'guard' || has('vault'));
+    // (at most two of the extras come over to fight; the rest keep to their posts)
+    let roamers = 0;
+    jobs.push(...rng.shuffle([...pool]).filter((cls) => ENEMY_CREW[cls].stays || roamers++ < 2).slice(0, extras));
+    es.crewCls = [];
+    for (const cls of jobs) {
+      if (this.mobs.reduce((a, m) => a + (m.alive && m.team === 'enemy' ? 1 : 0), 0) >= 70) break;   // (the crowd cap)
+      const E = ENEMY_CREW[cls];
+      const room = has(E.post) || has('quarters') || has('bridge') || real[0];
+      const p = roomPoint(room, rng);
+      const ti = this.roster.findIndex((x) => x.officer === cls);
+      if (ti < 0) continue;
+      const m = this.spawnMob(ti, p.x, p.y, { defender: E.stays, esId: es.id, hpMul: 1 + 0.12 * tier, markable: false });
+      m.name = `${es.name.replace(/^The /, '')}'s ${CLASSES[cls].name}`;
+      m.post = this.rooms.indexOf(room);
+      es.crewCls.push(cls);
+    }
+    // 013's mark is one of their officers when there are any (their pilot first)
+    const agent = this.crew.find((c) => c.cls === 'agent');
+    if (agent && this.markedLeft > 0 && !this.mobs.some((x) => x.alive && x.marked)) {
+      const mark = this.mobs.find((m) => m.alive && m.esId === es.id && m.officer === 'pilot') || this.mobs.find((m) => m.alive && m.esId === es.id && m.officer);
+      if (mark) { this.markedLeft--; this.markTarget(mark, agent); this.mission.name = mark.name; }
+    }
+    if (es.crewCls.length) this.log('ship', `${es.name} is crewed: ${es.crewCls.map((c) => CLASSES[c].name).join(', ')}. Take out the right one and their ship suffers for it.`);
+  }
+
+  /** One of their officers is down: their ship loses what that job does. */
+  officerDown(m) {
+    const es = this.enemyShips.find((s) => s.id === m.esId);
+    const E = ENEMY_CREW[m.officer];
+    if (!es || es.done || !E) return;
+    this.log('alert', `🎯 ${es.name}: ${E.loss}`);
+    this.fx({ t: 'text', x: m.x, y: m.y - 26, text: `${CLASSES[m.officer].name.toUpperCase()} DOWN`, color: '#f4c542' });
+    if (m.officer === 'guard') for (const d of this.doors) if (d.owner === 'them' && d.armored && es.rooms.some((k) => d.a === k || d.b === k)) { d.armored = false; d.hp = Math.min(d.hp, 120); d.maxHp = 120; }
+    if (m.officer === 'pilot') { es.fleeT = 0; }
+  }
+  /** Is that ship's officer for this job still alive? (ships that never had one count as "yes") */
+  officerOk(es, cls) {
+    if (!es.crewCls?.includes(cls)) return true;
+    return this.mobs.some((m) => m.alive && m.officer === cls && m.esId === es.id);
   }
 
   pickType(defender = false) {
@@ -1116,7 +1230,12 @@ export class Game {
     this.grid.tiles[di] = T.BREACH; this.grid.hp[di] = 0; this.orig.set(di, T.HULL);
     for (const id of es.rooms) { const r = this.rooms[id]; if (r) { r.alive = false; r.gone = true; } }
     for (const d of this.doors) if (d.owner === 'them' && on({ x: (d.x + .5) * TILE, y: (d.y + .5) * TILE })) { d.gone = true; d.broken = true; }
-    this.objs = this.objs.filter((o) => !(o.owner === 'them' && on(o)) && !(o.kind === 'vent' && o.owner === 'them' && on(o)));
+    // everything left over there goes with it (our turrets, traps, mines, scarecrows too: refunded as scrap)
+    let refund = 0;
+    for (const o of this.objs) if (on(o) && o.owner !== 'them' && ['turret', 'trap', 'scarecrow'].includes(o.kind)) refund += o.kind === 'turret' ? 15 : o.kind === 'scarecrow' ? 6 : 5;
+    this.objs = this.objs.filter((o) => !on(o));
+    if (refund) { this.ship.scrap += refund; this.log('ship', `Our gadgets on ${es.name} came back as ${refund} scrap.`); }
+    this.projs = this.projs.filter((p) => !on(p));
     this.pickups = this.pickups.filter((p) => !on(p));
     for (const [i] of [...this.orig]) if (i !== di && on({ x: ((i % MAP_W) + .5) * TILE, y: (((i / MAP_W) | 0) + .5) * TILE })) this.orig.delete(i);
     if (this.ship.missileTarget != null && es.rooms.includes(this.ship.missileTarget)) this.ship.missileTarget = null;
@@ -1276,6 +1395,23 @@ function trimPower(s) {
 
 // ---------------------------------------------------------------------------
 // enemy ship layouts
+/** Cut a ship layout down to its top `rows` decks, keeping a bridge (it has to be flown). */
+function trimLayout(layout, rows) {
+  const had = new Set(layout.rooms.map((r) => r.type));
+  layout.rooms = layout.rooms.filter((r) => r.r + (r.rh || 1) <= rows);
+  if (!layout.rooms.length) layout.rooms = [{ type: 'bridge', c: 0, r: 0 }];
+  for (const t of ['bridge', 'weapons', 'quarters']) {
+    if (!had.has(t) || layout.rooms.some((r) => r.type === t)) continue;
+    const spare = layout.rooms.find((r) => !r.thin && (r.type === 'corridor' || (r.type === 'quarters' && t !== 'quarters' && layout.rooms.filter((x) => x.type === 'quarters').length > 1)));
+    if (spare) spare.type = t;
+    else if (t === 'bridge') { const r = layout.rooms.find((x) => !x.thin) || layout.rooms[0]; r.type = 'bridge'; r.thin = null; }
+  }
+  // a crawlway left dangling at the end of the ship is just a room now
+  for (const r of layout.rooms) if (r.thin) r.thin = null;
+  if (layout.airlock != null) layout.airlock = Math.min(layout.airlock, Math.max(...layout.rooms.map((r) => r.c)));
+  return layout;
+}
+
 function enemyLayout(kind, tier, rng, ourName, k = 0, level = 1) {
   const prefix = ['The', 'Old', 'Big', 'Mean', 'Rusty', 'Black', 'Grim', 'Mad'][rng.int(0, 7)];
   const noun = ['Gnasher', 'Burrower', 'Mole King', 'Grinder', 'Tunnel Rat', 'Dirt Shark', 'Rockjaw', 'Gravedigger', 'Wormhole', 'Excavator', 'Skullbore', 'Mudlark'][rng.int(0, 11)];
@@ -1311,8 +1447,20 @@ function enemyLayout(kind, tier, rng, ourName, k = 0, level = 1) {
   list = list.map(([c, r]) => [c - mc, r - mr]);
   const has = new Set(list.map(([c, r]) => key(c, r)));
   const nb = (c, r) => ({ l: has.has(key(c - 1, r)), r: has.has(key(c + 1, r)), u: has.has(key(c, r - 1)), d: has.has(key(c, r + 1)) });
-  // jobs: the essentials, then bunks and hallways
-  const must = ['bridge', 'weapons', 'quarters', 'engine', 'shield'].slice(0, Math.min(list.length, tier >= 1 ? 5 : 4));
+  // jobs: the essentials, then bunks and hallways. Deeper down they carry a gun rack like ours, and
+  // racks need power: a Power Core (two, for a big rack) and sometimes a second weapons bay.
+  const guns = [];
+  if (tier >= 2) {
+    const pool = ['flak', 'burst', 'ion', 'rail'].filter((id, k) => k <= tier - 1);
+    const n = clamp(rng.int(0, tier - 1), 0, 3);
+    for (let k = 0; k < n; k++) guns.push(rng.pick(pool));
+  }
+  const power = guns.reduce((a, id) => a + SHIP_GUNS[id].power, 0);
+  const extraJobs = [];
+  if (guns.length) extraJobs.push('power');
+  if (power > 4) extraJobs.push('power');
+  if (guns.length > 2) extraJobs.push('weapons');
+  const must = [...['bridge', 'weapons', 'quarters', 'engine', 'shield'].slice(0, Math.min(list.length, tier >= 1 ? 5 : 4)), ...extraJobs].slice(0, list.length);
   const rooms = [];
   const used = new Set();
   const order = rng.shuffle([...list]);
@@ -1328,7 +1476,7 @@ function enemyLayout(kind, tier, rng, ourName, k = 0, level = 1) {
     if (thinLeft > 0 && (horiz || vert) && order.length - used.size > jobs.length) {
       thinLeft--; used.add(key(c, r)); rooms.push({ type: 'corridor', c, r, thin: horiz ? 'h' : 'v' }); continue;
     }
-    const type = jobs.shift() || (rng.chance(0.55) ? 'quarters' : 'corridor');
+    const type = jobs.shift() || rng.pick(['quarters', 'quarters', 'corridor', 'corridor', 'kitchen', 'storage', 'lab', 'armory', 'kennel', 'closet']);
     // a big double room with its right-hand neighbour (bunks and corridors like being big)
     if (bigLeft > 0 && (type === 'quarters' || type === 'corridor' || type === 'engine') && has.has(key(c + 1, r)) && !used.has(key(c + 1, r)) && order.length - used.size - 2 >= jobs.length) {
       bigLeft--; used.add(key(c, r)); used.add(key(c + 1, r)); rooms.push({ type, c, r, cw: 2 }); continue;
@@ -1339,7 +1487,7 @@ function enemyLayout(kind, tier, rng, ourName, k = 0, level = 1) {
   const total = list.length;
   const v = () => rng.range(0.85, 1.2);
   return {
-    name: `${prefix} ${noun}`, rooms,
+    name: `${prefix} ${noun}`, rooms, guns,
     hull: Math.round((130 + total * 36) * TS * v()),
     bubble: tier >= 1 ? Math.floor(tier / 1.5) + (rng.chance(0.3) ? 1 : 0) : 0,
     gunPeriod: (8.5 - 0.6 * tier) * v(), gunDmg: Math.round((3 + 3.4 * tier) * v()),
@@ -1371,7 +1519,15 @@ function extrasTick(g, dt) {
     }
   }
   // the random event for this layer
-  if (g.phase === 'descent' && g.eventAt != null && !g.descent.stranded && g.descent.progress >= g.eventAt && !g.storyOpen) { g.eventAt = null; randomEvent(g); }
+  if (g.phase === 'descent' && g.eventAt != null && !g.descent.stranded && g.descent.progress >= g.eventAt && !g.storyOpen) {
+    const at = g.descent.progress;
+    g.eventAt = null; randomEvent(g);
+    // more shuffled in: deeper down, a second (even a third) thing can happen on the same layer
+    g.eventsThisLayer = (g.eventsThisLayer || 0) + 1;
+    if (g.eventsThisLayer < 3 && at < 0.7 && g.rng.chance(0.3 + 0.015 * g.level)) g.eventAt = at + g.rng.range(0.15, 0.3);
+  }
+  // temporary allies (the friendly moles) go home after a while
+  for (const m of g.mobs) if (m.alive && m.lifeT != null) { m.lifeT -= dt; if (m.lifeT <= 0) { m.alive = false; g.fx({ t: 'poof', x: m.x, y: m.y }); } }
   // the trader hangs around for a minute
   if (g.trader) { g.trader.t -= dt; if (g.trader.t <= 0 || g.phase !== 'descent') { g.log('ship', 'The trader unhooks and digs off. "Pleasure doing business, foxes!"'); g.trader = null; } }
   // the virus: every few seconds each one screams and splits in two. If they fill a room, the room is gone.
@@ -1411,8 +1567,10 @@ function randomEvent(g) {
   const L = g.level;
   const good = Math.max(0.15, 0.62 - 0.016 * L);
   const pool = {};
-  for (const [id, e] of Object.entries(EVENTS)) pool[id] = e.good ? good / 5 : (1 - good) / 7;
-  if (L < 5) { pool.worms = 0; pool.tentacles = 0; pool.virus *= 0.5; }
+  const nGood = Object.values(EVENTS).filter((e) => e.good).length, nBad = Object.values(EVENTS).length - nGood;
+  for (const [id, e] of Object.entries(EVENTS)) pool[id] = e.good ? good / nGood : (1 - good) / nBad;
+  if (L < 5) { pool.worms = 0; pool.tentacles = 0; pool.virus *= 0.5; pool.storks *= 0.4; }
+  if (L < 3) pool.pirates = 0;
   if (g.workingEngines() < 1) pool.engine = 0;
   const id = g.rng.weighted(pool);
   const E = EVENTS[id];
@@ -1441,7 +1599,57 @@ function randomEvent(g) {
       g.log('alert', eng.length > 1 ? `The other engine${eng.length > 2 ? 's keep' : ' keeps'} us moving. Engineers: fix the ${r.name}!` : 'That was our only engine. We\'re crawling. ENGINEERS!');
       break;
     }
-    case 'storks': eventSpawn(g, 'stork', n(6, 2)); break;
+    case 'storks': {
+      // the stork armada: up to four ships of nothing but storks dock and pour them in
+      const ships = clamp(2 + Math.floor(g.tier / 1.5) + (g.rng.chance(0.4) ? 1 : 0), 2, 4);
+      g.resume = g.descent;
+      g.startEncounter('ship', { swarm: { type: g.roster.findIndex((x) => x.event === 'stork'), ships, each: 34 + g.tier * 8, wave: 7 + g.tier,
+        names: ['The Stork Carrier', 'The Nest Ship', 'The Beak Barge', 'The Feathered Fury'],
+        msg: (k) => `🪶 THE STORK ARMADA! ${k} ships packed with storks are docking. They're going to fill the ship!` } });
+      return;
+    }
+    case 'pirates': {
+      const pi = g.roster.findIndex((x) => x.thiefId === 'pirate');
+      g.resume = g.descent;
+      g.startEncounter('ship', { swarm: { type: pi, ships: clamp(1 + Math.floor(g.tier / 2), 1, 3), each: 22 + g.tier * 6, wave: 5 + g.tier,
+        names: ['The Jolly Digger', 'The Black Shovel', 'The Salty Mole'], msg: (k) => `🏴‍☠️ HAR HAR HAR! ${k > 1 ? `${k} pirate ships` : 'A pirate ship'} latches on. They want the vault!` } });
+      return;
+    }
+    case 'magnet': {
+      // every loose pickup on the ship flies straight to the nearest crew member
+      let k = 0;
+      for (const p of [...g.pickups]) { const c = g.crew.filter((x) => x.alive).sort((a, b) => dist(a, p) - dist(b, p))[0]; if (c) { p.x = c.x; p.y = c.y; p.z = 0; k++; } }
+      g.log('loot', `🧲 ${k} loose things zip across the ship into our pockets.`);
+      break;
+    }
+    case 'hotspring': {
+      for (const c of g.crew) if (c.alive) { c.hp = c.maxHp; c.stam = c.stamMax || 100; }
+      const messes = g.objs.filter((o) => o.kind === 'mess').length;
+      g.objs = g.objs.filter((o) => o.kind !== 'mess' && o.kind !== 'fire');
+      g.log('loot', `♨ Everyone is healed${messes ? ` and ${messes} messes wash away` : ''}.`);
+      break;
+    }
+    case 'scrapfield': for (let k = 0; k < 10 + g.tier * 3; k++) { const r = g.rng.pick(g.rooms.filter((x) => x.owner === 'us')); const p = roomPoint(r, g.rng); rainPickup(g, p.x, p.y, 'ore', 1); } break;
+    case 'moles': {
+      // a friendly mole family digs in and fights on our side for a while
+      const types = g.roster.filter((x) => x.creature && x.tier <= g.tier + 1);
+      const at = g.burrowPoint();
+      for (let k = 0; k < 3 + Math.floor(g.tier / 2); k++) { const m = g.spawnMob(g.rng.pick(types).idx, at.x + g.rng.range(-20, 20), at.y + g.rng.range(-20, 20), { team: 'crew', markable: false, wild: false }); m.name = 'Friendly Mole'; m.lifeT = 90; m.hp = m.maxHp = m.hp * 1.5; }
+      break;
+    }
+    case 'quake': {
+      g.fx({ t: 'shake', amt: 18 });
+      const rooms = g.rng.shuffle(g.rooms.filter((r) => r.owner === 'us' && r.sys));
+      for (const r of rooms.slice(0, 2 + Math.floor(g.tier / 2))) g.blockDoorway(r);
+      for (const r of rooms.slice(0, 2)) damageSystem(g, r, r.sys.max * 0.3);
+      break;
+    }
+    case 'surge': {
+      const cores = g.rooms.filter((r) => r.owner === 'us' && (r.type === 'power' || r.type === 'shield' || r.type === 'lab'));
+      for (const r of cores) { damageSystem(g, r, r.sys.max * 0.45); if (g.rng.chance(0.4)) igniteRoom(g, r, 1); }
+      g.ship.bubble = 0;
+      break;
+    }
     case 'virus': {
       const hold = g.rooms.find((r) => r.owner === 'us' && r.type === 'storage') || g.rng.pick(g.rooms.filter((r) => r.owner === 'us' && r.sys));
       const p = roomCenter(hold);
@@ -1473,19 +1681,27 @@ function eventSpawn(g, id, count) {
 }
 
 /** Creatures dig straight through the hull somewhere. */
-function burrowIn(g, n) {
-  const rooms = g.rooms.filter((r) => r.owner === 'us');
-  const r = g.rng.pick(rooms);
-  const creatures = g.roster.filter((x) => x.creature && x.tier <= g.tier + 1);
-  if (!creatures.length) return;
-  const walls = g.hullNear(r);
+/** Knock a hole in our hull next to a random room; returns the floor point just inside it. */
+Game.prototype.burrowPoint = function () {
+  const rooms = this.rooms.filter((r) => r.owner === 'us' && !r.gone);
+  const r = this.rng.pick(rooms);
+  const walls = this.hullNear(r);
   let at = roomCenter(r);
-  if (walls.length && !g.storyMode) {
-    const w = g.rng.pick(walls); hitTile(g, w.x, w.y, 9999, { hull: true });
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (g.grid.get(w.x + dx, w.y + dy) === T.FLOOR) { at = { x: (w.x + dx + .5) * TILE, y: (w.y + dy + .5) * TILE }; break; }
+  if (walls.length && !this.storyMode) {
+    const w = this.rng.pick(walls); hitTile(this, w.x, w.y, 9999, { hull: true });
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (this.grid.get(w.x + dx, w.y + dy) === T.FLOOR) { at = { x: (w.x + dx + .5) * TILE, y: (w.y + dy + .5) * TILE }; break; }
   }
-  for (let k = 0; k < n; k++) g.spawnMob(g.rng.pick(creatures).idx, at.x + g.rng.range(-20, 20), at.y + g.rng.range(-20, 20), { markable: false });
-  g.log('alert', `♨ Creatures burst through the hull near the ${r.name}!`);
+  at.room = r;
+  return at;
+};
+
+/** Things dig in through the hull: creatures, or (types given) whatever the level's ships carry. */
+function burrowIn(g, n, boarders = false) {
+  const creatures = g.roster.filter((x) => x.creature && x.tier <= g.tier + 1);
+  if (!creatures.length && !boarders) return;
+  const at = g.burrowPoint();
+  for (let k = 0; k < n; k++) g.spawnMob(boarders ? g.pickType() : g.rng.pick(creatures).idx, at.x + g.rng.range(-20, 20), at.y + g.rng.range(-20, 20), { markable: false });
+  g.log('alert', boarders ? `☠ Boarders burst through the hull near the ${at.room.name}!` : `♨ Creatures burst through the hull near the ${at.room.name}!`);
   g.fx({ t: 'alarm' });
 }
 
@@ -1552,7 +1768,10 @@ const PHASES = {
       const locked = g.route.nodes.find((n) => n.locked);
       if (locked && !humanPilot && g.route.t > 1.5) { locked.locked = false; g.log('story', `${pilot?.name || 'The pilot'} types ${g.transponderCode} into the targeting computer. A blip appears ahead.`); }
       const anyHuman = g.crew.some((c) => c.human);
-      if ((!humanPilot && g.route.t > 8) || g.route.t > 45 || (!anyHuman && g.route.t > 2.5)) {
+      // a vote is running: it closes 15 seconds after the first vote (or when everyone has voted)
+      if (g.route.voteT != null) { if (g.route.t - g.route.voteT > 15) tallyRoute(g); return; }
+      const humans = g.crew.filter((c) => c.human).length;
+      if ((!humanPilot && g.route.t > (humans > 1 ? 20 : 8)) || g.route.t > 45 || (!anyHuman && g.route.t > 2.5)) {
         // bots: prefer the transponder signal, then a port if hurt, else whatever's first
         const open = g.route.nodes.filter((n) => !n.locked);
         let pick = open.find((n) => n.derelict) || (g.ship.hull < g.ship.hullMax * 0.4 && open.find((n) => n.type === 'repair' || n.type === 'port')) || (g.ship.fuel < 30 && open.find((n) => n.type === 'fuel')) || open[g.rng.int(0, open.length - 1)];
@@ -1616,7 +1835,7 @@ function encounterTick(g, dt) {
       const count = 3 + g.tier * 2 + (g.path === 'brother' ? 1 : 0) + Math.floor(g.crew.length / 4);
       if (n.pod) {
         for (let k = 0; k < count; k++) { const p = roomPoint(n.pod, g.rng); g.spawnMob(g.rng.pick(creatures).idx, p.x, p.y, { markable: false }); }
-      } else burrowIn(g, count);
+      } else burrowIn(g, n.boarders ? count + 2 : count, !!n.boarders);
     }
     // Joe
     if (g.joe.mob) {
@@ -1632,7 +1851,7 @@ function encounterTick(g, dt) {
     const joeDone = !g.joe.mob || g.joe.state === 'saved' || g.joe.state === 'dead';
     if (n.left <= 0 && joeDone) {
       n.doneT = (n.doneT || 0) + dt;
-      if (left && n.doneT > 45) { for (const m of g.mobs) if (m.team === 'enemy') m.alive = false; g.log('ship', 'The last creatures burrow back into the dirt.'); }
+      if (left && n.doneT > 45 && !g.mobs.some((m) => m.alive && m.hoarder && m.team === 'enemy')) { for (const m of g.mobs) if (m.team === 'enemy') m.alive = false; g.log('ship', 'The last creatures burrow back into the dirt.'); }
     }
     if (n.left <= 0 && !left && joeDone) return g.endEncounter(true);
   }
@@ -1653,7 +1872,8 @@ function encounterTick(g, dt) {
     }
   }
   const pilot = g.crew.find((c) => c.cls === 'pilot');
-  if (pilot && !pilot.human && !g.fleeT && !g.weFled && s.hull < s.hullMax * 0.18 && g.fightingShips.some((x) => x.kind === 'ship')) COMMANDS.flee(g, pilot, {});
+  if (pilot && !pilot.human && !g.fleeT && !g.weFled && s.hull < s.hullMax * 0.18 && g.fightingShips.some((x) => x.kind === 'ship')
+    && g.rooms.some((r) => r.owner === 'us' && r.type === 'bridge' && r.sys.hp > 0)) COMMANDS.flee(g, pilot, {});   // (no point trying with the bridge wrecked)
 
   for (const es of ships) {
     if (es.gone) continue;
@@ -1746,10 +1966,19 @@ function shipFight(g, es, dt) {
   for (const m of es.inbound) m.t -= dt;
   for (const m of es.inbound.filter((x) => x.t <= 0)) missileImpact(g, es, m);
   es.inbound = es.inbound.filter((x) => x.t > 0);
-  // their bubble
-  if (theirs('shield') && es.bubble < es.bubbleMax) { es.bubbleT += dt; if (es.bubbleT > 11) { es.bubbleT = 0; es.bubble++; } }
-  // their D-weapons (powered engines let us slip some of it)
-  const dodge = g.dodgeChance();
+  // their crew: each job keeps something on their ship running
+  const ok = (cls) => g.officerOk(es, cls);
+  // their bubble (their scientist keeps it charging)
+  if (theirs('shield') && ok('scientist') && es.bubble < es.bubbleMax) { es.bubbleT += dt; if (es.bubbleT > 11) { es.bubbleT = 0; es.bubble++; } }
+  // their engineer patches their damaged rooms (not the wrecked ones)
+  if (es.crewCls?.includes('engineer') && ok('engineer')) for (const r of mine) if (r.sys && r.sys.hp > 0 && r.sys.hp < r.sys.max) r.sys.hp = Math.min(r.sys.max, r.sys.hp + dt * (2 + g.tier));
+  // their farmer and chef keep the bunks full: reinforcements trickle in
+  if (es.fightT < 150 && (es.crewCls?.includes('farmer') || es.crewCls?.includes('chef')) && (ok('farmer') && ok('chef')) && theirs('quarters')) {
+    es.feedT = (es.feedT || 0) + dt; if (es.feedT > 25) { es.feedT = 0; es.crewLeft += 1; }
+  }
+  // their D-weapons (powered engines let us slip some of it; a ship with no pilot aims worse)
+  const dodge = Math.min(0.85, g.dodgeChance() + (ok('pilot') ? 0 : 0.25));
+  enemyRack(g, es, mine, dt, dodge);
   if (theirs('weapons')) {
     es.gunT += dt;
     if (es.gunT >= es.gunPeriod) {
@@ -1762,7 +1991,7 @@ function shipFight(g, es, dt) {
         g.fx({ t: 'dfire', who: 'them', w: 'gun', dmg: es.gunDmg, from: es.id, room: r ? g.rooms.indexOf(r) : null });
       }
     }
-    es.missileT += dt;
+    es.missileT += dt * (ok('missiletech') ? 1 : 0.35);
     if (es.missileT >= es.missilePeriod) {
       es.missileT = 0;
       if (s.evasiveT > 0 || g.rng.chance(dodge)) { g.fx({ t: 'dfire', who: 'them', w: 'missile', miss: true, from: es.id }); g.log('ship', s.evasiveT > 0 ? 'Evasive! Their D-missile sails past.' : 'The engines jink us sideways: their D-missile misses!'); }
@@ -1778,8 +2007,8 @@ function shipFight(g, es, dt) {
       es.spawnT = Math.max(2, 5 - g.tier * 0.55) * g.rng.range(0.8, 1.2);
       const q = mine.filter((r) => (r.type === 'quarters' || r.type === 'core') && r.sys.hp > 0);
       const from = q.length ? g.rng.pick(q) : mine[0];
-      const n = Math.min(es.crewLeft, es.wave);
-      for (let k = 0; k < n; k++) { const p = roomPoint(from, g.rng); g.spawnMob(g.pickType(), p.x, p.y, { esId: es.id }); }
+      const n = Math.max(0, Math.min(es.crewLeft, es.wave, 70 - crowd));   // (never past the cap)
+      for (let k = 0; k < n; k++) { const p = roomPoint(from, g.rng); g.spawnMob(es.layout?.boardType ?? g.pickType(), p.x, p.y, { esId: es.id, wild: false, markable: !es.layout?.swarm }); }
       es.crewLeft -= n;
       if (q.length === 0) es.crewLeft = Math.max(0, es.crewLeft - 2); // no quarters = fewer reinforcements
     }
@@ -1790,7 +2019,7 @@ function shipFight(g, es, dt) {
   const theirCrew = g.mobs.filter((m) => m.alive && m.team === 'enemy' && m.esId === es.id);
   if (es.crewLeft <= 0 && !theirCrew.length) { g.surrender(es, `${es.name}'s crew is finished. The ship is ours to strip.`); return; }
   // out of boarders (or fighting too long)? they cut the tunnel and run. Not without a bridge, though.
-  if (!theirs('bridge')) { es.fleeT = 0; return; }
+  if (!theirs('bridge') || !ok('pilot')) { es.fleeT = 0; return; }   // (nobody to fly it: they're stuck here with us)
   const boarding = theirCrew.some((m) => onOurs(g, m));
   if (es.layout?.solo) return;   // the Ship-Eater's shell doesn't run: it waits for its passenger
   if ((es.crewLeft <= 0 && !boarding) || es.fightT > 160) {
@@ -1798,6 +2027,48 @@ function shipFight(g, es, dt) {
     if (es.fleeT > 6 && !es.fleeWarned) { es.fleeWarned = true; g.log('alert', `${es.name} is spinning up its drill to flee! Wreck its bridge or board it in the next 20s!`); }
     if (es.fleeT > 26) { es.done = true; es.fled = true; es.detachT = 0.6; g.log('ship', `${es.name} cut the tunnel and fled into the dirt.`); }
   } else if (es.fleeT) es.fleeT = Math.max(0, es.fleeT - dt);
+}
+
+/**
+ * Their gun rack (deeper ships carry one like ours): every gun needs a working weapons bay slot (3 per
+ * bay) and power cells (2 + 3 per running Power Core). Knock out a Power Core and the guns past their
+ * power go dark, until their scientist reroutes power off the bubbles (if they still have one).
+ */
+function enemyRack(g, es, mine, dt, dodge) {
+  if (!es.guns?.length) return;
+  const s = g.ship, tier = g.tier;
+  const bays = mine.filter((r) => r.type === 'weapons' && r.sys.hp > 0).length;
+  const cores = mine.filter((r) => r.type === 'power');
+  const live = cores.filter((r) => r.sys.hp > 0).length;
+  let cells = 2 + 3 * live;
+  if (cores.length && live < cores.length) {
+    if (g.officerOk(es, 'scientist') && es.crewCls?.includes('scientist')) {
+      es.rerouteT += dt;
+      if (es.rerouteT > 8) {
+        cells += 3;
+        if (!es.rerouted) { es.rerouted = true; es.bubble = 0; g.log('alert', `${es.name} rerouted power from its bubbles to its guns!`); }
+      }
+    } else if (!es.noReroute) { es.noReroute = true; g.log('ship', `${es.name} lost a Power Core and has nobody to reroute it. Some of its guns go dark.`); }
+  } else es.rerouteT = 0;
+  let slots = bays * 3;
+  for (const gun of es.guns) {
+    const G = SHIP_GUNS[gun.id];
+    gun.on = slots > 0 && cells >= G.power;
+    if (!gun.on) continue;
+    slots--; cells -= G.power;
+    gun.t += dt;
+    if (gun.t < G.period * 2) continue;
+    gun.t = 0;
+    for (let k = 0; k < G.shots; k++) {
+      const delay = k * 0.12;
+      if (s.evasiveT > 0 || g.rng.chance(dodge)) { g.fx({ t: 'dfire', who: 'them', w: 'gun', gun: gun.id, miss: true, from: es.id, delay }); continue; }
+      if (s.bubble > 0 && !G.pierce) { s.bubble = Math.max(0, s.bubble - (G.bubbleDmg || 1)); s.bubbleT = 0; g.fx({ t: 'dfire', who: 'them', w: 'gun', gun: gun.id, blocked: true, from: es.id, delay }); continue; }
+      const dmg = Math.round(G.dmg * (0.2 + 0.07 * tier));
+      const r = enemyTarget(g);
+      if (!g.storyMode) { s.hull -= dmg; if (r) damageSystem(g, r, dmg * 0.5 * (G.sysMul || 1)); }
+      g.fx({ t: 'dfire', who: 'them', w: 'gun', gun: gun.id, dmg, from: es.id, room: r ? g.rooms.indexOf(r) : null, delay });
+    }
+  }
 }
 
 /** Ship guns: the D-gun gets better with its port upgrade; the others with D-gun levels too, a bit. */
@@ -1904,6 +2175,31 @@ Game.prototype.choosePath = function () {
 
 // ---------------------------------------------------------------------------
 // commands from players (UI) and bots
+export const RACK_MAX = 10;
+export const rackCost = (s) => 40 + 25 * (s.rackUp || 0);
+export const gunPrice = (id) => Math.max(40, Math.round((SHIP_GUNS[id]?.cost || 80) * 0.5));
+export const PILOT_VOTE = 3;
+/** Votes for the next stop, weighted: the pilot's counts PILOT_VOTE times. Ties go to the pilot, then the first vote. */
+export function voteWeights(g) {
+  const tally = {};
+  for (const [id, i] of Object.entries(g.route?.votes || {})) {
+    const c = g.crew.find((x) => x.id === id); if (!c || !c.human) continue;
+    tally[i] = (tally[i] || 0) + (c.cls === 'pilot' ? PILOT_VOTE : 1);
+  }
+  return tally;
+}
+function tallyRoute(g) {
+  const tally = voteWeights(g);
+  const pilot = g.crew.find((x) => x.cls === 'pilot');
+  const pv = pilot && g.route.votes?.[pilot.id];
+  let best = null;
+  for (const [i, w] of Object.entries(tally)) if (best == null || w > tally[best] || (w === tally[best] && +i === pv)) best = i;
+  const n = g.route.nodes[best ?? 0];
+  if (!n || n.locked) return;
+  g.log('ship', `🗳 The crew voted: ${n.name || n.type} (${tally[best] || 0} of ${Object.values(tally).reduce((a, b) => a + b, 0)}).`);
+  g.arrive(n);
+}
+
 const COMMANDS = {
   storyOk(g, c, cmd) {
     const s = g.storyOpen; if (!s) return;
@@ -1945,11 +2241,18 @@ const COMMANDS = {
       g.log('alert', 'The skeletons... aren\'t all skeletons. THE CHANGED!');
     }
   },
+  /** Pick where we go next. Alone, it's your call; with others aboard it's a vote (the pilot's counts triple). */
   route(g, c, cmd) {
     if (g.phase !== 'route') return;
     const n = g.route.nodes[cmd.i];
     if (!n || n.locked) return;
-    g.arrive(n);
+    const humans = g.crew.filter((x) => x.human);
+    if (humans.length <= 1 || !c.human) { g.arrive(n); return; }
+    g.route.votes ||= {};
+    g.route.votes[c.id] = cmd.i;
+    if (!g.route.voteT) { g.route.voteT = g.route.t; g.log('ship', `🗳 ${c.name} votes for ${n.name || n.type}. Everyone vote! (the pilot's vote counts ${PILOT_VOTE}x, 15 seconds)`); }
+    else g.log('ship', `🗳 ${c.name} votes for ${n.name || n.type}.`);
+    if (humans.every((x) => g.route.votes[x.id] != null)) tallyRoute(g);
   },
   transponder(g, c, cmd) {
     if (g.phase !== 'route') return;
@@ -1983,7 +2286,8 @@ const COMMANDS = {
       return { error: 'The bridge is wrecked' };
     }
     const pilot = g.crew.find((x) => x.cls === 'pilot');
-    if (pilot && pilot.human && c !== pilot && !cmd.force) {
+    // a human pilot alone decides when we undock (other players can only ask)
+    if (pilot && pilot.human && c !== pilot && (c.human || !cmd.force)) {
       g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'only the pilot can undock', color: '#ffb0a0' });
       g.log('ship', `${c.name} asks ${pilot.name} to undock.`);
       return { error: 'Only the pilot can undock' };
@@ -2063,6 +2367,26 @@ const COMMANDS = {
     s.items.splice(cmd.item, 1); s.guns.push({ id: item.id, t: 0 });
     gainXp(g, c, 10);
     g.log('ship', `🔧 ${c.name} bolted a ${SHIP_GUNS[item.id].name} into the weapons bay. It needs ${SHIP_GUNS[item.id].power} power to fire.`);
+  },
+  /** Missile technician: bolt another slot onto the weapons rack (scrap), up to RACK_MAX guns. */
+  expandRack(g, c, cmd, s) {
+    if (c.cls !== 'missiletech') return { error: 'Only the missile technician can extend the rack' };
+    const cost = rackCost(s);
+    if (s.gunSlots >= RACK_MAX) return { error: 'The rack is as big as it gets' };
+    if (s.scrap < cost) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: `needs ${cost} scrap`, color: '#ccc' }); return; }
+    s.scrap -= cost; s.rackUp = (s.rackUp || 0) + 1;
+    g.recalcShip();
+    gainXp(g, c, 12);
+    g.log('ship', `🔧 ${c.name} welded another slot onto the weapons rack (${s.gunSlots} guns).`);
+  },
+  /** At a port: sell a gun out of storage (half what it cost new). */
+  sellGun(g, c, cmd, s) {
+    if (g.phase !== 'port') return;
+    const item = s.items[cmd.item]; if (!item) return;
+    const price = gunPrice(item.id);
+    s.items.splice(cmd.item, 1);
+    c.wallet += price;
+    g.log('loot', `💰 ${c.name} sold the ${SHIP_GUNS[item.id].name} for ${price}.`);
   },
   uninstall(g, c, cmd, s) {
     if (c.cls !== 'missiletech') return;
@@ -2219,6 +2543,9 @@ const COMMANDS = {
   },
   craftGun(g, c, cmd, s) {
     if (c.cls !== 'commando' || s.scrap < 15) return;
+    // one per crew member: guns already made (held, or lying around) count
+    const made = g.crew.filter((x) => x.makeshift?.ammo > 0).length + g.pickups.filter((p) => p.kind === 'gun').length;
+    if (made >= g.crew.filter((x) => x.cls !== 'urchid').length) { g.fx({ t: 'text', x: c.x, y: c.y - 20, text: 'everyone has one already', color: '#ffb0a0' }); return { error: 'One makeshift gun per crew member' }; }
     s.scrap -= 15;
     const armory = g.rooms.find((r) => r.owner === 'us' && r.type === 'armory') || g.rooms.find((r) => r.owner === 'us');
     // anyone can pick it up and fire it; when it's empty it falls apart into 1 scrap

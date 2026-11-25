@@ -353,11 +353,11 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
       if (k === 'Tab') { e.preventDefault(); if (ui.kind() === 'upgrades') ui.closeModal(); else if (!ui.isOpen() || ui.kind() === 'panel') ui.openModal('upgrades'); return; }
       if (k === 'KeyH' && !ui.isOpen()) { ui.openModal('help'); return; }
       if (k === 'KeyC') { if (ui.kind() === 'crew') ui.closeModal(); else if (!ui.isOpen() || ui.kind() === 'panel') ui.openModal('crew'); return; }
-      if (k === 'KeyM') { renderer.cam.overview = !renderer.cam.overview; return; }
+      if (k === 'KeyM') { renderer.cam.minimap = renderer.cam.minimap === false; return; }   // (the minimap: no more whole-ship overview)
       if (k === 'KeyL' && !ui.isOpen()) { session.cmd({ t: 'seal' }); return; }
       if (k === 'KeyE' && view.pilot) { session.cmd({ t: 'helm', on: false }); return; }
       if (k === 'KeyE' && ui.kind() === 'panel') { ui.closeModal(); return; }
-      if (['KeyQ', 'KeyF', 'KeyE', 'KeyR', 'KeyG', 'Space'].includes(k)) pressed[{ KeyQ: 'q', KeyF: 'f', KeyE: 'e', KeyR: 'r', KeyG: 'g', Space: 'space' }[k]] = true;
+      if (['KeyQ', 'KeyF', 'KeyE', 'KeyR', 'KeyG', 'KeyX', 'Space'].includes(k)) pressed[{ KeyQ: 'q', KeyF: 'f', KeyE: 'e', KeyR: 'r', KeyG: 'g', KeyX: 'x', Space: 'space' }[k]] = true;
     }
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(k)) e.preventDefault();
     if (down) keys.add(k); else keys.delete(k);
@@ -387,7 +387,7 @@ function runSession(wrap, session, { online, isHost = () => false, actions = {},
       my: (k('KeyS', 'ArrowDown') ? 1 : 0) - (k('KeyW', 'ArrowUp') ? 1 : 0),
       ax: Math.round(aim.x), ay: Math.round(aim.y),
       fire: mouse.l && !ui.isOpen(), rmb: mouse.r && !ui.isOpen(),
-      e: keys.has('KeyE') && !view.pilot, shift: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+      e: keys.has('KeyE') && !view.pilot, r: keys.has('KeyR') && !view.pilot, shift: keys.has('ShiftLeft') || keys.has('ShiftRight'),
       pressed: ui.isOpen() ? {} : { ...pressed },
     };
     for (const key in pressed) delete pressed[key];

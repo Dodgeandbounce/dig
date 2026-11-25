@@ -285,6 +285,8 @@ export function roomInterior(room) {
   return { x0: (room.x0 + 1) * TILE, y0: (room.y0 + 1) * TILE, x1: (room.x0 + rw(room)) * TILE, y1: (room.y0 + rh(room)) * TILE };
 }
 export function stationPos(room) {
+  // the Urchid's chair sits right in the middle of the lounge (best seat in the house)
+  if (room.type === 'lounge') return { x: (room.x0 + rw(room) / 2) * TILE, y: (room.y0 + rh(room) / 2) * TILE + 6 };
   // the console sits against the back wall in the top-left corner, clear of every door
   return { x: (room.x0 + 2.5) * TILE, y: (room.y0 + 1) * TILE + 14 };
 }

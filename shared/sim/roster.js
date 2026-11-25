@@ -1,6 +1,6 @@
 // The enemy roster: generated once per run. Random names, stats, builds, heights,
 // weapons, bodies and races. Each type belongs to a depth tier (0 = shallow, 4 = core).
-import { RACES, BUILDS, ENEMY_WEAPONS, NAME_A, NAME_B, CREATURES, BOSSES, HOARDER, THIEVES, EVENT_CREATURES, STARTER_MONSTERS } from './data.js';
+import { RACES, BUILDS, ENEMY_WEAPONS, NAME_A, NAME_B, CREATURES, BOSSES, HOARDER, THIEVES, EVENT_CREATURES, STARTER_MONSTERS, ENEMY_CREW, CLASSES } from './data.js';
 
 export function makeRoster(rng) {
   const roster = [];
@@ -88,6 +88,12 @@ export function makeRoster(rng) {
   for (const e of EVENT_CREATURES) {
     roster.push({ idx: roster.length, name: e.name, tier: 0, event: e.id, special: true, race: e.id, body: e.body, color: e.color, eye: e.eye, build: 'squat',
       size: e.size, hp: e.hp, speed: e.speed, dmgMul: e.dmg, weapon: e.weapon, role: 'brute', armor: e.armor || 0, bounty: 6 });
+  }
+  // the crews of the ships we fight: one entry per job (scaled to the depth when they spawn)
+  for (const [cls, e] of Object.entries(ENEMY_CREW)) {
+    roster.push({ idx: roster.length, name: `Enemy ${CLASSES[cls].name}`, tier: 0, officer: cls, special: true, race: 'raider', body: 'crew',
+      color: CLASSES[cls].color, eye: '#ffffff', build: 'lanky', size: 1, hp: Math.round(60 * e.hp), speed: Math.round(CLASSES[cls].speed * 0.85),
+      dmgMul: 1.1, weapon: e.weapon, role: 'brute', armor: 0.1, bounty: 25 });
   }
   // the monster trainer's starter pets
   for (const s of STARTER_MONSTERS) {

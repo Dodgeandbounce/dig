@@ -171,6 +171,7 @@ export function killMob(g, m, src = {}) {
   m.alive = false;
   m.hp = 0;
   if (m.isJoe) { g.joeDied(); return; }
+  if (m.officer && m.team === 'enemy') g.officerDown?.(m);
   if (m.team === 'crew' && m.isMonster) { // summoned monster KO -> back to the pen
     const owner = g.crew.find((c) => c.id === m.ownerId);
     const mon = owner?.monsters?.find((x) => x.type === m.type);
@@ -457,6 +458,24 @@ export function updateProjectiles(g, dt) {
       }
       p.x = nx; p.y = ny;
       if (p.kind === 'grenade') continue;
+      // the Vurfenstaff (in staff form) bats bullets back the way they came
+      if (p.team === 'enemy' && (p.kind === 'bullet' || p.kind === 'spit' || p.kind === 'harpoon' || !p.kind)) {
+        let bat = null;
+        for (const c of g.crew) {
+          if (c.cls !== 'vaelift' || !c.alive || c.phased || (c.form || 'staff') !== 'staff') continue;
+          const dx = p.x - c.x, dy = p.y - c.y, d2 = dx * dx + dy * dy;
+          if (d2 > (c.r + 22) ** 2) continue;
+          let da = Math.atan2(dy, dx) - (c.facing || 0); da = Math.atan2(Math.sin(da), Math.cos(da));
+          if (Math.abs(da) < 1.3) { bat = c; break; }
+        }
+        if (bat) {
+          const sp = Math.hypot(p.vx, p.vy) * 1.15, a = bat.facing + (g.rng() - 0.5) * 0.25;
+          p.vx = Math.cos(a) * sp; p.vy = Math.sin(a) * sp; p.team = 'crew'; p.owner = bat; p.dmg *= 1.5; p.life = Math.max(p.life, 0.8); p.hit = null;
+          g.fx({ t: 'text', x: bat.x, y: bat.y - 22, text: 'tink!', color: '#a0a0ff' }); g.fx({ t: 'spark', x: p.x, y: p.y, color: '#c0c0ff' });
+          gainXp(g, bat, 0.5);
+          break;
+        }
+      }
       // actor hits
       const targets = p.team === 'crew' ? g.mobs : hostiles(g, p.team);
       for (const t of targets) {

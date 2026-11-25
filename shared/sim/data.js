@@ -86,7 +86,7 @@ export const CLASSES = {
   engineer: {
     name: 'Engineer', def: 'Angie', room: 'engine', color: '#f0a030', hp: 110, speed: 140, clearance: true, unlock: 0,
     weapon: 'wrench',
-    abilities: { q: 'turret', f: 'trap' },
+    abilities: { q: 'turret', f: 'trap', r: 'wrenchhit' },
     blurb: 'Keeps the engines alive by hitting them with a wrench. Builds gun turrets and shock traps. Territory safety.',
   },
   urchid: {
@@ -212,6 +212,7 @@ export const WEAPONS = {
 export const ABILITIES = {
   evasive:   { name: 'Evasive Maneuvers', cd: 18, desc: 'At the helm during a docking: enemy D-fire misses for 4s.' },
   rally:     { name: 'Rally the Crew',    cd: 30, desc: 'Everyone in your room moves and shoots twice as fast (+100%) for 6s.' },
+  wrenchhit: { name: 'Wrench Repair',     cd: 0.42, desc: 'Hold R: whack whatever is broken in front of you back into shape (systems, walls, doors, breaches).' },
   turret:    { name: 'Gun Turret',        cd: 6,  cost: { scrap: 15 }, desc: 'Build an auto-turret (15 scrap).' },
   trap:      { name: 'Shock Trap',        cd: 4,  cost: { scrap: 5 },  desc: 'Place a shock trap that stuns (5 scrap).' },
   insult:    { name: 'Insult',            cd: 2.5, desc: 'Mock a crewmate. Better insults unlock deeper down.' },
@@ -241,8 +242,8 @@ export const ABILITIES = {
   burst:     { name: 'Bubble Burst',      cd: 6,  desc: 'Pop every bubble near you. Chains!' },
   hop:       { name: 'Hop',               cd: 0.6, desc: 'Jump onto a bubble and ride the air currents.' },
   phase:     { name: 'Phase Shift',       cd: 6,  desc: 'Slip into the empty dimension. Untouchable, unseen, and you walk through walls. Be OUT of the wall when it runs out (watch the countdown) or you die stuck in it.' },
-  staffform: { name: 'Vurfenstaff',       cd: 0.4, desc: 'Change the staff: staff / blade / rifle / shotgun.' },
-  icecube:   { name: 'Ice Cube',          cd: 4,  desc: 'Summon a block of ice that stops bullets.' },
+  staffform: { name: 'Vurfenstaff',       cd: 0.4, desc: 'Change the staff: staff / blade / rifle / shotgun. In staff form it bats bullets back at whoever shot them.' },
+  icecube:   { name: 'Ice Cube',          cd: 4,  desc: 'Summon a block of ice that stops bullets. Hit it and it slides off, scooping up enemies and smashing them into the next wall.' },
   proxmine:  { name: 'Proximity Mine',    cd: 3,  desc: 'Goes off when an enemy walks over it.' },
   timedmine: { name: 'Timed Mine',        cd: 4,  desc: 'Blows 3 seconds after you drop it.' },
   remotemine:{ name: 'Remote Mine',       cd: 4,  desc: 'Sits there until you press RMB. Then everything you planted goes up.' },
@@ -301,7 +302,7 @@ export const POWER_PER_CORE = 3;
 export const POWER_SYS = {
   engine:  { name: 'Engines',          max: 3, desc: 'Each cell: faster descent and +8% chance to dodge enemy fire. 0 cells: crawling.' },
   shield:  { name: 'Bubble',           max: 3, desc: 'Bubbles recharge faster with more cells. 0 cells: no recharge.' },
-  weapons: { name: 'Weapons',          max: 8, desc: 'Each installed gun needs its power to fire. Unpowered guns shut down.' },
+  weapons: { name: 'Weapons',          max: 14, desc: 'Each installed gun needs its power to fire. Unpowered guns shut down.' },
   systems: { name: 'Internal systems', max: 3, desc: 'Feeders, doors and the lab. More cells, more pickups and faster research.' },
   kitchen: { name: 'Galley',           max: 3, desc: 'Better cooking gear: meals heal more, cook faster, and the fancy recipes need it.' },
 };
@@ -317,7 +318,7 @@ export const SHIP_GUNS = {
   rail:  { name: 'Rail Driver',    power: 3, period: 11,  dmg: 70, shots: 1, pierce: true, cost: 320, desc: 'Goes straight through bubbles. Huge hit, slow reload.' },
   fire:  { name: 'Fire Gun',       power: 2, period: 9,   dmg: 8,  shots: 1, fire: true, cost: 260, trader: true, desc: 'Only from traders. Sets fires all over the room it hits: they have to put them out.' },
 };
-export const GUN_SLOTS = 3;           // guns the weapons bay can hold (+1 per extra weapons bay)
+export const GUN_SLOTS = 3;           // guns the weapons bay starts with (+1 per extra weapons bay, +1 per rack extension: up to 10)
 
 // ---------------------------------------------------------------------------
 // Gems: all kinds, worth different amounts. Deeper down the rich ones turn up more often.
@@ -409,6 +410,29 @@ export const ENEMY_WEAPONS = [
 // rooms (theirs too, if their ship is docked), grabs our scrap and gets bigger and nastier as it feeds.
 export const HOARDER = { name: 'The Ship-Eater', race: 'golem', body: 'hoarder', color: '#5a5048', eye: '#ffb020', size: 3.2, hp: 1500, speed: 50, dmgMul: 2.4, weapon: 'maul' };
 
+// Every ship we fight has a crew like ours: the same jobs, each one a class of its own (drawn as foxes
+// in their colours, a red band on the arm). Lose one and their ship loses what that job does, so a
+// clean assassination or a strike on the right room matters. The random boarders still come too
+// (out of their crew quarters). `stays`: they keep to their post instead of boarding us.
+export const ENEMY_CREW = {
+  pilot:       { weapon: 'pistol',  hp: 1.0, stays: true,  post: 'bridge',  loss: 'Their PILOT is down: that ship can\'t fly away now, and its guns aim worse.' },
+  engineer:    { weapon: 'club',    hp: 1.1, stays: true,  post: 'engine',  loss: 'Their ENGINEER is down: their wrecked rooms stay wrecked now.' },
+  missiletech: { weapon: 'bomb',    hp: 1.0, stays: true,  post: 'weapons', loss: 'Their MISSILE TECH is down: their missiles slow to a crawl.' },
+  scientist:   { weapon: 'spit',    hp: 0.9, stays: true,  post: 'shield',  loss: 'Their SCIENTIST is down: no more bubbles, and nobody to reroute their power.' },
+  chef:        { weapon: 'club',    hp: 1.0, stays: true,  post: 'quarters', loss: 'Their CHEF is down: their boarders stop healing up between waves.' },
+  farmer:      { weapon: 'shotgun', hp: 1.1, stays: true,  post: 'quarters', loss: 'Their FARMER is down: no more food, fewer reinforcements.' },
+  guard:       { weapon: 'pistol',  hp: 1.2, stays: true,  post: 'vault',   loss: 'Their GUARD is down: their vault and doors are wide open.' },
+  commando:    { weapon: 'rifle',   hp: 1.3, stays: false, loss: 'Their COMMANDO is down.' },
+  mrclean:     { weapon: 'maul',    hp: 1.5, stays: false, loss: 'Their JANITOR is down.' },
+  dog:         { weapon: 'claws',   hp: 1.1, stays: false, loss: 'Their DOG is down. Good boy. Bad side.' },
+  chameleon:   { weapon: 'claws',   hp: 0.9, stays: false, loss: 'Their CHAMELEON is down (you can see it now).' },
+  agent:       { weapon: 'pistol',  hp: 1.0, stays: false, loss: 'Their AGENT is down.' },
+  vaelift:     { weapon: 'club',    hp: 1.2, stays: false, loss: 'Their VAELIFT is down.' },
+};
+// the jobs every ship has (if it has the room for them), then extras the bigger ships bring along
+export const ENEMY_CORE_CREW = ['pilot', 'engineer', 'missiletech', 'scientist'];
+export const ENEMY_EXTRA_CREW = ['commando', 'guard', 'chef', 'farmer', 'mrclean', 'dog', 'chameleon', 'agent', 'vaelift'];
+
 // Thieves: crews that came for the vault, not the fight. Pirates, thieves, robbers, bandits and hackers
 // go straight for our gems ("har har har"); kill one and it drops what it grabbed. Hackers pop our doors.
 export const THIEVES = [
@@ -455,10 +479,17 @@ export const EVENTS = {
   candyrain:  { good: true,  name: 'Candy cave',          text: 'We drill through a cave full of... candy? Grab it!' },
   strawberry: { good: true,  name: 'Giant strawberries',  text: 'GIANT STRAWBERRIES are rolling in through the hull! They squash, but they\'re delicious.' },
   distress:   { good: true,  name: 'Signal: Do I Go?',    text: 'A distress beacon. It just says "DO I GO?" over and over.' },
+  magnet:     { good: true,  name: 'Magnetic seam',       text: 'We drill past a magnetic seam. Everything loose on the ship goes flying... into our pockets.' },
+  hotspring:  { good: true,  name: 'Hot spring',          text: 'A hot spring bursts through the floor vents. Everyone soaks. Everyone heals. The grime washes away.' },
+  scrapfield: { good: true,  name: 'Scrap field',         text: 'An old wreck field. Scrap rains in through the feeders!' },
+  moles:      { good: true,  name: 'Friendly moles',      text: 'A family of moles digs in. They hate boarders as much as we do. They\'ll fight with us for a while.' },
   // bad
   fire:       { good: false, name: 'Fire!',               text: 'A fuel line bursts. FIRE breaks out!' },
   engine:     { good: false, name: 'Engine failure',      text: 'An engine shakes itself to pieces! (This is why you buy more engines.)' },
-  storks:     { good: false, name: 'Stork army',          text: 'An ARMY OF STORKS bursts through the hull. They run really fast and they peck HARD.' },
+  storks:     { good: false, name: 'The Stork Armada',    text: 'Ships. Full of STORKS. Up to four of them, docking at once. They run really fast and they peck HARD.' },
+  pirates:    { good: false, name: 'Pirate raid',         text: 'HAR HAR HAR! A pirate ship (or three) full of pirates. They want the vault.' },
+  quake:      { good: false, name: 'Cave-in',             text: 'The tunnel shakes. Rocks come down on the ship: doorways blocked, systems dented.' },
+  surge:      { good: false, name: 'Power surge',         text: 'A lightning seam! It arcs through the hull and fries the power, the bubbles and the lab.' },
   virus:      { good: false, name: 'Virus outbreak',      text: 'Something in the storage hold is screaming. And multiplying. Kill it before it fills the room!' },
   rocks:      { good: false, name: 'Rock monsters',       text: 'Rock monsters shoulder in through the hull. Slow, all health, all punch.' },
   tentacles:  { good: false, name: 'Tentacles',           text: 'Tentacles. Through the walls. Why is it always tentacles.' },

@@ -15,7 +15,7 @@ const FX_LIMIT = 400;
 const ONLINE_STARTERS = ['pilot', 'engineer', 'urchid'];
 // Commands a player may send. 'pause' is solo-only: one player can't freeze everyone.
 const BLOCKED = new Set(['pause']);
-const PRESS_KEYS = ['q', 'f', 'e', 'r', 'g', 'space', 'rmb'];
+const PRESS_KEYS = ['q', 'f', 'e', 'r', 'g', 'x', 'space', 'rmb'];
 
 function newRun(number) {
   return {
@@ -239,7 +239,7 @@ export class World {
     this.game.setInput(c.id, {
       mx: Math.sign(num(raw.mx, 1)), my: Math.sign(num(raw.my, 1)),
       ax: num(raw.ax, 1e5), ay: num(raw.ay, 1e5),
-      fire: !!raw.fire, rmb: !!raw.rmb, e: !!raw.e, shift: !!raw.shift, pressed,
+      fire: !!raw.fire, rmb: !!raw.rmb, e: !!raw.e, r: !!raw.r, shift: !!raw.shift, pressed,
     });
   }
 

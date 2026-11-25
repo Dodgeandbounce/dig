@@ -66,7 +66,7 @@ const JARS = ['poison', 'acid', 'explosive', 'buff'];
 
 export function weaponOf(c) {
   if (c.lightning > 0) return LIGHTNING;   // white candy: a lightning chain gun until it runs dry
-  if (c.makeshift?.ammo > 0) return MAKESHIFT;
+  if (c.makeshift?.ammo > 0 && !c.makeshift.away) return MAKESHIFT;   // (X puts it away and back)
   if (c.cls === 'vaelift') return STAFF_W[c.form || 'staff'];
   return WEAPONS[CLASSES[c.cls].weapon];
 }
@@ -165,13 +165,16 @@ export function crewTick(g, c, inp, dt) {
   const P = inp.pressed || {};
   if (P.q && def.abilities.q) useAbility(g, c, def.abilities.q, inp, 'q');
   if (P.f && def.abilities.f) useAbility(g, c, def.abilities.f, inp, 'f');
-  if (P.r && def.abilities.r) useAbility(g, c, def.abilities.r, inp, 'r');
+  if (def.abilities.r === 'wrenchhit') { if ((P.r || inp.r) && c.cd.r <= 0 && !c.phased) useAbility(g, c, 'wrenchhit', inp, 'r'); }
+  else if (P.r && def.abilities.r) useAbility(g, c, def.abilities.r, inp, 'r');
   if (P.g && def.abilities.g) useAbility(g, c, def.abilities.g, inp, 'g');
   if (def.abilities.rmb === 'chainsaw') chainsaw(g, c, inp.rmb, dt);
   else if (def.abilities.rmb === 'pitchfork') { if ((inp.rmb || P.rmb) && c.cd.rmb <= 0 && !c.phased) useAbility(g, c, 'pitchfork', inp, 'rmb'); }
   else if (P.rmb && def.abilities.rmb) useAbility(g, c, def.abilities.rmb, inp, 'rmb');
   else if (P.rmb && c.cls === 'chef') useAbility(g, c, 'fish', inp, 'f');
   if (P.space && def.abilities.space) useAbility(g, c, def.abilities.space, inp, 'space');
+  // X: swap between your own weapon and a makeshift gun
+  if (P.x && c.makeshift?.ammo > 0) { c.makeshift.away = !c.makeshift.away; g.fx({ t: 'text', x: c.x, y: c.y - 22, text: c.makeshift.away ? 'own weapon' : 'makeshift gun', color: '#90a050' }); }
 
   // ---- interact
   if (P.e) interactPress(g, c);
@@ -217,9 +220,11 @@ function primary(g, c, w, inp) {
       if (c.cls === 'dog') { opts.mul *= 1 + 0.2 * up[0]; opts.kind = 'bite'; }
       if (c.cls === 'chameleon') opts.backstabMul = 1 + 0.3 * up[1];
       if (c.cls === 'vaelift') opts.mul *= 1 + 0.25 * up[1];
+      // Vaelift: hit one of your ice blocks and it goes sliding off, scooping up whatever is in the way
+      if (c.cls === 'vaelift' && kickIce(g, c, ang)) { g.fx({ t: 'swing', x: c.x, y: c.y, a: ang, r: w.range, cls: c.cls }); break; }
       const hits = melee(g, c, w, ang, 'crew', opts);
-      // the wrench also repairs whatever it hits
-      if (c.cls === 'engineer' || c.isJoe) wrenchRepair(g, c, w.repair * (1 + 0.25 * up[0]));
+      // the wrench also patches a little as it fights (R is the proper repair hit)
+      if (c.cls === 'engineer' || c.isJoe) wrenchRepair(g, c, w.repair * 0.4 * (1 + 0.25 * up[0]));
       // melee on enemy systems / their walls
       if (!hits) hitThingsInFront(g, c, w.dmg * opts.mul);
       g.fx({ t: 'swing', x: c.x, y: c.y, a: ang, r: w.range, cls: c.cls });
@@ -355,6 +360,19 @@ const ABILITY_FNS = {
     for (const o of g.crew) if (o.alive && roomAt(g, o) === r) { addBuff(o, { speed: 1, rate: 1 }, 6, 'rally'); n++; }
     say(g, c, 'Hold together, crew! DOUBLE TIME!');
     gainXp(g, c, 1 + n);
+  },
+  /** Engineer, R (hold it): a proper repair swing at whatever's broken in front of you. */
+  wrenchhit(g, c) {
+    const w = WEAPONS.wrench;
+    c.swingT = 0.18;
+    const amt = w.repair * 1.5 * (1 + 0.25 * c.upgrades[0]);
+    const before = c.repairs || 0;
+    wrenchRepair(g, c, amt);
+    g.fx({ t: 'swing', x: c.x, y: c.y, a: c.facing, r: w.range, cls: c.cls });
+    if ((c.repairs || 0) === before) {
+      // nothing to fix here: it's still a wrench
+      if (!melee(g, c, w, c.facing, 'crew', { mul: 0.6 })) hitThingsInFront(g, c, w.dmg * 0.6);
+    }
   },
   turret(g, c) {
     const mine = g.objs.filter((o) => o.kind === 'turret' && o.owner === c.id);
@@ -623,7 +641,7 @@ export function interactTarget(g, c) {
   const rt = repairTarget(g, c);
   if (rt) return { kind: 'repair', obj: rt, label: `Hold E: repair ${rt.label}` };
   for (const o of g.objs) if (o.kind === 'fire' && dist(o, c) < 48) return { kind: 'fire', obj: o, label: c.cls === 'mrclean' ? 'Hold E: put out the fire (fast)' : 'Hold E: fire extinguisher' };
-  if (c.cls === 'mrclean') for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) return { kind: 'mess', obj: o, label: 'Hold E: sweep' };
+  if (c.cls === 'mrclean' || !nearDoor(g, c)) for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) return { kind: 'mess', obj: o, label: c.cls === 'mrclean' ? 'Hold E: sweep' : 'Hold E: sweep (slowly: the janitor is quicker)' };
   const d = nearDoor(g, c);
   if (d) {
     const what = d.blast ? 'blast door' : 'door';
@@ -720,13 +738,8 @@ function interactHold(g, c, dt) {
   // fires come first: everyone carries an extinguisher
   if (extinguish(g, c, dt)) return;
   // sweeping
-  if (c.cls === 'mrclean') {
-    for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) {
-      o.sweep = (o.sweep || 0) + dt * (1.6 + 1.6 * c.upgrades[1]);
-      if (o.sweep >= 1) { o.sweep = 0; o.amt--; c.wallet += 2; g.stats.cleaned++; gainXp(g, c, 1.5); if (o.amt <= 0) g.objs.splice(g.objs.indexOf(o), 1); g.fx({ t: 'sweep', x: o.x, y: o.y }); }
-      return;
-    }
-  }
+  // sweeping: anyone can (slowly). The janitor is fast at it, and gets paid.
+  if (c.cls === 'mrclean' && sweep(g, c, dt)) return;
   // station repair (own ship) or smashing their systems
   const r = g.rooms[roomAt(g, c)];
   if (r && r.sys && dist(r.station, c) < 46) {
@@ -735,6 +748,18 @@ function interactHold(g, c, dt) {
   }
   const t = repairTarget(g, c);
   if (t) repairTile(g, c, t, repairRate(c) * dt);
+  else if (!(c.cls === 'farmer' && (c.carrying || 0) < 5)) sweep(g, c, dt);   // nothing to fix: tidy up (slowly)
+}
+
+/** Hold E on a mess: anyone can sweep it up, slowly. The janitor is fast at it, and gets paid. */
+function sweep(g, c, dt) {
+  const janitor = c.cls === 'mrclean';
+  for (const o of g.objs) if (o.kind === 'mess' && dist(o, c) < 34) {
+    o.sweep = (o.sweep || 0) + dt * (janitor ? 1.6 + 1.6 * c.upgrades[1] : 0.35);
+    if (o.sweep >= 1) { o.sweep = 0; o.amt--; if (janitor) c.wallet += 2; g.stats.cleaned++; gainXp(g, c, janitor ? 1.5 : 0.6); if (o.amt <= 0) g.objs.splice(g.objs.indexOf(o), 1); g.fx({ t: 'sweep', x: o.x, y: o.y }); }
+    return true;
+  }
+  return false;
 }
 
 export function repairRate(c) {
@@ -798,6 +823,26 @@ export function repairTile(g, c, t, amt) {
   }
 }
 
+/** Kick the ice block in front of you: it slides off (a nice speed), carrying enemies; walls smash them. */
+function kickIce(g, c, ang) {
+  for (const reach of [22, 38]) {
+    const tx = Math.floor((c.x + Math.cos(ang) * reach) / TILE), ty = Math.floor((c.y + Math.sin(ang) * reach) / TILE);
+    if (g.grid.get(tx, ty) !== T.ICE) continue;
+    const i = idx(tx, ty);
+    const o = g.objs.find((x) => x.kind === 'ice' && x.i === i);
+    g.grid.tiles[i] = g.iceUnder.get(i) ?? T.FLOOR; g.iceUnder.delete(i); g.grid.version++;
+    if (o) g.objs.splice(g.objs.indexOf(o), 1);
+    // slide along the main axis you kicked it (it's a block: it goes straight)
+    const ax = Math.abs(Math.cos(ang)) > Math.abs(Math.sin(ang));
+    const dir = ax ? { x: Math.sign(Math.cos(ang)), y: 0 } : { x: 0, y: Math.sign(Math.sin(ang)) };
+    g.objs.push({ id: uid(), kind: 'iceslide', x: (tx + .5) * TILE, y: (ty + .5) * TILE, vx: dir.x * 430, vy: dir.y * 430, t: 2.4, owner: c.id, carry: [], dmg: 40 * (1 + 0.25 * c.upgrades[1]) });
+    g.fx({ t: 'text', x: c.x, y: c.y - 22, text: 'KICK!', color: '#bfefff' });
+    gainXp(g, c, 1);
+    return true;
+  }
+  return false;
+}
+
 function wrenchRepair(g, c, amount) {
   // station in front?
   const r = g.rooms[roomAt(g, c)];
@@ -843,6 +888,8 @@ export function ventTo(g, c, from, to) {
 // ---------------------------------------------------------------------------
 function passive(g, c, dt) {
   if (c.repairing > 0) c.repairing -= dt;
+  // everyone heals very slowly on their own: 1 health every 10 seconds
+  if (c.alive && c.hp < c.maxHp) c.hp = Math.min(c.maxHp, c.hp + dt * 0.1);
   if (c.spinT > 0) { // whirlwind
     c.spinT -= dt; c.spinTick -= dt;
     if (c.spinTick <= 0) { c.spinTick = 0.2; melee(g, c, { dmg: 18 * (1 + 0.2 * c.upgrades[0]), range: 58, arc: 7 }, 0, 'crew', { knock: 90 }); g.fx({ t: 'swing', x: c.x, y: c.y, a: g.time * 20, r: 58, cls: 'mrclean' }); }

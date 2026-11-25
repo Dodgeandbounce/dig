@@ -17,7 +17,8 @@ test('an all-bot crew plays through levels without getting stuck', () => {
     seen.add(g.phase);
     if (g.level !== lastLevel) { lastLevel = g.level; sinceLevel = 0; }
     sinceLevel++;
-    assert.ok(sinceLevel < 30 * 60 * 6, `stuck on level ${g.level} in phase ${g.phase}`);
+    // (a layer can hold several fights now: a pirate raid or the stork armada on top of the usual docking)
+    assert.ok(sinceLevel < 30 * 60 * 9, `stuck on level ${g.level} in phase ${g.phase}`);
   }
   for (const p of ['briefing', 'descent', 'route', 'encounter', 'aftermath']) assert.ok(seen.has(p), `never reached ${p}`);
   assert.ok(g.level >= 4, `only reached level ${g.level}`);
